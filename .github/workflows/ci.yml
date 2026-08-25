@@ -142,7 +142,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-helper ./cmd/witshield-helper
           for binary in witshield-controller witshield-agent witshield-helper; do
             metadata=$(go version -m "stage/$binary")
-            grep -Fq 'go1.27.0' <<<"$metadata"
+            grep -Fq 'go1.26.7' <<<"$metadata"
             grep -Fq 'CGO_ENABLED=0' <<<"$metadata"
           done
           cp -a web/out/. stage/web/

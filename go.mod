@@ -1,6 +1,6 @@
 module github.com/witkitlab/witshield
 
-go 1.27.0
+go 1.26.7
 
 require (
 	golang.org/x/crypto v0.52.0

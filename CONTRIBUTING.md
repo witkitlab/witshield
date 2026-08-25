@@ -12,7 +12,7 @@
 
 ## 本地开发
 
-需要 Go `1.27.0` 或更新的兼容安全补丁版本。若修改前端，还需要仓库前端配置声明的 Node.js 版本。
+需要 Go `1.26.7` 或更新的兼容安全补丁版本。若修改前端，还需要仓库前端配置声明的 Node.js 版本。
 
 ```bash
 git clone https://github.com/witkitlab/witshield.git
