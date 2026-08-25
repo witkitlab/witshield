@@ -1,0 +1,13 @@
+# Optional observer coverage for hosts that run OpenSSH Server and have this
+# exact file. Use only together with docker-compose.observer.yml. The scanner
+# deliberately reports SSH coverage as unavailable when Include directives
+# prevent this single file from representing the effective configuration.
+services:
+  agent:
+    volumes:
+      - type: bind
+        source: /etc/ssh/sshd_config
+        target: /host/etc/ssh/sshd_config
+        read_only: true
+        bind:
+          create_host_path: false

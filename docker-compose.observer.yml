@@ -1,0 +1,106 @@
+name: witshield-observer
+
+x-security: &security
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=32m
+  init: true
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  controller:
+    <<: *security
+    image: ${WITSHIELD_IMAGE:-ghcr.io/witkitlab/witshield:latest}
+    command:
+      - --listen
+      - 0.0.0.0:8080
+      - --data-dir
+      - /data/controller
+      - --bootstrap-token-file
+      - /run/secrets/bootstrap_token
+    environment:
+      WITSHIELD_WEB_DIR: /usr/share/witshield/web
+    secrets:
+      - bootstrap_token
+    ports:
+      - 127.0.0.1:${WITSHIELD_PORT:-8080}:8080
+    volumes:
+      - controller-data:/data/controller
+    networks:
+      - control
+      - egress
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+
+  agent:
+    <<: *security
+    profiles:
+      - observer
+    image: ${WITSHIELD_IMAGE:-ghcr.io/witkitlab/witshield:latest}
+    entrypoint:
+      - /usr/local/bin/witshield-agent
+    command:
+      - --controller-url
+      - http://controller:8080
+      - --data-dir
+      - /data/agent
+      - --interval
+      - ${WITSHIELD_SCAN_INTERVAL:-24h}
+    environment:
+      WITSHIELD_ENROLLMENT_TOKEN_FILE: /run/secrets/enrollment_token
+      WITSHIELD_HOST_ROOT: /host
+      WITSHIELD_OBSERVER_ONLY: "true"
+    secrets:
+      - enrollment_token
+    depends_on:
+      - controller
+    volumes:
+      - agent-data:/data/agent
+      # Long bind syntax with create_host_path=false prevents Compose from
+      # mutating the host by creating a missing source path as root.
+      - type: bind
+        source: /etc/passwd
+        target: /host/etc/passwd
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /proc/1/net/tcp
+        target: /host/proc/1/net/tcp
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - control
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+
+volumes:
+  controller-data:
+  agent-data:
+
+networks:
+  control:
+    driver: bridge
+    internal: true
+  # Only Controller receives normal egress for administrator-configured AI and
+  # notification endpoints. Agent is restricted to the internal control network.
+  egress:
+    driver: bridge
+
+secrets:
+  bootstrap_token:
+    file: ${WITSHIELD_BOOTSTRAP_TOKEN_FILE:-./docker/.secrets/bootstrap.token}
+  enrollment_token:
+    file: ${WITSHIELD_ENROLLMENT_TOKEN_FILE:-./docker/.secrets/enrollment.token}

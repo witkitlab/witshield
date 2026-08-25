@@ -1,0 +1,43 @@
+# Build and test output
+/bin/
+/dist/
+/coverage.out
+/coverage*.out
+/coverage*.txt
+*.prof
+*.test
+
+# Runtime state and databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+/data/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+!*.env.example
+*.key
+*.pem
+*.token
+/docker/.secrets/
+
+# Web dependencies and generated output
+/node_modules/
+/web/node_modules/
+/web/.next/
+/web/.vinext/
+/web/.wrangler/
+/web/dist/
+/web/out/
+*.tsbuildinfo
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

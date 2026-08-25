@@ -1,0 +1,735 @@
+'use client';
+
+import {
+  Activity,
+  ArrowUp,
+  Bell,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  Copy,
+  Eye,
+  KeyRound,
+  LayoutDashboard,
+  LoaderCircle,
+  LockKeyhole,
+  LogOut,
+  Mail,
+  Plus,
+  Radar,
+  RefreshCw,
+  RotateCcw,
+  ScanSearch,
+  ScrollText,
+  Server,
+  Settings,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Send,
+  TestTube2,
+  TriangleAlert,
+  Webhook,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  approveAction,
+  bootstrapAdmin,
+  canCreateAction,
+  chatAI,
+  confirmAction,
+  createActionForFinding,
+  createEnrollmentToken,
+  createSchedule,
+  demoMode,
+  getServerStatus,
+  loadSnapshot,
+  login,
+  logout,
+  requestScan,
+  rollbackAction,
+  saveAISettings,
+  saveDefensePolicy,
+  saveNotificationSettings,
+  setEmergencyStop,
+  testAISettings,
+  testNotifications,
+  updateSchedule,
+} from './api-client';
+import { demoDashboard } from './demo-data';
+import type { ActionPlan, AISettings, DashboardSnapshot, DefensePolicy, Finding, NotificationSettings, ScanSchedule, Section, Severity } from './types';
+
+const navigation: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
+  { id: 'overview', label: '总览', icon: LayoutDashboard },
+  { id: 'findings', label: '风险', icon: TriangleAlert },
+  { id: 'devices', label: '设备', icon: Server },
+  { id: 'policies', label: '防御策略', icon: Radar },
+  { id: 'audit', label: '执行记录', icon: ScrollText },
+  { id: 'settings', label: '设置', icon: Settings },
+];
+
+const severityName: Record<Severity, string> = {
+  critical: '严重', high: '高风险', medium: '中风险', low: '低风险', info: '提示',
+};
+
+type BootState = 'loading' | 'setup' | 'login' | 'ready' | 'error';
+
+export function WitShieldApp() {
+  const [section, setSection] = useState<Section>('overview');
+  const [bootState, setBootState] = useState<BootState>('loading');
+  const [dashboard, setDashboard] = useState<DashboardSnapshot>(() => structuredClone(demoDashboard));
+  const [selectedDeviceId, setSelectedDeviceId] = useState(demoDashboard.devices[0].id);
+  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
+  const [showEnroll, setShowEnroll] = useState(false);
+  const [enrollment, setEnrollment] = useState<{ token: string; expiresAt: string } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectedDevice = dashboard.devices.find((device) => device.id === selectedDeviceId) ?? dashboard.devices[0];
+
+  const notify = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(null), 2800);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const live = await loadSnapshot();
+    const openFindings = live.findings.filter((finding) => finding.state === 'open');
+    const score = live.devices.length
+      ? Math.round(live.devices.reduce((sum, device) => sum + device.score, 0) / live.devices.length)
+      : 100;
+    setDashboard((current) => ({
+      ...current,
+      ...live,
+      score,
+      checks: live.checks,
+      devicesOnline: live.devices.filter((device) => device.status === 'online').length,
+      devicesTotal: live.devices.length,
+      openFindings: openFindings.length,
+      criticalFindings: openFindings.filter((finding) => finding.severity === 'critical' || finding.severity === 'high').length,
+      nextScan: live.schedules.filter((schedule) => schedule.enabled)[0]?.nextRunAt ?? '尚未安排',
+      lastScan: live.devices.map((device) => device.lastScan).find((value) => value !== '尚未') ?? '尚未',
+    }));
+    if (live.devices.length && !live.devices.some((device) => device.id === selectedDeviceId)) {
+      setSelectedDeviceId(live.devices[0].id);
+    }
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    let active = true;
+    getServerStatus()
+      .then(async (status) => {
+        if (!active) return;
+        if (!status.initialized) return setBootState('setup');
+        if (!status.authenticated) return setBootState('login');
+        await refresh();
+        setBootState('ready');
+      })
+      .catch((cause: unknown) => {
+        if (!active) return;
+        setError(cause instanceof Error ? cause.message : '无法连接妙盾服务');
+        setBootState('error');
+      });
+    return () => { active = false; };
+  }, [refresh]);
+
+  async function handleScan() {
+    if (!selectedDevice || scanning) return;
+    setScanning(true);
+    try {
+      await requestScan(selectedDevice.id);
+      notify(demoMode ? '扫描任务已完成，报告已更新' : '扫描已加入队列，Agent 在线后执行');
+      if (!demoMode) await refresh();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : '启动扫描失败');
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleEnrollment() {
+    setShowEnroll(true);
+    setEnrollment(null);
+    try {
+      const result = await createEnrollmentToken();
+      setEnrollment({ token: result.token, expiresAt: result.expiresAt });
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : '创建设备注册码失败');
+    }
+  }
+
+  if (bootState === 'loading') return <LoadingScreen />;
+  if (bootState === 'setup' || bootState === 'login') {
+    return <AuthScreen mode={bootState} onReady={async () => { await refresh(); setBootState('ready'); }} />;
+  }
+  if (bootState === 'error') {
+    return <ErrorScreen message={error ?? '服务暂时不可用'} onRetry={() => window.location.reload()} />;
+  }
+
+  return (
+    <main className="app-shell">
+      <aside className="sidebar">
+        <button className="brand brand-button" onClick={() => setSection('overview')}>
+          <span className="brand-mark" aria-hidden="true"><ShieldCheck size={18} strokeWidth={2.2} /></span>
+          <span><strong>妙盾</strong><small>WitShield AI</small></span>
+        </button>
+
+        <nav aria-label="主要导航">
+          {navigation.map(({ id, label, icon: Icon }) => (
+            <button className={section === id ? 'nav-item active' : 'nav-item'} key={id} onClick={() => setSection(id)}>
+              <Icon size={16} strokeWidth={1.8} />
+              {label}
+              {id === 'findings' && dashboard.openFindings > 0 && <span className="nav-count">{dashboard.openFindings}</span>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-bottom">
+          {demoMode && <span className="demo-chip"><Eye size={12} />交互演示</span>}
+          {selectedDevice && (
+            <button className="device-card" onClick={() => setSection('devices')}>
+              <div className="device-line"><span className="status-dot" /><strong>Agent 在线</strong></div>
+              <p>{selectedDevice.hostname}</p>
+              <small>{selectedDevice.lastSeen}完成同步</small>
+            </button>
+          )}
+        </div>
+      </aside>
+
+      <section className="workspace">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">开源服务器 AI Agent 智能守卫</p>
+            <h1>{sectionTitle(section)}</h1>
+          </div>
+          <div className="top-actions">
+            <button className="icon-button" aria-label="查看需要关注的记录" onClick={() => setSection('audit')}><Bell size={17} />{dashboard.criticalFindings > 0 && <span className="notification-dot" />}</button>
+            {section !== 'settings' && <button className="secondary-button" onClick={() => setSection('audit')}>查看报告</button>}
+            <button className="primary-button" onClick={handleScan} disabled={scanning || !selectedDevice}>
+              {scanning ? <LoaderCircle className="spin" size={15} /> : <ScanSearch size={15} />}
+              {scanning ? '扫描中' : '立即扫描'}
+            </button>
+            <button className="avatar" aria-label="打开管理员设置" onClick={() => setSection('settings')}>A</button>
+          </div>
+        </header>
+
+        {section === 'overview' && (
+          <Overview dashboard={dashboard} selectedDeviceId={selectedDeviceId} onFinding={setSelectedFinding} onSection={setSection} />
+        )}
+        {section === 'findings' && <FindingsView findings={dashboard.findings} devices={dashboard.devices} onFinding={setSelectedFinding} />}
+        {section === 'devices' && (
+          <DevicesView dashboard={dashboard} selectedDeviceId={selectedDeviceId} onSelect={setSelectedDeviceId} onEnroll={handleEnrollment} />
+        )}
+        {section === 'policies' && (
+          <PoliciesView policies={dashboard.policies} deviceId={selectedDevice?.id ?? ''} onUpdate={(policy) => {
+            setDashboard((current) => ({ ...current, policies: current.policies.map((item) => item.id === policy.id ? policy : item) }));
+            notify('防御策略已保存');
+          }} onEmergency={(active) => {
+            setDashboard((current) => ({ ...current, policies: current.policies.map((item) => item.deviceId === selectedDeviceId ? { ...item, emergencyStop: active } : item) }));
+            notify(active ? '已停止自动防御并取消所有尚未开始的动作' : '自动防御已恢复');
+          }} />
+        )}
+        {section === 'audit' && <AuditView dashboard={dashboard} onChanged={async (message) => { notify(message); await refresh(); }} />}
+        {section === 'settings' && <SettingsView settings={dashboard.ai} notifications={dashboard.notifications} schedules={dashboard.schedules} deviceId={selectedDevice?.id ?? ''} onScheduleUpdate={(schedule) => setDashboard((current) => ({ ...current, schedules: [...current.schedules.filter((item) => item.id !== schedule.id), schedule] }))} onSaved={(ai) => { setDashboard((current) => ({ ...current, ai })); notify('AI 设置已安全保存'); }} onNotificationsSaved={(notifications) => { setDashboard((current) => ({ ...current, notifications })); notify('通知渠道已安全保存'); }} onLogout={async () => { await logout(); setBootState('login'); }} />}
+      </section>
+
+      {selectedFinding && <FindingDrawer finding={selectedFinding} onClose={() => setSelectedFinding(null)} onPlan={(plan) => {
+        setSelectedFinding((finding) => finding ? { ...finding, remediation: plan } : null);
+        setDashboard((current) => ({ ...current, findings: current.findings.map((finding) => finding.id === selectedFinding.id ? { ...finding, remediation: plan } : finding) }));
+      }} onApproved={() => { notify('已批准，妙盾正在执行并验证修复'); setSelectedFinding(null); if (!demoMode) void refresh(); }} />}
+      {showEnroll && <EnrollmentModal enrollment={enrollment} onClose={() => setShowEnroll(false)} onCopied={() => notify('安装命令已复制')} />}
+      {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
+    </main>
+  );
+}
+
+function sectionTitle(section: Section) {
+  return ({ overview: '服务器整体稳定', findings: '风险与变化', devices: '受保护的设备', policies: '防御策略', audit: '执行与审计记录', settings: '妙盾设置' } as const)[section];
+}
+
+function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
+  dashboard: DashboardSnapshot;
+  selectedDeviceId: string;
+  onFinding: (finding: Finding) => void;
+  onSection: (section: Section) => void;
+}) {
+  const deviceFindings = dashboard.findings.filter((finding) => finding.deviceId === selectedDeviceId && finding.state === 'open');
+  return (
+    <div className="content-grid">
+      <section className="main-column">
+        <article className="posture-card">
+          <div className="posture-copy">
+            <span className="health-pill"><span className="status-dot" />防护运行中</span>
+            <h2>今日安全状态</h2>
+            <p>妙盾已检查 {dashboard.checks} 项服务器配置，发现 {dashboard.criticalFindings} 项需要优先处理的问题。</p>
+            <div className="score-row"><strong>{dashboard.score}</strong><span>/ 100<br /><small>{dashboard.coverageIssues.length ? '仅基于已完成的检查' : `较昨日提升 ${Math.max(0, dashboard.score - dashboard.previousScore)} 分`}</small></span></div>
+          </div>
+          <div className="orbit" aria-label={`安全评分 ${dashboard.score} 分`} style={{ '--score': `${dashboard.score * 3.6}deg` } as React.CSSProperties}>
+            <span>{dashboard.score}</span><small>安全分</small>
+          </div>
+        </article>
+
+        {dashboard.coverageIssues.length > 0 && <article className="coverage-alert" role="status"><ShieldAlert size={19} /><div><strong>{dashboard.coverageIssues.length} 台设备的检查不完整</strong><p>安全分只反映已成功运行的确定性检查，不能视为全量安全分。</p><div className="coverage-list">{dashboard.coverageIssues.map((issue) => <details key={issue.deviceId}><summary>{issue.deviceName} · {issue.completedChecks}/{issue.checks} 项完成（{issue.coveragePercent}%）</summary><ul>{issue.errors.map((error) => <li key={error}>{error}</li>)}</ul></details>)}</div></div></article>}
+
+        <div className="metric-grid">
+          <Metric icon={Server} label="在线设备" value={`${dashboard.devicesOnline}/${dashboard.devicesTotal}`} detail={dashboard.devicesTotal === 0 ? '尚未接入 Agent' : dashboard.devicesOnline === dashboard.devicesTotal ? '所有 Agent 工作正常' : `${dashboard.devicesTotal - dashboard.devicesOnline} 台需要检查连接`} />
+          <Metric icon={TriangleAlert} label="待处理风险" value={String(dashboard.openFindings)} detail={`${dashboard.criticalFindings} 项需要优先处理`} warning />
+          <Metric icon={Clock3} label="下次扫描" value={dashboard.nextScan} detail={`上次：${dashboard.lastScan}`} />
+        </div>
+
+        <div className="section-heading">
+          <div><p className="eyebrow">需要关注</p><h2>妙盾发现了 {deviceFindings.length} 个变化</h2></div>
+          <button className="text-button" onClick={() => onSection('findings')}>查看全部 <ChevronRight size={14} /></button>
+        </div>
+        <div className="finding-list">
+          {deviceFindings.slice(0, 3).map((finding) => <FindingRow finding={finding} key={finding.id} onClick={() => onFinding(finding)} />)}
+        </div>
+      </section>
+      <AssistantPanel deviceId={selectedDeviceId} finding={deviceFindings[0]} onFinding={onFinding} />
+    </div>
+  );
+}
+
+function Metric({ icon: Icon, label, value, detail, warning = false }: { icon: typeof Server; label: string; value: string; detail: string; warning?: boolean }) {
+  return <article className="metric-card"><span className={warning ? 'metric-icon warning' : 'metric-icon'}><Icon size={17} /></span><div><p>{label}</p><strong>{value}</strong><small>{detail}</small></div></article>;
+}
+
+function FindingRow({ finding, onClick }: { finding: Finding; onClick: () => void }) {
+  return (
+    <button className="finding-card" onClick={onClick}>
+      <span className={`severity ${finding.severity}`}>{severityName[finding.severity]}</span>
+      <div className="finding-copy"><h3>{finding.title}</h3><p>{finding.summary}</p></div>
+      <span className="row-action">{finding.remediation ? '查看修复计划' : '查看证据'}<ChevronRight size={14} /></span>
+    </button>
+  );
+}
+
+function AssistantPanel({ deviceId, finding, onFinding }: { deviceId: string; finding?: Finding; onFinding: (finding: Finding) => void }) {
+  const [prompt, setPrompt] = useState('');
+  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+  const [thinking, setThinking] = useState(false);
+  async function submit(text: string) {
+    if (!text.trim()) return;
+    const message = text.trim();
+    setMessages((items) => [...items, { role: 'user', text: message }]);
+    setPrompt('');
+    setThinking(true);
+    try {
+      const reply = await chatAI(message, deviceId, finding ? [finding.id] : []);
+      setMessages((items) => [...items, { role: 'assistant', text: reply }]);
+    } catch (cause) {
+      setMessages((items) => [...items, { role: 'assistant', text: cause instanceof Error ? cause.message : '暂时无法连接 AI 模型。' }]);
+    } finally {
+      setThinking(false);
+    }
+  }
+  return (
+    <aside className="assistant-panel">
+      <div className="assistant-heading"><span className="assistant-mark"><Sparkles size={17} /></span><div><h2>妙盾 Agent</h2><p><span className="status-dot" />随时可以协助</p></div></div>
+      <div className="agent-message">
+        <p>今天的扫描已经完成。{finding ? `最值得先处理的是“${finding.title}”，我可以先解释原因或展示安全修复计划。` : '当前没有需要优先处理的风险。'}</p>
+        {messages.map((message, index) => <div className={`mini-message ${message.role}`} key={`${message.role}-${index}`}><strong>{message.role === 'user' ? '你' : '妙盾'}</strong><p>{message.text}</p></div>)}
+        {thinking && <div className="mini-message assistant"><strong>妙盾</strong><p><LoaderCircle className="spin" size={14} /> 正在基于最少必要证据分析…</p></div>}
+        <div className="suggestion-list">
+          <button onClick={() => finding && void submit(`解释“${finding.title}”的判断依据与实际影响`)}>解释最高风险</button>
+          <button onClick={() => finding && onFinding(finding)}>生成安全修复计划</button>
+          <button onClick={() => void submit('总结本周服务器发生的安全变化')}>本周发生了什么？</button>
+        </div>
+      </div>
+      <div className="guardrail-note"><LockKeyhole size={15} /><div><strong>经你授权才行动</strong><p>执行前展示具体变更、影响和回滚方案。</p></div></div>
+      <form className="prompt-box" onSubmit={(event) => { event.preventDefault(); void submit(prompt); }}>
+        <label htmlFor="prompt">与妙盾讨论这台服务器</label>
+        <textarea id="prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：为什么 8080 端口突然开放了？" rows={3} />
+        <div><span>AI 仅获取最少必要的结构化信息</span><button type="submit" aria-label="发送" disabled={thinking}><ArrowUp size={15} /></button></div>
+      </form>
+    </aside>
+  );
+}
+
+function FindingsView({ findings, devices, onFinding }: { findings: Finding[]; devices: DashboardSnapshot['devices']; onFinding: (finding: Finding) => void }) {
+  const [severity, setSeverity] = useState<'all' | Severity>('all');
+  const [deviceId, setDeviceId] = useState('all');
+  const filtered = findings.filter((finding) => (severity === 'all' || finding.severity === severity) && (deviceId === 'all' || finding.deviceId === deviceId));
+  return (
+    <div className="page-surface">
+      <div className="filter-bar">
+        <div className="segmented-control">{(['all', 'critical', 'high', 'medium', 'low'] as const).map((item) => <button className={severity === item ? 'selected' : ''} onClick={() => setSeverity(item)} key={item}>{item === 'all' ? '全部' : severityName[item]}</button>)}</div>
+        <select value={deviceId} onChange={(event) => setDeviceId(event.target.value)} aria-label="筛选设备"><option value="all">所有设备</option>{devices.map((device) => <option value={device.id} key={device.id}>{device.name}</option>)}</select>
+      </div>
+      <div className="table-heading"><span>风险</span><span>设备</span><span>发现时间</span><span>状态</span></div>
+      <div className="risk-table">{filtered.map((finding) => (
+        <button className="risk-row" key={finding.id} onClick={() => onFinding(finding)}>
+          <span className={`severity ${finding.severity}`}>{severityName[finding.severity]}</span>
+          <span className="risk-main"><strong>{finding.title}</strong><small>{finding.summary}</small></span>
+          <span>{devices.find((device) => device.id === finding.deviceId)?.hostname ?? finding.deviceId}</span>
+          <span>{finding.detectedAt}</span><span className="status-label">待处理</span><ChevronRight size={15} />
+        </button>
+      ))}</div>
+    </div>
+  );
+}
+
+function DevicesView({ dashboard, selectedDeviceId, onSelect, onEnroll }: { dashboard: DashboardSnapshot; selectedDeviceId: string; onSelect: (id: string) => void; onEnroll: () => void }) {
+  return (
+    <div className="page-surface">
+      <div className="surface-heading"><div><p>通过一次性注册码安全连接服务器，Agent 无需开放入站端口。</p></div><button className="primary-button" onClick={onEnroll}><Plus size={15} />添加设备</button></div>
+      <div className="device-grid">{dashboard.devices.map((device) => (
+        <button className={selectedDeviceId === device.id ? 'device-tile selected' : 'device-tile'} key={device.id} onClick={() => onSelect(device.id)}>
+          <div className="device-tile-top"><span className="server-icon"><Server size={19} /></span><span className={`device-status ${device.status}`}><span />{device.status === 'online' ? '在线' : '离线'}</span></div>
+          <h3>{device.name}</h3><p>{device.hostname}</p>
+          <dl><div><dt>系统</dt><dd>{device.os}</dd></div><div><dt>架构</dt><dd>{device.arch}</dd></div><div><dt>Agent</dt><dd>{device.version}</dd></div><div><dt>安全分</dt><dd>{device.score}</dd></div></dl>
+          <footer><span>{device.findings} 个待处理风险</span><span>{device.lastSeen}</span></footer>
+        </button>
+      ))}</div>
+    </div>
+  );
+}
+
+function PoliciesView({ policies, deviceId, onUpdate, onEmergency }: { policies: DefensePolicy[]; deviceId: string; onUpdate: (policy: DefensePolicy) => void; onEmergency: (active: boolean) => void }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<DefensePolicy | null>(null);
+  const [allowlistText, setAllowlistText] = useState('');
+  const devicePolicies = policies.filter((policy) => !policy.deviceId || policy.deviceId === deviceId);
+  const emergencyActive = devicePolicies.some((policy) => policy.emergencyStop);
+  const autoContainActive = devicePolicies.some((policy) => policy.enabled && policy.mode === 'auto_contain') && !emergencyActive;
+  async function update(policy: DefensePolicy) {
+    setSaving(policy.id); setPolicyError(null);
+    try { onUpdate(await saveDefensePolicy(deviceId, policy)); return true; }
+    catch (cause) { setPolicyError(cause instanceof Error ? cause.message : '保存策略失败'); return false; }
+    finally { setSaving(null); }
+  }
+  async function emergency() {
+    setSaving('emergency'); setPolicyError(null);
+    try { await setEmergencyStop(deviceId, !emergencyActive); onEmergency(!emergencyActive); }
+    catch (cause) { setPolicyError(cause instanceof Error ? cause.message : '更新紧急停止状态失败'); }
+    finally { setSaving(null); }
+  }
+  function edit(policy: DefensePolicy) {
+    setEditing({
+      ...policy,
+      failureThreshold: policy.failureThreshold ?? 10,
+      window: policy.window ?? '5m',
+      banDuration: policy.banDuration ?? `${policy.ttlMinutes || 15}m`,
+      maxBansPerHour: policy.maxBansPerHour ?? 10,
+      allowlist: policy.allowlist ?? [],
+    });
+    setAllowlistText((policy.allowlist ?? []).join('\n'));
+    setPolicyError(null);
+  }
+  async function savePolicy(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editing) return;
+    const allowlist = allowlistText.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean);
+    if (editing.mode === 'auto_contain' && !allowlist.some((value) => !/^127\.|^::1(?:\/|$)/.test(value))) {
+      setPolicyError('开启自动封禁前，必须填写至少一个非回环的管理员 IP 或 CIDR，防止将自己锁在服务器外。');
+      return;
+    }
+    if (await update({ ...editing, allowlist })) setEditing(null);
+  }
+  return (
+    <div className="page-surface">
+      <div className="defense-banner"><ShieldAlert size={21} /><div><strong>{emergencyActive ? '自动防御已紧急停止' : autoContainActive ? '自动防御正按预授权策略运行' : '自动防御默认关闭'}</strong><p>{emergencyActive ? '不会创建新动作，所有尚未开始的自动动作已取消；已经执行的限时封禁仍会按原定 TTL 自动解除。' : '只有确定性规则可以触发预授权、可逆且带有效期的动作。AI 不能自行扩大权限。'}</p></div><button className="danger-outline" onClick={() => void emergency()} disabled={!deviceId || saving === 'emergency'}>{saving === 'emergency' && <LoaderCircle className="spin" size={14} />}{emergencyActive ? '恢复自动防御' : '紧急停止'}</button></div>
+      {policyError && <p className="form-error" role="alert">{policyError}</p>}
+      <div className="policy-list">{devicePolicies.length === 0 && <div className="empty-state"><Server size={20} /><p>连接设备后即可配置防御策略。</p></div>}{devicePolicies.map((policy) => (
+        <article className="policy-card" key={policy.id}>
+          <div className="policy-main"><div className="policy-title"><span className="policy-icon"><Radar size={18} /></span><div><h3>{policy.name}</h3><p>{policy.description}</p></div></div><div className="policy-controls">{policy.editable !== false && <button className="text-button" onClick={() => editing?.id === policy.id ? setEditing(null) : edit(policy)}>{editing?.id === policy.id ? '收起' : '配置'}</button>}<button className={policy.enabled ? 'switch on' : 'switch'} onClick={() => void update({ ...policy, enabled: !policy.enabled })} aria-label={policy.enabled ? '关闭策略' : '开启策略'} disabled={policy.editable === false || saving === policy.id}><span /></button></div></div>
+          <div className="policy-rules"><div><small>触发条件</small><strong>{policy.trigger}</strong></div><ChevronRight size={14} /><div><small>响应动作</small><strong>{policy.action}</strong></div><ChevronRight size={14} /><div><small>自动恢复</small><strong>{policy.ttlMinutes ? `${policy.ttlMinutes} 分钟后` : '不适用'}</strong></div></div>
+          {editing?.id === policy.id && <form className="policy-editor" onSubmit={(event) => void savePolicy(event)}>
+            <div className="policy-editor-grid">
+              <label><span>响应模式</span><select value={editing.mode} onChange={(event) => setEditing({ ...editing, mode: event.target.value as DefensePolicy['mode'] })}><option value="recommend">只建议（需人工确认）</option><option value="auto_contain">自动临时封禁</option></select></label>
+              <label><span>失败登录阈值</span><input type="number" min={3} max={10000} required value={editing.failureThreshold} onChange={(event) => setEditing({ ...editing, failureThreshold: Number(event.target.value) })} /></label>
+              <label><span>统计窗口</span><input required value={editing.window} onChange={(event) => setEditing({ ...editing, window: event.target.value })} placeholder="5m" /><small>10s 至 24h</small></label>
+              <label><span>封禁时长</span><input required value={editing.banDuration} onChange={(event) => setEditing({ ...editing, banDuration: event.target.value })} placeholder="15m" /><small>1m 至 24h，到期自动解除</small></label>
+              <label><span>每小时最多封禁</span><input type="number" min={1} max={1000} required value={editing.maxBansPerHour} onChange={(event) => setEditing({ ...editing, maxBansPerHour: Number(event.target.value) })} /></label>
+              <label className="span-two"><span>管理员保护地址（IP / CIDR）</span><textarea rows={3} value={allowlistText} onChange={(event) => setAllowlistText(event.target.value)} placeholder={'203.0.113.8\n10.20.0.0/16'} /><small>每行一个。自动封禁前至少需要一个非回环管理地址，以防自锁；请勿填写过宽网段。</small></label>
+            </div>
+            <div className="policy-editor-note"><ShieldCheck size={15} /><p><strong>AI 不参与触发判定。</strong>只有 SSH 失败日志的确定性规则能创建限时封禁，动作全程审计。</p></div>
+            <div className="form-actions"><button type="button" className="secondary-button" onClick={() => setEditing(null)}>取消</button><button className="primary-button" disabled={saving === policy.id}>{saving === policy.id ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}保存防御策略</button></div>
+          </form>}
+          <footer><span className={`mode-badge ${policy.mode}`}>{policy.mode === 'auto_contain' ? '自动遏制' : policy.mode === 'recommend' ? '建议处置' : '仅观察'}</span>{saving === policy.id && <span><LoaderCircle className="spin" size={13} />保存中</span>}{policy.lastTriggered && <span>最近触发：{policy.lastTriggered}</span>}</footer>
+        </article>
+      ))}</div>
+    </div>
+  );
+}
+
+function AuditView({ dashboard, onChanged }: { dashboard: DashboardSnapshot; onChanged: (message: string) => Promise<void> }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  async function confirm(id: string) {
+    setBusy(id); setActionError(null);
+    try { await confirmAction(id); await onChanged('已发送 SSH 保留确认，Agent 正在解除安全回滚计时器'); }
+    catch (cause) { setActionError(cause instanceof Error ? cause.message : '确认失败'); }
+    finally { setBusy(null); }
+  }
+  async function rollback(id: string) {
+    setBusy(id); setActionError(null);
+    try { await rollbackAction(id); await onChanged('回滚已加入队列，完成后会写入审计记录'); }
+    catch (cause) { setActionError(cause instanceof Error ? cause.message : '回滚失败'); }
+    finally { setBusy(null); }
+  }
+  const visibleActions = dashboard.actions.filter((item) => item.status !== 'draft').slice(0, 20);
+  const attentionActions = dashboard.actions.filter((item) => item.status === 'awaiting_confirmation' || item.status === 'rolling_back' || item.status === 'indeterminate').length;
+  return (
+    <div className="page-surface audit-surface">
+      <div className="audit-summary"><Metric icon={Activity} label="审计事件" value={String(dashboard.audit.length)} detail="管理员动作均有记录" /><Metric icon={Eye} label="安全观察" value={String(dashboard.securityEvents.length)} detail="未验证，不触发自动处置" /><Metric icon={RotateCcw} label="待人工关注" value={String(attentionActions)} detail="含待确认、回滚及未知结果" /></div>
+      <section className="security-observations" aria-labelledby="security-observations-title">
+        <div className="section-heading compact"><div><p className="eyebrow">只读线索</p><h2 id="security-observations-title">安全观察</h2><p>来自设备日志的未验证线索独立展示，不参与自动防御判定。</p></div></div>
+        <div className="observation-list">{dashboard.securityEvents.length ? dashboard.securityEvents.map((item) => {
+          const capacity = item.type === 'defense_correlation_capacity_degraded';
+          const oversized = item.type === 'ssh_auth_log_line_oversized_untrusted';
+          const device = dashboard.devices.find((candidate) => candidate.id === item.deviceId);
+          const title = capacity ? '关联窗口容量保护已触发' : oversized ? '超长认证日志行已安全丢弃' : '发现未通过可信解析的认证线索';
+          const detail = capacity
+            ? '安全关联窗口达到保护容量，请检查异常流量与策略健康状态。系统不会据此直接执行防御动作。'
+            : oversized
+              ? '该日志行超过安全解析上限，Agent 已丢弃并继续读取后续日志，避免异常输入放大资源占用。'
+              : '日志内容未满足可信解析规则，仅作为排障线索保留；它不会增加自动封禁计数。';
+          return <article className={`observation-row ${capacity ? 'critical' : oversized ? 'warning' : 'neutral'}`} key={`${item.deviceId}:${item.id}`}>
+            <span className="observation-icon">{capacity ? <ShieldAlert size={17} /> : oversized ? <TriangleAlert size={17} /> : <Eye size={17} />}</span>
+            <div className="observation-copy"><header><strong>{title}</strong><span className="observation-badge">{capacity ? '系统健康 · 不会自动处置' : '未验证 · 不会自动处置'}</span></header><p>{detail}</p><footer><span>设备 {device?.name ?? item.deviceId}</span><span>来源 {maskSourceIP(item.sourceIp)}</span><time>{item.occurredAt}</time></footer></div>
+          </article>;
+        }) : <p className="empty-action-records">当前没有需要管理员查看的安全观察。</p>}</div>
+      </section>
+      <section className="action-center" aria-label="动作状态与回滚">
+        <div className="section-heading compact"><div><p className="eyebrow">动作控制</p><h2>确认、追踪或回滚已批准的变更</h2></div></div>
+        {actionError && <p className="form-error" role="alert">{actionError}</p>}
+        <div className="action-records">{visibleActions.length ? visibleActions.map((item) => {
+          const awaiting = item.status === 'awaiting_confirmation';
+          const indeterminate = item.status === 'indeterminate';
+          const running = ['approved', 'executing', 'confirming', 'rolling_back'].includes(item.status);
+          return <article className={awaiting || indeterminate ? `action-record urgent${indeterminate ? ' indeterminate' : ''}` : 'action-record'} key={item.id}>
+            <span className="action-record-icon">{awaiting || indeterminate ? <ShieldAlert size={17} /> : running ? <LoaderCircle className="spin" size={17} /> : item.status === 'succeeded' ? <CheckCircle2 size={17} /> : <RotateCcw size={17} />}</span>
+            <div><header><strong>{item.title}</strong><span className={`action-status ${item.status}`}>{actionStatusText(item.status)}</span></header><p>{awaiting ? `请先从另一个终端验证 SSH 仍能登录，并在 ${item.confirmBy ?? '安全期限内'}完成保留确认；否则 Helper 自动恢复原配置。` : indeterminate ? 'Controller 没有在安全期限内收到可信设备回执。请通过带外终端、Helper 审计和下一次扫描核验真实状态；系统不会自动重试。' : item.error || `最近更新：${item.updatedAt}`}</p><small>设备 {item.deviceId} · 动作 {item.id}</small></div>
+            <div className="action-record-buttons">{awaiting && <button className="primary-button" disabled={busy === item.id} onClick={() => void confirm(item.id)}>{busy === item.id ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}确认 SSH 可用并保留</button>}{item.canRollback && (item.status === 'succeeded' || item.status === 'failed' || awaiting) && <button className="secondary-button" disabled={busy === item.id} onClick={() => void rollback(item.id)}><RotateCcw size={14} />立即回滚</button>}</div>
+          </article>;
+        }) : <p className="empty-action-records">当前没有需要确认或可回滚的动作。</p>}</div>
+      </section>
+      <div className="timeline">{dashboard.audit.map((event) => (
+        <article className="timeline-item" key={event.id}><span className={`timeline-icon ${event.type}`}>{event.type === 'scan' ? <ScanSearch size={15} /> : event.type === 'action' ? <Check size={15} /> : <Activity size={15} />}</span><div><header><strong>{event.title}</strong><time>{event.timestamp}</time></header><p>{event.detail}</p><footer>{event.device}<span>·</span>{event.actor}<span className={`result ${event.result}`}>{event.result === 'success' ? '成功' : event.result === 'pending' ? '等待中' : '已阻止'}</span></footer></div></article>
+      ))}</div>
+    </div>
+  );
+}
+
+function maskSourceIP(source?: string): string {
+  if (!source) return '无来源地址';
+  const ipv4 = source.split('.');
+  if (ipv4.length === 4 && ipv4.every((part) => /^\d{1,3}$/.test(part))) return `${ipv4[0]}.${ipv4[1]}.*.*`;
+  if (source.includes(':')) {
+    const visible = source.split(':').filter(Boolean).slice(0, 2).join(':');
+    return visible ? `${visible}:…` : 'IPv6（已隐藏）';
+  }
+  return '已隐藏';
+}
+
+function actionStatusText(status: DashboardSnapshot['actions'][number]['status']) {
+  return ({ draft: '待审批', approved: '已排队', executing: '执行中', awaiting_confirmation: '等待连接确认', confirming: '确认中', succeeded: '已成功', failed: '执行失败', rolling_back: '回滚中', rolled_back: '已回滚', cancelled: '已取消', indeterminate: '需人工核验' } as const)[status];
+}
+
+function SettingsView({ settings, notifications, schedules, deviceId, onScheduleUpdate, onSaved, onNotificationsSaved, onLogout }: { settings: AISettings; notifications: NotificationSettings; schedules: ScanSchedule[]; deviceId: string; onScheduleUpdate: (schedule: ScanSchedule) => void; onSaved: (settings: AISettings) => void; onNotificationsSaved: (settings: NotificationSettings) => void; onLogout: () => Promise<void> }) {
+  const [form, setForm] = useState<AISettings & { apiKey?: string }>({ ...settings, apiKey: '' });
+  const [notificationForm, setNotificationForm] = useState({
+    ...notifications,
+    webhookSecret: '',
+    smtpPassword: '',
+    clearWebhookSecret: false,
+    clearSmtpPassword: false,
+    smtpToText: notifications.smtpTo.join(', '),
+  });
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notificationSaving, setNotificationSaving] = useState(false);
+  const [notificationTesting, setNotificationTesting] = useState(false);
+  const [scheduleSaving, setScheduleSaving] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [notificationResult, setNotificationResult] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  async function testConnection() {
+    setTesting(true); setTestResult(null); setSettingsError(null);
+    try { const result = await testAISettings(form); setTestResult(`连接成功 · ${result.model} · ${result.latencyMs} ms`); }
+    catch (cause) { setTestResult(cause instanceof Error ? cause.message : '连接失败'); }
+    finally { setTesting(false); }
+  }
+  async function save(event: React.FormEvent) {
+    event.preventDefault(); setSaving(true); setSettingsError(null);
+    try { onSaved(await saveAISettings(form)); setForm((current) => ({ ...current, apiKey: '' })); }
+    catch (cause) { setSettingsError(cause instanceof Error ? cause.message : '保存 AI 设置失败'); }
+    finally { setSaving(false); }
+  }
+  async function toggleSchedule(every: '24h' | '168h') {
+    if (!deviceId) { setSettingsError('请先连接并选择一台设备'); return; }
+    setScheduleSaving(every); setSettingsError(null);
+    try {
+      const existing = schedules.find((schedule) => schedule.deviceId === deviceId && schedule.every.startsWith(every));
+      onScheduleUpdate(existing ? await updateSchedule(existing, !existing.enabled) : await createSchedule(deviceId, every, true));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : '更新扫描计划失败');
+    } finally {
+      setScheduleSaving(null);
+    }
+  }
+  async function saveNotifications(event: React.FormEvent) {
+    event.preventDefault(); setNotificationSaving(true); setNotificationError(null); setNotificationResult(null);
+    try {
+      const saved = await saveNotificationSettings({
+        ...notificationForm,
+        smtpTo: notificationForm.smtpToText.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean),
+      });
+      onNotificationsSaved(saved);
+      setNotificationForm((current) => ({
+        ...current,
+        ...saved,
+        webhookSecret: '',
+        smtpPassword: '',
+        clearWebhookSecret: false,
+        clearSmtpPassword: false,
+        smtpToText: saved.smtpTo.join(', '),
+      }));
+      setNotificationResult('配置已保存，可以发送测试通知');
+    } catch (cause) {
+      setNotificationError(cause instanceof Error ? cause.message : '保存通知设置失败');
+    } finally {
+      setNotificationSaving(false);
+    }
+  }
+  async function sendNotificationTest() {
+    setNotificationTesting(true); setNotificationError(null); setNotificationResult(null);
+    try { await testNotifications(); setNotificationResult('测试通知已成功送达已启用的渠道'); }
+    catch (cause) { setNotificationError(cause instanceof Error ? cause.message : '测试通知发送失败'); }
+    finally { setNotificationTesting(false); }
+  }
+  const daily = schedules.find((schedule) => schedule.deviceId === deviceId && schedule.every.startsWith('24h'));
+  const weekly = schedules.find((schedule) => schedule.deviceId === deviceId && schedule.every.startsWith('168h'));
+  return (
+    <div className="settings-layout">
+      <form className="settings-card" onSubmit={save}>
+        <div className="settings-heading"><span className="settings-icon"><Sparkles size={18} /></span><div><h2>AI 模型</h2><p>由你提供 API。扫描与规则引擎不依赖模型也能运行。</p></div></div>
+        <div className="form-grid">
+          <label><span>兼容协议</span><select value={form.protocol} onChange={(event) => setForm({ ...form, protocol: event.target.value as AISettings['protocol'] })}><option value="openai_responses">OpenAI Responses</option><option value="openai_chat">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
+          <label><span>模型名称</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="gpt-5.4" /></label>
+          <label className="span-two"><span>API Base URL</span><input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} inputMode="url" placeholder="https://api.openai.com/v1" /></label>
+          <label className="span-two"><span>API Key</span><div className="secret-input"><KeyRound size={15} /><input type="password" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} placeholder={settings.hasKey ? `${settings.keyHint}（留空保持不变）` : '输入 API Key'} /></div><small>由本机主密钥加密保存，特权 Helper 无法读取。</small></label>
+          <label className="span-two"><span>发送给模型的信息</span><input value="最少信息：仅相关发现与必要证据" readOnly aria-readonly="true" /><small>首版固定采用最少信息模式；服务器文本会作为不可信数据与系统指令隔离。</small></label>
+        </div>
+        <div className="form-actions"><button type="button" className="secondary-button" onClick={() => void testConnection()} disabled={testing}>{testing ? <LoaderCircle className="spin" size={15} /> : <TestTube2 size={15} />}测试连接</button><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}保存设置</button>{testResult && <span className="test-result">{testResult}</span>}</div>
+        {settingsError && <p className="form-error" role="alert">{settingsError}</p>}
+      </form>
+      <form className="settings-card notification-settings" onSubmit={saveNotifications}>
+        <div className="settings-heading"><span className="settings-icon"><Send size={18} /></span><div><h2>安全通知</h2><p>扫描发现重要变化或自动防御触发后，通过你自己的渠道发送报告。</p></div></div>
+        <div className="notification-channel-grid">
+          <section className={notificationForm.webhookEnabled ? 'channel-panel enabled' : 'channel-panel'}>
+            <header><span className="channel-icon"><Webhook size={17} /></span><div><strong>Webhook</strong><p>签名 JSON 事件，适合接入告警平台或自动化流程。</p></div><button type="button" className={notificationForm.webhookEnabled ? 'switch on' : 'switch'} onClick={() => setNotificationForm((current) => ({ ...current, webhookEnabled: !current.webhookEnabled }))} aria-label={notificationForm.webhookEnabled ? '关闭 Webhook 通知' : '开启 Webhook 通知'}><span /></button></header>
+            {notificationForm.webhookEnabled && <div className="channel-fields">
+              <label><span>Webhook URL</span><input type="url" inputMode="url" required value={notificationForm.webhookUrl} onChange={(event) => setNotificationForm((current) => ({ ...current, webhookUrl: event.target.value }))} placeholder="https://alerts.example.com/witshield" /></label>
+              <label><span>HMAC 签名密钥</span><div className="secret-input"><KeyRound size={15} /><input type="password" minLength={16} required={!notificationForm.webhookSecretConfigured} disabled={notificationForm.clearWebhookSecret} value={notificationForm.webhookSecret} onChange={(event) => setNotificationForm((current) => ({ ...current, webhookSecret: event.target.value, clearWebhookSecret: false }))} placeholder={notificationForm.webhookSecretConfigured ? '已安全保存（留空保持不变）' : '至少 16 个字符'} /></div></label>
+              {notificationForm.webhookSecretConfigured && <label className="clear-secret"><input type="checkbox" checked={notificationForm.clearWebhookSecret} onChange={(event) => setNotificationForm((current) => ({ ...current, clearWebhookSecret: event.target.checked, webhookEnabled: event.target.checked ? false : current.webhookEnabled, webhookSecret: event.target.checked ? '' : current.webhookSecret }))} /><span>清除已保存的签名密钥（同时关闭渠道）</span></label>}
+              <small>请求携带时间戳与 SHA-256 签名；禁用代理和重定向，公网地址必须使用 HTTPS。</small>
+            </div>}
+          </section>
+          <section className={notificationForm.smtpEnabled ? 'channel-panel enabled' : 'channel-panel'}>
+            <header><span className="channel-icon"><Mail size={17} /></span><div><strong>电子邮件</strong><p>通过你的 SMTP 服务向一个或多个收件人发送报告。</p></div><button type="button" className={notificationForm.smtpEnabled ? 'switch on' : 'switch'} onClick={() => setNotificationForm((current) => ({ ...current, smtpEnabled: !current.smtpEnabled }))} aria-label={notificationForm.smtpEnabled ? '关闭邮件通知' : '开启邮件通知'}><span /></button></header>
+            {notificationForm.smtpEnabled && <div className="channel-fields smtp-fields">
+              <label><span>SMTP 主机</span><input required value={notificationForm.smtpHost} onChange={(event) => setNotificationForm((current) => ({ ...current, smtpHost: event.target.value }))} placeholder="smtp.example.com" /></label>
+              <label><span>端口</span><input type="number" min={1} max={65535} required value={notificationForm.smtpPort} onChange={(event) => setNotificationForm((current) => ({ ...current, smtpPort: Number(event.target.value) }))} /></label>
+              <label><span>用户名</span><input autoComplete="username" value={notificationForm.smtpUsername} onChange={(event) => setNotificationForm((current) => ({ ...current, smtpUsername: event.target.value }))} placeholder="alerts@example.com" /></label>
+              <label><span>密码</span><div className="secret-input"><KeyRound size={15} /><input type="password" autoComplete="new-password" required={Boolean(notificationForm.smtpUsername) && !notificationForm.smtpPasswordConfigured} disabled={notificationForm.clearSmtpPassword} value={notificationForm.smtpPassword} onChange={(event) => setNotificationForm((current) => ({ ...current, smtpPassword: event.target.value, clearSmtpPassword: false }))} placeholder={notificationForm.smtpPasswordConfigured ? '已安全保存（留空保持不变）' : 'SMTP 密码'} /></div></label>
+              {notificationForm.smtpPasswordConfigured && <label className="clear-secret span-two"><input type="checkbox" checked={notificationForm.clearSmtpPassword} onChange={(event) => setNotificationForm((current) => ({ ...current, clearSmtpPassword: event.target.checked, smtpEnabled: event.target.checked ? false : current.smtpEnabled, smtpPassword: event.target.checked ? '' : current.smtpPassword }))} /><span>清除已保存的 SMTP 密码（同时关闭渠道）</span></label>}
+              <label><span>发件人</span><input type="email" required value={notificationForm.smtpFrom} onChange={(event) => setNotificationForm((current) => ({ ...current, smtpFrom: event.target.value }))} placeholder="alerts@example.com" /></label>
+              <label><span>收件人</span><input required value={notificationForm.smtpToText} onChange={(event) => setNotificationForm((current) => ({ ...current, smtpToText: event.target.value }))} placeholder="admin@example.com, sec@example.com" /></label>
+              <small className="span-two">465 端口使用隐式 TLS；其他公网 SMTP 必须支持 STARTTLS。凭据仅加密保存在控制器。</small>
+            </div>}
+          </section>
+        </div>
+        <div className="form-actions"><button type="button" className="secondary-button" onClick={() => void sendNotificationTest()} disabled={notificationTesting || !notifications.configured || (!notifications.webhookEnabled && !notifications.smtpEnabled)}>{notificationTesting ? <LoaderCircle className="spin" size={15} /> : <TestTube2 size={15} />}测试已保存配置</button><button className="primary-button" disabled={notificationSaving}>{notificationSaving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}保存通知渠道</button>{notificationResult && <span className="test-result" role="status">{notificationResult}</span>}</div>
+        {notificationError && <p className="form-error" role="alert">{notificationError}</p>}
+      </form>
+      <section className="settings-card"><div className="settings-heading"><span className="settings-icon"><Clock3 size={18} /></span><div><h2>扫描计划</h2><p>按设备设置固定间隔；Agent 离线时任务会排队，恢复连接后执行。</p></div></div><div className="schedule-row"><div><strong>每日安全扫描</strong><p>每 24 小时 · 软件包、配置、端口与账号{daily?.nextRunAt ? ` · 下次 ${daily.nextRunAt}` : ''}</p></div><button className={daily?.enabled ? 'switch on' : 'switch'} onClick={() => void toggleSchedule('24h')} aria-label={daily?.enabled ? '关闭每日安全扫描' : '开启每日安全扫描'} disabled={!deviceId || scheduleSaving === '24h'}><span /></button></div><div className="schedule-row"><div><strong>每周基线检查</strong><p>每 7 天 · 运行同一套确定性检查并保留趋势{weekly?.nextRunAt ? ` · 下次 ${weekly.nextRunAt}` : ''}</p></div><button className={weekly?.enabled ? 'switch on' : 'switch'} onClick={() => void toggleSchedule('168h')} aria-label={weekly?.enabled ? '关闭每周基线检查' : '开启每周基线检查'} disabled={!deviceId || scheduleSaving === '168h'}><span /></button></div></section>
+      <section className="settings-card danger-zone"><div className="settings-heading"><span className="settings-icon"><LockKeyhole size={18} /></span><div><h2>管理员会话</h2><p>当前为单管理员模式。设备凭据与管理员会话相互隔离。</p></div></div><button className="secondary-button" onClick={onLogout}><LogOut size={15} />退出登录</button></section>
+    </div>
+  );
+}
+
+function FindingDrawer({ finding, onClose, onPlan, onApproved }: { finding: Finding; onClose: () => void; onPlan: (plan: ActionPlan) => void; onApproved: () => void }) {
+  const [approving, setApproving] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [plan, setPlan] = useState<ActionPlan | undefined>(finding.remediation);
+  const [planError, setPlanError] = useState<string | null>(null);
+  async function generate() {
+    setGenerating(true); setPlanError(null);
+    try { const result = await createActionForFinding(finding); setPlan(result); onPlan(result); }
+    catch (cause) { setPlanError(cause instanceof Error ? cause.message : '无法生成安全修复计划'); }
+    finally { setGenerating(false); }
+  }
+  async function approve() {
+    if (!plan || !confirmed) return;
+    setApproving(true);
+    try { await approveAction(plan.id, plan.approvalNonce); onApproved(); }
+    catch (cause) { setPlanError(cause instanceof Error ? cause.message : '批准失败'); }
+    finally { setApproving(false); }
+  }
+  return (
+    <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="finding-title">
+        <header><div><span className={`severity ${finding.severity}`}>{severityName[finding.severity]}</span><p>{finding.category} · {finding.detectedAt}</p></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
+        <div className="drawer-body"><h2 id="finding-title">{finding.title}</h2><p className="lead">{finding.summary}</p><section><h3>判断依据</h3><ul className="evidence-list">{finding.evidence.map((item) => <li key={item}><Check size={14} />{item}</li>)}</ul></section>
+          {plan ? <section className="plan-card"><div className="plan-heading"><div><p className="eyebrow">待你确认的修复计划</p><h3>{plan.title}</h3></div><span className={`plan-risk ${plan.risk}`}>{plan.risk === 'low' ? '低影响' : '需谨慎'}</span></div><p className="plan-checks-label">批准后由设备 Agent 强制执行这些前置检查；任一检查失败都不会修改系统：</p><div className="precheck-list">{plan.checks.map((check) => <span key={check}><ShieldCheck size={14} />{check}</span>)}</div>{plan.steps.map((step, index) => <article className="action-step" key={step.id}><span className="step-number">{index + 1}</span><div><h4>{step.title}</h4><pre>{step.preview}</pre><dl><div><dt>影响</dt><dd>{step.impact}</dd></div><div><dt>回滚</dt><dd>{step.rollback}</dd></div></dl></div></article>)}<label className="approval-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我已查看具体变更、影响和回滚方案，同意在设备端检查通过后执行这一次修复。</span></label></section> : <section className="empty-plan"><Eye size={20} /><div><h3>当前仅提供证据</h3><p>妙盾不会在没有明确修复方案和回滚步骤时执行操作。</p>{canCreateAction(finding) && <button className="secondary-button" onClick={() => void generate()} disabled={generating}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}生成安全修复计划</button>}</div></section>}
+          {planError && <p className="form-error" role="alert">{planError}</p>}
+        </div>
+        <footer className="drawer-footer"><button className="secondary-button" onClick={onClose}>暂不处理</button>{plan && <button className="primary-button" disabled={!confirmed || approving} onClick={() => void approve()}>{approving ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />}批准并执行</button>}</footer>
+      </aside>
+    </div>
+  );
+}
+
+function EnrollmentModal({ enrollment, onClose, onCopied }: { enrollment: { token: string; expiresAt: string } | null; onClose: () => void; onCopied: () => void }) {
+  const controllerUrl = typeof window !== 'undefined' ? window.location.origin : 'https://your-console.example';
+  const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+  const command = enrollment
+    ? `curl --proto '=https' --tlsv1.2 -fsSL https://github.com/witkitlab/witshield/releases/latest/download/install.sh | sudo env WITSHIELD_CONTROLLER_URL=${shellQuote(controllerUrl)} WITSHIELD_ENROLLMENT_TOKEN=${shellQuote(enrollment.token)} bash -s -- --mode agent`
+    : '';
+  async function copy() {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(command);
+    } else {
+      const field = document.createElement('textarea');
+      field.value = command;
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.appendChild(field);
+      field.select();
+      document.execCommand('copy');
+      field.remove();
+    }
+    onCopied();
+  }
+  return <div className="overlay centered" role="presentation"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="enroll-title"><header><span className="modal-icon"><Plus size={20} /></span><div><h2 id="enroll-title">添加一台服务器</h2><p>注册码只显示一次，并在 15 分钟后失效。</p></div><button className="icon-button" onClick={onClose} aria-label="关闭添加设备窗口"><X size={18} /></button></header>{enrollment ? <><ol className="install-steps"><li><span>1</span><div><strong>登录要保护的服务器</strong><p>使用具有 sudo 权限的账号。</p></div></li><li><span>2</span><div><strong>运行一行安装命令</strong><pre>{command}</pre><button className="copy-button" onClick={copy}><Copy size={14} />复制命令</button><p>这条命令含 15 分钟、单次使用的注册码，Shell 历史可能保留它；更严格的环境请改用文档中的 0600 token 文件方式。</p></div></li><li><span>3</span><div><strong>等待 Agent 出现在设备列表</strong><p>注册后将换取独立设备凭据，注册码立即作废。</p></div></li></ol><div className="security-note"><LockKeyhole size={15} />Agent 主动连接控制台，不需要开放服务器入站端口。</div></> : <div className="modal-loading"><LoaderCircle className="spin" />正在创建一次性注册码…</div>}</section></div>;
+}
+
+function AuthScreen({ mode, onReady }: { mode: 'setup' | 'login'; onReady: () => Promise<void> }) {
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [bootstrapToken, setBootstrapToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault(); setError(null);
+    if (mode === 'setup' && password !== confirm) return setError('两次输入的密码不一致');
+    if (password.length < 12) return setError('密码至少需要 12 个字符');
+    setBusy(true);
+    try { if (mode === 'setup') await bootstrapAdmin(username, password, bootstrapToken || undefined); else await login(username, password); await onReady(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : '操作失败'); }
+    finally { setBusy(false); }
+  }
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>妙盾</strong><small>WitShield AI</small></div></div><p className="eyebrow">开源服务器 AI Agent 智能守卫</p><h1>{mode === 'setup' ? '创建唯一管理员' : '欢迎回来'}</h1><p className="auth-intro">{mode === 'setup' ? '控制台首版采用单管理员模式。完成初始化后即可连接第一台服务器。' : '登录你的自建妙盾控制台。'}</p><form onSubmit={submit}><label><span>管理员名称</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} /></label>{mode === 'setup' && <><label><span>再次输入密码</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label><label><span>初始化令牌（如安装程序要求）</span><input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} /></label></>}{error && <p className="form-error">{error}</p>}<button className="primary-button auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LockKeyhole size={16} />}{mode === 'setup' ? '完成安全初始化' : '登录控制台'}</button></form><small className="auth-footnote">凭据只保存在你的服务器；妙盾没有公共账号中心。</small></section></main>;
+}
+
+function LoadingScreen() { return <main className="loading-screen"><span className="brand-mark"><ShieldCheck size={21} /></span><LoaderCircle className="spin" size={22} /><p>正在连接妙盾 Agent…</p></main>; }
+function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) { return <main className="loading-screen"><span className="error-mark"><X size={21} /></span><h1>暂时无法连接妙盾</h1><p>{message}</p><button className="primary-button" onClick={onRetry}><RefreshCw size={15} />重新连接</button></main>; }

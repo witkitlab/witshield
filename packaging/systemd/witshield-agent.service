@@ -1,0 +1,45 @@
+[Unit]
+Description=WitShield AI host agent (native full mode)
+Documentation=https://github.com/witkitlab/witshield
+Wants=network-online.target
+After=network-online.target
+After=witshield-controller.service
+Wants=witshield-helper.service
+After=witshield-helper.service
+
+[Service]
+Type=simple
+User=witshield-agent
+Group=witshield-agent
+SupplementaryGroups=witshield-helper
+EnvironmentFile=-/etc/witshield/agent.env
+# After successful enrollment, the one-time token file is securely removed;
+# later starts use the device credential persisted in the Agent state dir.
+ExecStart=/usr/local/bin/witshield-agent --consume-enrollment-token --helper-socket /run/witshield/helper.sock --helper-token-file /etc/witshield/helper.token
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=45s
+
+# Agent is networked but unprivileged. All root changes cross the narrow,
+# authenticated, typed-playbook helper boundary.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectKernelLogs=no
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/witshield-agent
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

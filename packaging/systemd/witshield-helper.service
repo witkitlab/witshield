@@ -1,0 +1,38 @@
+[Unit]
+Description=WitShield AI privileged typed-action helper
+Documentation=https://github.com/witkitlab/witshield
+Before=witshield-agent.service
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/libexec/witshield/witshield-helper --socket /run/witshield/helper.sock --token-file /etc/witshield/helper.token --group witshield-helper --journal-dir /var/lib/witshield-helper/ssh-rollbacks --receipt-dir /var/lib/witshield-helper/receipts
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+RuntimeDirectory=witshield
+RuntimeDirectoryMode=0750
+StateDirectory=witshield-helper
+StateDirectoryMode=0700
+
+# Helper intentionally performs a small set of root actions (apt, nftables,
+# SSH config and approved permissions), so ProtectSystem cannot be strict.
+# It accepts typed requests only over the authenticated local Unix socket.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

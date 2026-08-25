@@ -1,0 +1,41 @@
+[Unit]
+Description=WitShield AI controller
+Documentation=https://github.com/witkitlab/witshield
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=witshield-controller
+Group=witshield-controller
+EnvironmentFile=-/etc/witshield/controller.env
+# Secret files are absent after initialization. In standalone mode the second
+# one seeds a 15-minute, single-use device token; only its hash is retained.
+ExecStart=/usr/local/bin/witshield-controller --bootstrap-token-file /var/lib/witshield/bootstrap.token --initial-enrollment-token-file /var/lib/witshield/initial-enrollment.token
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# Controller is unprivileged and only writes its state directory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/witshield
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go test, race and vet
+    runs-on: ubuntu-24.04
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Formatting
+        shell: bash
+        run: |
+          mapfile -d '' files < <(find . -name '*.go' -not -path './web/node_modules/*' -print0)
+          ((${#files[@]} > 0))
+          unformatted=$(gofmt -l "${files[@]}")
+          test -z "$unformatted" || { printf 'Run gofmt on:\n%s\n' "$unformatted"; exit 1; }
+      - run: go vet ./cmd/... ./internal/...
+      - run: go test -race -count=1 ./cmd/... ./internal/...
+      - run: go test -coverprofile=coverage.out ./cmd/... ./internal/...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./cmd/... ./internal/...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./cmd/... ./internal/...
+      - name: Gosec (path-scoped policy in scripts/run-gosec.sh)
+        run: scripts/run-gosec.sh ./cmd/... ./internal/...
+
+  web:
+    name: Web lint, typecheck, test and static build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test -- --passWithNoTests
+      - run: npm run build:embedded
+      - name: Assert export entrypoint
+        run: test -s out/index.html
+
+  delivery:
+    name: Installer, units and Compose
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq shellcheck
+      - name: Shell syntax and static analysis
+        run: |
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color .github/workflows/*.yml
+          bash -n scripts/*.sh scripts/tests/*.sh
+          shellcheck scripts/*.sh scripts/tests/*.sh
+          for test_script in scripts/tests/*.sh; do
+            "$test_script"
+          done
+      - name: Validate systemd units
+        run: |
+          sudo groupadd --system witshield-controller
+          sudo groupadd --system witshield-agent
+          sudo groupadd --system witshield-helper
+          getent group systemd-journal >/dev/null || sudo groupadd --system systemd-journal
+          getent group adm >/dev/null || sudo groupadd --system adm
+          sudo useradd --system --gid witshield-controller --shell /usr/sbin/nologin witshield-controller
+          sudo useradd --system --gid witshield-agent --groups witshield-helper,systemd-journal,adm --shell /usr/sbin/nologin witshield-agent
+          sudo install -m 0755 /usr/bin/true /usr/local/bin/witshield-controller
+          sudo install -m 0755 /usr/bin/true /usr/local/bin/witshield-agent
+          sudo install -d -m 0755 /usr/libexec/witshield
+          sudo install -m 0755 /usr/bin/true /usr/libexec/witshield/witshield-helper
+          sudo install -d -m 0700 /var/lib/witshield /var/lib/witshield-agent /var/lib/witshield-helper
+          sudo install -d -m 0750 /etc/witshield
+          systemd-analyze verify packaging/systemd/*.service
+          agent_groups=$(sudo systemd-run --quiet --wait --pipe \
+            --property=User=witshield-agent \
+            --property=Group=witshield-agent \
+            --property=SupplementaryGroups=witshield-helper \
+            /usr/bin/id -nG)
+          for expected in witshield-agent witshield-helper systemd-journal adm; do
+            grep -qw "$expected" <<<"$agent_groups"
+          done
+      - name: Validate observer Compose security
+        run: scripts/verify-observer-compose.sh
+
+  package-smoke:
+    name: Release layout smoke test
+    runs-on: ubuntu-24.04
+    needs: [go, web, delivery]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build static UI
+        working-directory: web
+        run: npm ci --ignore-scripts && npm run build:embedded
+      - name: Assemble test archive
+        run: |
+          set -euo pipefail
+          mkdir -p stage/web stage/packaging/systemd stage/scripts stage/docs stage/docker
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-controller ./cmd/witshield-controller
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-agent ./cmd/witshield-agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-helper ./cmd/witshield-helper
+          for binary in witshield-controller witshield-agent witshield-helper; do
+            metadata=$(go version -m "stage/$binary")
+            grep -Fq 'go1.27.0' <<<"$metadata"
+            grep -Fq 'CGO_ENABLED=0' <<<"$metadata"
+          done
+          cp -a web/out/. stage/web/
+          cp packaging/systemd/*.service stage/packaging/systemd/
+          cp scripts/uninstall.sh stage/scripts/
+          cp docs/*.md stage/docs/
+          cp docker/README.md stage/docker/
+          cp LICENSE README.md stage/
+          tar -C stage -czf witshield_0.0.0-test_linux_amd64.tar.gz .
+          scripts/verify-release-archive.sh witshield_0.0.0-test_linux_amd64.tar.gz
+
+  docker:
+    name: Docker observer image
+    runs-on: ubuntu-24.04
+    needs: [go, web]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: witshield:test
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=ci
+      - name: Assert image runs unprivileged
+        run: |
+          test "$(docker image inspect witshield:test --format '{{.Config.User}}')" = '65532:65532'
+          docker run --rm --entrypoint /usr/local/bin/witshield-controller witshield:test --version
+          docker run --rm --entrypoint /usr/local/bin/witshield-agent witshield:test --version
+          if docker run --rm --entrypoint /usr/libexec/witshield/witshield-helper witshield:test --help; then
+            echo 'Docker observer image must not contain the privileged helper'
+            exit 1
+          fi

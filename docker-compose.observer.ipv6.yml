@@ -1,0 +1,11 @@
+# Optional observer coverage for Linux kernels that expose the IPv6 TCP table.
+# Use only together with docker-compose.observer.yml.
+services:
+  agent:
+    volumes:
+      - type: bind
+        source: /proc/1/net/tcp6
+        target: /host/proc/1/net/tcp6
+        read_only: true
+        bind:
+          create_host_path: false

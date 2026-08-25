@@ -1,0 +1,487 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # GitHub filters are globs; preflight enforces exact stable SemVer.
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+# Jobs opt in to the minimum permissions they need. Preflight cannot mutate
+# Releases, packages, attestations, or request an OIDC token.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify source, test and stage artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GOTOOLCHAIN: local
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate signed tag and release source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_TYPE}" == "tag" ]]
+          [[ "${GITHUB_REF_PROTECTED}" == "true" ]] \
+            || { echo 'the release tag is not protected by a repository ruleset' >&2; exit 1; }
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo 'release tag must be stable SemVer (vX.Y.Z)' >&2; exit 1; }
+          test -z "$(git status --porcelain)"
+
+          ref_json=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}")
+          [[ "$(jq -r '.object.type' <<<"$ref_json")" == "tag" ]] \
+            || { echo 'release requires an annotated tag' >&2; exit 1; }
+          tag_object=$(jq -r '.object.sha' <<<"$ref_json")
+          tag_json=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}")
+          [[ "$(jq -r '.verification.verified' <<<"$tag_json")" == "true" ]] \
+            || { echo 'GitHub did not verify the release tag signature' >&2; exit 1; }
+          [[ "$(jq -r '.object.type' <<<"$tag_json")" == "commit" ]] \
+            || { echo 'nested or non-commit release tags are not allowed' >&2; exit 1; }
+
+          tagged_commit=$(jq -r '.object.sha' <<<"$tag_json")
+          [[ "$tagged_commit" == "$GITHUB_SHA" ]] \
+            || { echo 'the verified tag does not resolve to GITHUB_SHA' >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{}")" == "$GITHUB_SHA" ]] \
+            || { echo 'the local tag target differs from GITHUB_SHA' >&2; exit 1; }
+
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main \
+            || { echo 'the release commit is not on the main branch' >&2; exit 1; }
+
+          release_error=$(mktemp)
+          if release_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" 2>"$release_error"); then
+            [[ "$(jq -r '.draft' <<<"$release_json")" == "true" ]] \
+              || { echo 'a published GitHub Release already exists for this tag' >&2; exit 1; }
+            echo 'an incomplete draft exists and may be resumed by the publish job'
+          elif ! grep -q '(HTTP 404)' "$release_error"; then
+            cat "$release_error" >&2
+            exit 1
+          fi
+          rm -f "$release_error"
+
+      - name: Record reproducible build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_date=$(git show -s --format=%cI "$GITHUB_SHA")
+          printf 'build_date=%s\n' "$build_date" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Install delivery validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq shellcheck
+
+      - name: Test Go
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find . -name '*.go' -not -path './web/node_modules/*' -print0)
+          ((${#files[@]} > 0))
+          unformatted=$(gofmt -l "${files[@]}")
+          test -z "$unformatted" || { printf 'Run gofmt on:\n%s\n' "$unformatted"; exit 1; }
+          go vet ./cmd/... ./internal/...
+          go test -race -count=1 ./cmd/... ./internal/...
+          go test -coverprofile=coverage.out ./cmd/... ./internal/...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./cmd/... ./internal/...
+          go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./cmd/... ./internal/...
+          scripts/run-gosec.sh ./cmd/... ./internal/...
+
+      - name: Test and export Web UI
+        working-directory: web
+        env:
+          WITSHIELD_BUILD_ID: ${{ github.sha }}
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+          npm run lint
+          npm run typecheck
+          npm run test -- --passWithNoTests
+          npm run build:embedded
+          test -s out/index.html
+
+      - name: Test delivery scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/*.sh scripts/tests/*.sh
+          shellcheck scripts/*.sh scripts/tests/*.sh
+          for test_script in scripts/tests/*.sh; do
+            "$test_script"
+          done
+
+      - name: Validate systemd units
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo groupadd --system witshield-controller
+          sudo groupadd --system witshield-agent
+          sudo groupadd --system witshield-helper
+          getent group systemd-journal >/dev/null || sudo groupadd --system systemd-journal
+          getent group adm >/dev/null || sudo groupadd --system adm
+          sudo useradd --system --gid witshield-controller --shell /usr/sbin/nologin witshield-controller
+          sudo useradd --system --gid witshield-agent --groups witshield-helper,systemd-journal,adm --shell /usr/sbin/nologin witshield-agent
+          sudo install -m 0755 /usr/bin/true /usr/local/bin/witshield-controller
+          sudo install -m 0755 /usr/bin/true /usr/local/bin/witshield-agent
+          sudo install -d -m 0755 /usr/libexec/witshield
+          sudo install -m 0755 /usr/bin/true /usr/libexec/witshield/witshield-helper
+          sudo install -d -m 0700 /var/lib/witshield /var/lib/witshield-agent /var/lib/witshield-helper
+          sudo install -d -m 0750 /etc/witshield
+          systemd-analyze verify packaging/systemd/*.service
+          agent_groups=$(sudo systemd-run --quiet --wait --pipe \
+            --property=User=witshield-agent \
+            --property=Group=witshield-agent \
+            --property=SupplementaryGroups=witshield-helper \
+            /usr/bin/id -nG)
+          for expected in witshield-agent witshield-helper systemd-journal adm; do
+            grep -qw "$expected" <<<"$agent_groups"
+          done
+
+      - name: Validate observer Compose security
+        run: scripts/verify-observer-compose.sh
+
+      - name: Build and smoke-test the observer image without publishing
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: witshield:release-preflight
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build_meta.outputs.build_date }}
+      - name: Assert the observer image is unprivileged
+        run: |
+          test "$(docker image inspect witshield:release-preflight --format '{{.Config.User}}')" = '65532:65532'
+          docker run --rm --entrypoint /usr/local/bin/witshield-controller witshield:release-preflight --version
+          docker run --rm --entrypoint /usr/local/bin/witshield-agent witshield:release-preflight --version
+          if docker run --rm --entrypoint /usr/libexec/witshield/witshield-helper witshield:release-preflight --help; then
+            echo 'Docker observer image must not contain the privileged helper' >&2
+            exit 1
+          fi
+
+      - name: Assemble reproducible Linux archives
+        env:
+          VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version_number="${VERSION#v}"
+          source_date_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          for arch in amd64 arm64; do
+            stage=$(mktemp -d)
+            mkdir -p "$stage/web" "$stage/packaging/systemd" "$stage/scripts" "$stage/docs" "$stage/docker"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
+              -o "$stage/witshield-controller" ./cmd/witshield-controller
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
+              -o "$stage/witshield-agent" ./cmd/witshield-agent
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
+              -o "$stage/witshield-helper" ./cmd/witshield-helper
+            for binary in witshield-controller witshield-agent witshield-helper; do
+              metadata=$(go version -m "$stage/$binary")
+              grep -Fq 'go1.27.0' <<<"$metadata"
+              grep -Fq 'CGO_ENABLED=0' <<<"$metadata"
+            done
+            cp -a web/out/. "$stage/web/"
+            cp packaging/systemd/*.service "$stage/packaging/systemd/"
+            cp scripts/uninstall.sh "$stage/scripts/"
+            cp docs/*.md "$stage/docs/"
+            cp docker/README.md "$stage/docker/"
+            cp LICENSE README.md README.en.md "$stage/"
+            archive="dist/witshield_${version_number}_linux_${arch}.tar.gz"
+            tar --sort=name --mtime="@${source_date_epoch}" --owner=0 --group=0 --numeric-owner \
+              -C "$stage" -cf - . | gzip -n > "$archive"
+            scripts/verify-release-archive.sh "$archive"
+            rm -rf -- "$stage"
+          done
+          install -m 0755 scripts/install.sh dist/install.sh
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/witshield_${{ github.ref_name }}_source.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/witshield_${{ github.ref_name }}_source.cyclonedx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Assert staged artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          test -s dist/install.sh
+          test -s "dist/witshield_${version}_linux_amd64.tar.gz"
+          test -s "dist/witshield_${version}_linux_arm64.tar.gz"
+          test -s "dist/witshield_${GITHUB_REF_NAME}_source.spdx.json"
+          test -s "dist/witshield_${GITHUB_REF_NAME}_source.cyclonedx.json"
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+      - name: Seal the preflight artifact handoff
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          LC_ALL=C sha256sum -- install.sh *.tar.gz *.json > STAGING_SHA256SUMS
+          sha256sum --check STAGING_SHA256SUMS
+      - name: Stage verified artifacts for the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Sign and publish verified artifacts
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the exact verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Revalidate source identity after environment approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{}")" == "$GITHUB_SHA" ]]
+          test -z "$(git status --porcelain)"
+      - name: Record reproducible build metadata
+        id: build_meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_date=$(git show -s --format=%cI "$GITHUB_SHA")
+          printf 'build_date=%s\n' "$build_date" >> "$GITHUB_OUTPUT"
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Assert downloaded artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          test -s dist/install.sh
+          test -s "dist/witshield_${version}_linux_amd64.tar.gz"
+          test -s "dist/witshield_${version}_linux_arm64.tar.gz"
+          test -s "dist/witshield_${GITHUB_REF_NAME}_source.spdx.json"
+          test -s "dist/witshield_${GITHUB_REF_NAME}_source.cyclonedx.json"
+          test -s dist/STAGING_SHA256SUMS
+          (cd dist && sha256sum --check STAGING_SHA256SUMS)
+          rm dist/STAGING_SHA256SUMS
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      # Authentication and every external write happen only after all preflight
+      # gates have succeeded and the release Environment has been approved.
+      - name: Sign in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push the multi-architecture image by digest only
+        id: image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=WitShield AI
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build_meta.outputs.build_date }}
+          provenance: mode=max
+          sbom: true
+      - name: Enforce immutable version image identity
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          set +e
+          inspect_output=$(docker buildx imagetools inspect "$image:$version" 2>&1)
+          inspect_status=$?
+          set -e
+          if (( inspect_status == 0 )); then
+            actual=$(awk '$1 == "Digest:" {print $2; exit}' <<<"$inspect_output")
+            [[ "$actual" =~ ^sha256:[0-9a-f]{64}$ ]] \
+              || { echo 'registry returned an invalid manifest digest' >&2; exit 1; }
+            [[ "$actual" == "$IMAGE_DIGEST" ]] \
+              || { echo "$image:$version already exists at $actual; immutable release expected $IMAGE_DIGEST" >&2; exit 1; }
+          elif ! grep -Eqi '(manifest unknown|name_unknown|404[[:space:]]+not found)' <<<"$inspect_output"; then
+            echo 'could not determine whether the immutable version image exists' >&2
+            printf '%s\n' "$inspect_output" >&2
+            exit 1
+          fi
+      - name: Keyless-sign the immutable container digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="ghcr.io/${GITHUB_REPOSITORY,,}@${IMAGE_DIGEST}"
+          cosign sign --yes "$image"
+          printf '%s\n' "$image" > dist/CONTAINER_IMAGE.txt
+
+      - name: Generate checksums for every downloadable payload
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          LC_ALL=C sha256sum -- install.sh *.tar.gz *.json CONTAINER_IMAGE.txt > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Keyless-sign checksums
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
+      - name: Attest release archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+          create-storage-record: false
+
+      - name: Create a draft GitHub Release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_error=$(mktemp)
+          if release_json=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" 2>"$release_error"); then
+            [[ "$(jq -r '.draft' <<<"$release_json")" == "true" ]] \
+              || { echo 'a published GitHub Release already exists for this tag' >&2; exit 1; }
+            rm -f "$release_error"
+            echo 'created=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          elif ! grep -q '(HTTP 404)' "$release_error"; then
+            cat "$release_error" >&2
+            exit 1
+          fi
+          rm -f "$release_error"
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --generate-notes \
+            --title "WitShield AI ${GITHUB_REF_NAME}"
+          echo 'created=true' >> "$GITHUB_OUTPUT"
+      - name: Upload the complete artifact set to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+      - name: Verify the complete draft asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_assets=$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          remote_assets=$(gh release view "$GITHUB_REF_NAME" --json assets \
+            --jq '.assets[].name' | LC_ALL=C sort)
+          [[ "$remote_assets" == "$local_assets" ]] \
+            || { diff -u <(printf '%s\n' "$local_assets") <(printf '%s\n' "$remote_assets"); exit 1; }
+      - name: Promote the verified digest to public image tags
+        id: promote
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          minor="${version%.*}"
+          # Once promotion begins, preserve the draft on failure: one or more
+          # public tags may already exist and the job must remain resumable.
+          echo 'started=true' >> "$GITHUB_OUTPUT"
+          docker buildx imagetools create \
+            --tag "$image:$version" \
+            --tag "$image:$minor" \
+            --tag "$image:latest" \
+            "$image@$IMAGE_DIGEST"
+          for tag in "$version" "$minor" latest; do
+            actual=$(docker buildx imagetools inspect "$image:$tag" | awk '$1 == "Digest:" {print $2; exit}')
+            [[ "$actual" =~ ^sha256:[0-9a-f]{64}$ ]] \
+              || { echo "$image:$tag returned an invalid digest" >&2; exit 1; }
+            [[ "$actual" == "$IMAGE_DIGEST" ]] \
+              || { echo "$image:$tag resolved to $actual, expected $IMAGE_DIGEST" >&2; exit 1; }
+          done
+      - name: Publish the fully staged GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+      - name: Remove an incomplete draft after failure
+        if: failure() && steps.draft.outputs.created == 'true' && steps.promote.outputs.started != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null || true)" == "true" ]]; then
+            gh release delete "$GITHUB_REF_NAME" --yes
+          fi
