@@ -28,7 +28,7 @@ docker build --build-arg GOPROXY=https://goproxy.cn,direct -t witshield:local .
    docker compose -f docker-compose.observer.yml up -d controller
    ```
 
-   默认监听本机 `127.0.0.1:8080`。若端口冲突，可在同一 shell 先执行 `export WITSHIELD_PORT=18080`；Compose 仍只绑定 loopback。
+   默认监听本机 `127.0.0.1:8080`。若端口冲突，可在同一 shell 先执行 `export WITSHIELD_PORT=18080`。浏览器入口在容器内使用独立的 `admin-listener:8081`，绑定仅 Controller 加入的 `egress` 网络接口；Agent API 继续使用内部 `controller:8080`，因此伪造 `Host` 不能获得本地管理会话。Compose 只把独立入口发布到宿主 loopback。不要把端口改为 `0.0.0.0`，也不要让 Agent 加入 `egress` 网络；公开访问应改用受信 TLS 反向代理。
 
 3. 浏览器访问 `http://127.0.0.1:${WITSHIELD_PORT:-8080}` 对应的实际端口，输入以下值创建管理员：
 
@@ -101,7 +101,7 @@ grep -E 'privileged:|docker\.sock|cap_add:' /tmp/witshield-compose.rendered.yml
 - `cap_drop: [ALL]`；
 - `no-new-privileges`；
 - 仅 loopback 端口映射；
-- Agent 仅加入内部网络；Controller 另有出站网络用于管理员配置的 AI 接口；
+- Agent 仅加入内部 `control` 网络；Controller 的 `egress` 网络同时承载管理员配置的 AI 出站与 Agent 不可达的本地浏览器监听器；
 - 有限 CPU、内存和 PID；
 - `json-file` 日志按 10 MiB × 3 个文件轮转；
 - 明确的宿主机只读白名单挂载；可选覆盖仍是单文件挂载。

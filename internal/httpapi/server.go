@@ -66,6 +66,8 @@ type Server struct {
 	inlineScripts          []string
 }
 
+type localHTTPTransportKey struct{}
+
 func New(cfg Config) (*Server, error) {
 	if cfg.Store == nil || cfg.Vault == nil {
 		return nil, errors.New("store and vault are required")
@@ -99,6 +101,19 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 func (s *Server) Handler() http.Handler { return securityHeaders(s.mux, s.inlineScripts) }
+
+// LocalHTTPHandler marks requests as arriving through a listener whose network
+// exposure is independently constrained to a local transport. It must only be
+// attached to a loopback listener or an isolated container interface published
+// exclusively on host loopback. An HTTP Host header alone never grants this
+// trust because clients can choose it freely.
+func (s *Server) LocalHTTPHandler() http.Handler {
+	next := s.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), localHTTPTransportKey{}, true)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /api/v1/status", s.status)
@@ -321,6 +336,10 @@ func bearer(r *http.Request) string {
 }
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := s.sessionCookieSecurity(r); err != nil {
+			writeError(w, http.StatusForbidden, "insecure_admin_transport", err.Error())
+			return
+		}
 		token := bearer(r)
 		viaCookie := false
 		if token == "" {
@@ -550,6 +569,34 @@ func (s *Server) remoteIP(r *http.Request) net.IP {
 
 func (s *Server) secureRequest(r *http.Request) bool {
 	return r.TLS != nil || (s.isTrustedProxy(peerIP(r)) && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https"))
+}
+
+func (s *Server) sessionCookieSecurity(r *http.Request) (bool, error) {
+	if s.secureRequest(r) {
+		return true, nil
+	}
+	localTransport, _ := r.Context().Value(localHTTPTransportKey{}).(bool)
+	if localTransport && loopbackAuthority(r.Host) {
+		return false, nil
+	}
+	return false, errors.New("administrator access requires HTTPS or an explicitly configured loopback-only HTTP deployment")
+}
+
+func loopbackAuthority(authority string) bool {
+	host := authority
+	if parsedHost, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsedHost
+	} else if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(authority, "["), "]")
+	} else if strings.Contains(authority, ":") {
+		return false
+	}
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 func constantEqual(a, b string) bool {
 	if len(a) != len(b) {

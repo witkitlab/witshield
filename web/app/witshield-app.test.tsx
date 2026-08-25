@@ -48,11 +48,27 @@ describe('WitShieldApp', () => {
     expect(await screen.findByText('妙盾设置')).toBeInTheDocument();
     const baseUrl = screen.getByDisplayValue('https://api.openai.com/v1');
     fireEvent.change(baseUrl, { target: { value: 'https://ai.example.test/v1' } });
-    fireEvent.change(screen.getAllByPlaceholderText(/留空保持不变/)[0], { target: { value: 'test-secret-1234' } });
+    expect(screen.getByText(/保存时会清除旧地址绑定的自定义请求头：X-Organization/)).toBeInTheDocument();
+    const apiKey = screen.getByPlaceholderText('更换地址后需重新输入 API Key');
+    fireEvent.change(apiKey, { target: { value: 'test-secret-1234' } });
+    expect(apiKey).toHaveValue('test-secret-1234');
     fireEvent.click(screen.getByRole('button', { name: /测试连接/ }));
 
     expect(await screen.findByText(/连接成功/)).toBeInTheDocument();
     expect(screen.queryByText('test-secret-1234')).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: '保存设置' })[0]);
+    await waitFor(() => expect(screen.queryByText(/X-Organization/)).not.toBeInTheDocument());
+  });
+
+  it('never reuses a stored API key after the endpoint origin changes', async () => {
+    render(<WitShieldApp />);
+    await screen.findByText('服务器整体稳定');
+
+    fireEvent.click(screen.getByRole('button', { name: /^设置$/ }));
+    fireEvent.change(screen.getByDisplayValue('https://api.openai.com/v1'), { target: { value: 'https://other.example.test/v1' } });
+    expect(screen.getByText(/密钥不会自动带到新的 API 地址/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /测试连接/ }));
+    expect(screen.getByRole('alert')).toHaveTextContent('请重新输入该地址对应的 API Key');
   });
 
   it('uses the configured AI assistant and returns an answer', async () => {

@@ -61,11 +61,15 @@ verify_variant() {
     ) and
     (.services.agent.networks | keys | sort) == ["control"] and
     (.services.controller.networks | keys | sort) == ["control", "egress"] and
+    ((.services.controller.networks.egress.aliases // []) | index("admin-listener")) != null and
     ([.services.agent.ports[]?] | length) == 0 and
     ([.services.controller.ports[]? | select(
-      .host_ip != "127.0.0.1" or .target != 8080 or .protocol != "tcp"
+      .host_ip != "127.0.0.1" or .target != 8081 or .protocol != "tcp"
     )] | length) == 0 and
     ([.services.controller.ports[]?] | length) == 1 and
+    ((.services.controller.command // []) | index("--local-http-listen")) as $local_index |
+    $local_index != null and
+    .services.controller.command[$local_index + 1] == "admin-listener:8081" and
     all(.services[].volumes[]?; .type != "bind" or .read_only == true)
   ' "$config" >/dev/null
 

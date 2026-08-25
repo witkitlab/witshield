@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ func MainVersion(ctx context.Context, args []string, version string) error {
 	initialEnrollmentFile := fs.String("initial-enrollment-token-file", env("WITSHIELD_INITIAL_ENROLLMENT_TOKEN_FILE", ""), "optional one-use standalone enrollment token file")
 	webDir := fs.String("web-dir", env("WITSHIELD_WEB_DIR", "/usr/share/witshield/web"), "static web application directory")
 	trustedProxyText := fs.String("trusted-proxies", env("WITSHIELD_TRUSTED_PROXIES", ""), "comma-separated reverse proxy IPs or CIDRs whose forwarded headers are trusted")
+	localHTTPListen := fs.String("local-http-listen", env("WITSHIELD_LOCAL_HTTP_LISTEN", ""), "optional isolated listener published only through a host loopback transport")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -83,6 +85,17 @@ func MainVersion(ctx context.Context, args []string, version string) error {
 	if err = seedEnrollment(ctx, db, *initialEnrollmentFile); err != nil {
 		return err
 	}
+	if *localHTTPListen != "" {
+		if loopbackListenAddress(*listen) {
+			return errors.New("local-http-listen is unnecessary when the primary listener is already loopback-only")
+		}
+		if !isolatedLocalListenAddress(*localHTTPListen) {
+			return errors.New("local-http-listen must name a dedicated non-wildcard interface and port")
+		}
+		if strings.EqualFold(strings.TrimSpace(*localHTTPListen), strings.TrimSpace(*listen)) {
+			return errors.New("local-http-listen must differ from the primary listener")
+		}
+	}
 	trustedProxies := strings.FieldsFunc(*trustedProxyText, func(r rune) bool { return r == ',' || r == ' ' })
 	api, err := httpapi.New(httpapi.Config{Store: db, Vault: vault, Version: version, BootstrapToken: effectiveBootstrap, WebDir: *webDir, Logger: slog.Default(), TrustedProxies: trustedProxies})
 	if err != nil {
@@ -100,24 +113,43 @@ func MainVersion(ctx context.Context, args []string, version string) error {
 		}
 	}()
 	go runMaintenance(ctx, db, slog.Default())
-	server := &http.Server{Addr: *listen, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
-	errCh := make(chan error, 1)
-	go func() {
-		slog.Info("WitShield controller listening", "address", *listen)
-		errCh <- server.ListenAndServe()
-	}()
-	select {
-	case <-ctx.Done():
+	primaryHandler := api.Handler()
+	if loopbackListenAddress(*listen) {
+		primaryHandler = api.LocalHTTPHandler()
+	}
+	servers := []*http.Server{controllerHTTPServer(*listen, primaryHandler)}
+	if *localHTTPListen != "" {
+		servers = append(servers, controllerHTTPServer(*localHTTPListen, api.LocalHTTPHandler()))
+	}
+	errCh := make(chan error, len(servers))
+	for _, server := range servers {
+		go func(server *http.Server) {
+			slog.Info("WitShield controller listening", "address", server.Addr)
+			errCh <- server.ListenAndServe()
+		}(server)
+	}
+	shutdown := func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
+		for _, server := range servers {
+			_ = server.Shutdown(shutdownCtx)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		shutdown()
 		return ctx.Err()
 	case err = <-errCh:
+		shutdown()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
 	}
+}
+
+func controllerHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 }
 
 func runMaintenance(ctx context.Context, db *store.Store, log *slog.Logger) {
@@ -189,4 +221,26 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func loopbackListenAddress(address string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return false
+	}
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isolatedLocalListenAddress(address string) bool {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil || strings.TrimSpace(port) == "" {
+		return false
+	}
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	return host != "" && host != "0.0.0.0" && host != "::" && host != "[::]"
 }

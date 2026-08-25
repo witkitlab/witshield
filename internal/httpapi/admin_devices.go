@@ -34,12 +34,21 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if token != "" {
+		if _, securityErr := s.sessionCookieSecurity(r); securityErr != nil {
+			writeJSON(w, 200, map[string]any{"initialized": count > 0, "needsBootstrap": count == 0, "authenticated": false, "version": s.version, "mode": "controller"})
+			return
+		}
 		_, e := s.store.AdminBySession(r.Context(), secret.Hash(token), s.now())
 		authenticated = e == nil
 	}
 	writeJSON(w, 200, map[string]any{"initialized": count > 0, "needsBootstrap": count == 0, "authenticated": authenticated, "version": s.version, "mode": "controller"})
 }
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
+	secureCookie, securityErr := s.sessionCookieSecurity(r)
+	if securityErr != nil {
+		writeError(w, http.StatusForbidden, "insecure_admin_transport", securityErr.Error())
+		return
+	}
 	count, err := s.store.AdminCount(r.Context())
 	if err != nil {
 		s.fail(w, err)
@@ -75,9 +84,14 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.issueSession(w, r, admin, http.StatusCreated)
+	s.issueSession(w, r, admin, http.StatusCreated, secureCookie)
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	secureCookie, securityErr := s.sessionCookieSecurity(r)
+	if securityErr != nil {
+		writeError(w, http.StatusForbidden, "insecure_admin_transport", securityErr.Error())
+		return
+	}
 	key := s.remoteIP(r).String()
 	if !s.limiter.allow(key, s.now()) {
 		writeError(w, 429, "rate_limited", "too many login attempts; try again later")
@@ -100,9 +114,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.limiter.clear(key)
-	s.issueSession(w, r, admin, 200)
+	s.issueSession(w, r, admin, 200, secureCookie)
 }
-func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, admin domain.Admin, status int) {
+func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, admin domain.Admin, status int, secureCookie bool) {
 	raw, err := ids.Token("wss", 32)
 	if err != nil {
 		s.fail(w, err)
@@ -113,10 +127,18 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, admin doma
 		s.fail(w, err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: raw, Path: "/", Expires: expires, HttpOnly: true, Secure: s.secureRequest(r), SameSite: http.SameSiteStrictMode, MaxAge: int(s.sessionTTL / time.Second)})
+	// Plain HTTP is reachable only through the explicit local-only deployment
+	// policy checked before any administrator or session mutation.
+	// codeql[go/cookie-secure-not-set]
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: raw, Path: "/", Expires: expires, HttpOnly: true, Secure: secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: int(s.sessionTTL / time.Second)})
 	writeJSON(w, status, map[string]any{"admin": admin, "expiresAt": expires})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	secureCookie, securityErr := s.sessionCookieSecurity(r)
+	if securityErr != nil {
+		writeError(w, http.StatusForbidden, "insecure_admin_transport", securityErr.Error())
+		return
+	}
 	token := bearer(r)
 	if token == "" {
 		if c, err := r.Cookie(sessionCookie); err == nil {
@@ -126,7 +148,10 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if token != "" {
 		_ = s.store.DeleteSession(r.Context(), secret.Hash(token))
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureRequest(r), SameSite: http.SameSiteStrictMode})
+	// Match the issuance mode so the browser removes the exact local or secure
+	// cookie; insecure deletion is constrained by sessionCookieSecurity above.
+	// codeql[go/cookie-secure-not-set]
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: secureCookie, SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(204)
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {

@@ -8,7 +8,8 @@ readonly -a exclusions=(
   'internal/action/file_permission\.go$:G101'
 
   # G124: session cookies are always HttpOnly + SameSite=Strict. Secure is set
-  # from the trusted request scheme so localhost HTTP bootstrap keeps working.
+  # for TLS/trusted-proxy HTTPS; its only exception is the explicit, tested
+  # listener-bound local HTTP deployment policy used by native/Compose access.
   'internal/httpapi/admin_devices\.go$:G124'
 
   # G202: SQL structure is assembled only from constant column/filter fragments

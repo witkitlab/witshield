@@ -116,7 +116,7 @@ export const demoDashboard: DashboardSnapshot = {
   ],
   ai: {
     protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4',
-    hasKey: true, keyHint: '••••••••••••K3mP', privacyMode: 'minimal',
+    hasKey: true, keyHint: '••••••••••••K3mP', customHeaderKeys: ['X-Organization'], privacyMode: 'minimal',
   },
   notifications: {
     configured: true,

@@ -118,6 +118,7 @@ export interface AISettings {
   model: string;
   hasKey: boolean;
   keyHint: string;
+  customHeaderKeys: string[];
   privacyMode: 'minimal' | 'balanced';
 }
 

@@ -3,7 +3,10 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,6 +75,16 @@ func TestURLAndHeadersValidation(t *testing.T) {
 	if _, err := New(Config{Protocol: domain.AIProtocolOpenAIChat, BaseURL: "file:///tmp/x", Model: "m"}); err == nil {
 		t.Fatal("file URL accepted")
 	}
+	for _, rawURL := range []string{
+		"https://example.com?",
+		"https://example.com:0/v1",
+		"https://example.com:65536/v1",
+		"http://8.8.8.8/v1",
+	} {
+		if _, err := New(Config{Protocol: domain.AIProtocolOpenAIChat, BaseURL: rawURL, Model: "m"}); err == nil {
+			t.Fatalf("unsafe or malformed URL accepted: %s", rawURL)
+		}
+	}
 	if _, err := New(Config{Protocol: domain.AIProtocolOpenAIChat, BaseURL: "https://example.com", Model: "m", CustomHeaders: domain.Headers{"Authorization": "bad"}}); err == nil {
 		t.Fatal("reserved header accepted")
 	}
@@ -84,5 +97,93 @@ func TestURLAndHeadersValidation(t *testing.T) {
 	}
 	if client.http.Transport.(*http.Transport).Proxy != nil {
 		t.Fatal("ambient proxy is enabled for secret-bearing AI requests")
+	}
+}
+
+func TestCredentialOriginBindsSchemeHostAndEffectivePort(t *testing.T) {
+	tests := []struct {
+		name       string
+		a, b       string
+		equivalent bool
+	}{
+		{"path may change", "https://AI.example/v1", "https://ai.example/chat", true},
+		{"default HTTPS port", "https://ai.example/v1", "https://ai.example:443/v2", true},
+		{"default HTTP port", "http://127.0.0.1/v1", "http://127.0.0.1:80/v2", true},
+		{"IPv6 spelling", "http://[0:0:0:0:0:0:0:1]/v1", "http://[::1]:80/v2", true},
+		{"scheme changes", "http://127.0.0.1/v1", "https://127.0.0.1/v1", false},
+		{"host changes", "https://ai.example/v1", "https://other.example/v1", false},
+		{"port changes", "https://ai.example/v1", "https://ai.example:8443/v1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := SameCredentialOrigin(tt.a, tt.b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.equivalent {
+				t.Fatalf("equivalent=%v want=%v", got, tt.equivalent)
+			}
+		})
+	}
+}
+
+func TestSafeDialerRejectsEveryProhibitedAnswerAndPinsApprovedIP(t *testing.T) {
+	tests := []struct {
+		name      string
+		answers   []net.IP
+		wantError bool
+		wantDial  string
+	}{
+		{"metadata", []net.IP{net.ParseIP("169.254.169.254")}, true, ""},
+		{"mixed answer", []net.IP{net.ParseIP("203.0.113.10"), net.ParseIP("169.254.170.2")}, true, ""},
+		{"private provider", []net.IP{net.ParseIP("10.20.30.40")}, false, "10.20.30.40:443"},
+		{"public provider", []net.IP{net.ParseIP("203.0.113.10")}, false, "203.0.113.10:443"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dialed string
+			dial := safeDialerWithResolver(func(context.Context, string, string) ([]net.IP, error) {
+				return tt.answers, nil
+			}, func(_ context.Context, _, address string) (net.Conn, error) {
+				dialed = address
+				return nil, io.EOF
+			})
+			_, err := dial(context.Background(), "tcp", "provider.example:443")
+			if tt.wantError {
+				if err == nil || dialed != "" {
+					t.Fatalf("err=%v dialed=%q", err, dialed)
+				}
+				return
+			}
+			if !errors.Is(err, io.EOF) || dialed != tt.wantDial {
+				t.Fatalf("err=%v dialed=%q want=%q", err, dialed, tt.wantDial)
+			}
+		})
+	}
+}
+
+func TestRedirectDoesNotForwardProviderCredential(t *testing.T) {
+	secret := "provider-secret"
+	received := make(chan string, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"unexpected"}}]}`)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+	client, err := New(Config{Protocol: domain.AIProtocolOpenAIChat, BaseURL: redirector.URL, Model: "m", APIKey: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}); err == nil {
+		t.Fatal("redirect was followed")
+	}
+	select {
+	case got := <-received:
+		t.Fatalf("redirect target received credential %q", got)
+	default:
 	}
 }

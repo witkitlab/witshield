@@ -31,3 +31,39 @@ func TestSeedEnrollmentConsumesControllerTokenCopy(t *testing.T) {
 		t.Fatalf("tokens=%v err=%v", items, err)
 	}
 }
+
+func TestLoopbackListenAddress(t *testing.T) {
+	tests := map[string]bool{
+		"127.0.0.1:8080":  true,
+		"127.42.0.1:8080": true,
+		"[::1]:8080":      true,
+		"localhost:8080":  true,
+		"LOCALHOST.:8080": true,
+		"0.0.0.0:8080":    false,
+		":8080":           false,
+		"10.0.0.2:8080":   false,
+		"invalid":         false,
+	}
+	for address, want := range tests {
+		if got := loopbackListenAddress(address); got != want {
+			t.Errorf("loopbackListenAddress(%q)=%v want=%v", address, got, want)
+		}
+	}
+}
+
+func TestIsolatedLocalListenAddress(t *testing.T) {
+	tests := map[string]bool{
+		"admin-listener:8081": true,
+		"127.0.0.1:8081":      true,
+		"[::1]:8081":          true,
+		"0.0.0.0:8081":        false,
+		"[::]:8081":           false,
+		":8081":               false,
+		"admin-listener":      false,
+	}
+	for address, want := range tests {
+		if got := isolatedLocalListenAddress(address); got != want {
+			t.Errorf("isolatedLocalListenAddress(%q)=%v want=%v", address, got, want)
+		}
+	}
+}

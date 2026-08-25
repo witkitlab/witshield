@@ -187,6 +187,7 @@ interface RawAISettings {
   model?: string;
   keyConfigured?: boolean;
   apiKeyHint?: string;
+  customHeaders?: Record<string, string>;
 }
 
 interface RawNotificationSettings {
@@ -432,6 +433,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       model: rawAI.model ?? '',
       hasKey: Boolean(rawAI.keyConfigured),
       keyHint: rawAI.apiKeyHint ?? '',
+      customHeaderKeys: Object.keys(rawAI.customHeaders ?? {}).sort(),
       privacyMode: 'minimal',
     },
     notifications: mapNotifications(rawNotifications),
@@ -529,7 +531,7 @@ export async function createEnrollmentToken(): Promise<{ id: string; token: stri
 export async function saveAISettings(input: AISettings & { apiKey?: string; customHeaders?: Record<string, string> }): Promise<AISettings> {
   if (demoMode) {
     await new Promise((resolve) => setTimeout(resolve, 450));
-    return { ...input, hasKey: input.hasKey || Boolean(input.apiKey), keyHint: input.apiKey ? `••••${input.apiKey.slice(-4)}` : input.keyHint };
+    return { ...input, hasKey: input.hasKey || Boolean(input.apiKey), keyHint: input.apiKey ? `••••${input.apiKey.slice(-4)}` : input.keyHint, customHeaderKeys: input.customHeaders ? Object.keys(input.customHeaders).sort() : input.customHeaderKeys };
   }
   const result = await request<RawAISettings>('/ai/settings', {
     method: 'PUT',
@@ -547,6 +549,7 @@ export async function saveAISettings(input: AISettings & { apiKey?: string; cust
     model: result.model ?? input.model,
     hasKey: Boolean(result.keyConfigured),
     keyHint: result.apiKeyHint ?? '',
+    customHeaderKeys: Object.keys(result.customHeaders ?? {}).sort(),
     privacyMode: input.privacyMode,
   };
 }

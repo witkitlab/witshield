@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,8 +76,14 @@ func validateURL(u *url.URL) error {
 	if u.User != nil {
 		return errors.New("AI base URL must not contain credentials")
 	}
-	if u.RawQuery != "" || u.Fragment != "" {
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return errors.New("AI base URL must not contain a query or fragment")
+	}
+	if port := u.Port(); port != "" {
+		n, portErr := strconv.Atoi(port)
+		if portErr != nil || n < 1 || n > 65535 {
+			return errors.New("AI base URL port must be between 1 and 65535")
+		}
 	}
 	if u.Scheme == "http" {
 		host := strings.ToLower(u.Hostname())
@@ -86,6 +93,45 @@ func validateURL(u *url.URL) error {
 		}
 	}
 	return nil
+}
+
+// SameCredentialOrigin reports whether two validated AI endpoints share the
+// same credential trust boundary. Paths are intentionally excluded: a provider
+// may expose multiple protocol roots on one origin, while a scheme, host, or
+// effective-port change must never inherit a stored secret implicitly.
+func SameCredentialOrigin(a, b string) (bool, error) {
+	left, err := credentialOrigin(a)
+	if err != nil {
+		return false, err
+	}
+	right, err := credentialOrigin(b)
+	if err != nil {
+		return false, err
+	}
+	return left == right, nil
+}
+
+func credentialOrigin(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", errors.New("invalid AI base URL")
+	}
+	if err = validateURL(u); err != nil {
+		return "", err
+	}
+	host := strings.ToLower(u.Hostname())
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
+	port := u.Port()
+	if port == "" {
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return u.Scheme + "://" + net.JoinHostPort(host, port), nil
 }
 func forbiddenIP(ip net.IP) bool {
 	if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
@@ -99,12 +145,16 @@ func forbiddenIP(ip net.IP) bool {
 	return false
 }
 func safeDialer(next func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return safeDialerWithResolver(net.DefaultResolver.LookupIP, next)
+}
+
+func safeDialerWithResolver(resolve func(context.Context, string, string) ([]net.IP, error), next func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, errors.New("invalid upstream address")
 		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		ips, err := resolve(ctx, "ip", host)
 		if err != nil {
 			return nil, errors.New("AI host resolution failed")
 		}
@@ -205,6 +255,11 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 	for k, v := range c.cfg.CustomHeaders {
 		req.Header.Set(k, v)
 	}
+	// New fixes the endpoint authority, disables ambient proxies and redirects,
+	// and installs safeDialer, which validates every DNS answer before dialing a
+	// pinned numeric address. Private/loopback providers remain an intentional
+	// administrator-configured capability.
+	// codeql[go/request-forgery]
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("AI request failed: %s", c.redact(err.Error()))

@@ -66,9 +66,26 @@ describe('live API client contracts', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = await liveClient();
 
-    await client.testAISettings({ protocol: 'openai_responses', baseUrl: 'https://ai.example/v1', model: 'test-model', apiKey: 'draft-secret', hasKey: false, keyHint: '', privacyMode: 'minimal' });
+    await client.testAISettings({ protocol: 'openai_responses', baseUrl: 'https://ai.example/v1', model: 'test-model', apiKey: 'draft-secret', hasKey: false, keyHint: '', customHeaderKeys: [], privacyMode: 'minimal' });
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual({ settings: { protocol: 'openai_responses', baseUrl: 'https://ai.example/v1', model: 'test-model', apiKey: 'draft-secret' } });
+  });
+
+  it('can explicitly clear origin-bound custom headers while moving an AI endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({
+      protocol: 'openai_chat', baseUrl: 'https://new-ai.example/v1', model: 'new-model',
+      keyConfigured: true, apiKeyHint: '••••1234', customHeaders: {},
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = await liveClient();
+
+    await expect(client.saveAISettings({
+      protocol: 'openai_chat', baseUrl: 'https://new-ai.example/v1', model: 'new-model',
+      apiKey: 'new-provider-key-1234', customHeaders: {}, hasKey: true, keyHint: '••••old',
+      customHeaderKeys: ['X-Organization'], privacyMode: 'minimal',
+    })).resolves.toMatchObject({ customHeaderKeys: [] });
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({ apiKey: 'new-provider-key-1234', customHeaders: {} });
   });
 
   it('writes notification secrets once and never expects them in the response', async () => {

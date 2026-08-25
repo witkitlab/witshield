@@ -66,7 +66,7 @@ func newTestAPI(t *testing.T) *testAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(api.Handler())
+	srv := httptest.NewServer(api.LocalHTTPHandler())
 	t.Cleanup(srv.Close)
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar}
@@ -661,6 +661,143 @@ func TestAISettingsOmissionPreservesEncryptedCustomHeaders(t *testing.T) {
 	}
 }
 
+func TestAISecretsCannotBeReboundToAnotherEndpointOrigin(t *testing.T) {
+	x := newTestAPI(t)
+	x.bootstrapAdmin(t)
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"first"}}]}`)
+	}))
+	defer first.Close()
+	var secondRequests int
+	var secondAuthorization string
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondRequests++
+		secondAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"second"}}]}`)
+	}))
+	defer second.Close()
+
+	status, body := request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": first.URL + "/v1", "model": "model-a", "apiKey": "first-provider-secret",
+		"customHeaders": map[string]string{"X-Tenant": "tenant-secret"},
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("initial settings=%d %s", status, body)
+	}
+
+	// A path/model update on the same origin retains encrypted credentials.
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": first.URL + "/v2", "model": "model-b",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("same-origin update=%d %s", status, body)
+	}
+	stored, err := x.store.AISettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := x.api.vault.Decrypt(stored.EncryptedAPIKey)
+	if err != nil || key != "first-provider-secret" {
+		t.Fatalf("same-origin key=%q err=%v", key, err)
+	}
+	headers, err := decryptAIHeaders(stored.EncryptedHeaders, x.api.vault)
+	if err != nil || headers["X-Tenant"] != "tenant-secret" {
+		t.Fatalf("same-origin headers=%v err=%v", headers, err)
+	}
+
+	// Neither a saved update nor a one-shot test may send a retained secret to
+	// another scheme/host/effective-port.
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": second.URL + "/v1", "model": "model-c",
+	}, nil)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "endpoint_credentials_required") {
+		t.Fatalf("cross-origin preserved key=%d %s", status, body)
+	}
+	status, body = request(t, x.admin, http.MethodPost, x.server.URL+"/api/v1/ai/test", map[string]any{
+		"settings": map[string]any{"protocol": "openai_chat", "baseUrl": second.URL + "/v1", "model": "model-c"},
+	}, nil)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "API key must be supplied") || secondRequests != 0 {
+		t.Fatalf("cross-origin test=%d requests=%d %s", status, secondRequests, body)
+	}
+
+	// Re-entering the key is still insufficient while retained custom headers
+	// are implicit. An explicit empty object clears them for the new origin.
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": second.URL + "/v1", "model": "model-c", "apiKey": "second-provider-secret",
+	}, nil)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "custom headers") {
+		t.Fatalf("implicit cross-origin headers=%d %s", status, body)
+	}
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": second.URL + "/v1", "model": "model-c", "apiKey": "second-provider-secret",
+		"customHeaders": map[string]string{},
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("explicit cross-origin credentials=%d %s", status, body)
+	}
+	status, body = request(t, x.admin, http.MethodPost, x.server.URL+"/api/v1/ai/test", map[string]any{
+		"settings": map[string]any{"protocol": "openai_chat", "baseUrl": second.URL + "/v2", "model": "model-c"},
+	}, nil)
+	if status != http.StatusOK || secondRequests != 1 || secondAuthorization != "Bearer second-provider-secret" {
+		t.Fatalf("new-origin test=%d requests=%d authorization=%q %s", status, secondRequests, secondAuthorization, body)
+	}
+}
+
+func TestLegacyAIEndpointCanBeReplacedWithoutRetainingSecrets(t *testing.T) {
+	x := newTestAPI(t)
+	x.bootstrapAdmin(t)
+	encryptedKey, err := x.api.vault.Encrypt("legacy-provider-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedHeaders, err := x.api.vault.Encrypt(`{"X-Legacy":"legacy-header-secret"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = x.store.PutAISettings(context.Background(), store.StoredAISettings{
+		Settings: domain.AISettings{
+			Protocol:      domain.AIProtocolOpenAIChat,
+			BaseURL:       "https://legacy.example/v1?",
+			Model:         "legacy-model",
+			KeyConfigured: true,
+			UpdatedAt:     time.Now().UTC(),
+		},
+		EncryptedAPIKey:  encryptedKey,
+		EncryptedHeaders: encryptedHeaders,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": "https://replacement.example/v1", "model": "replacement-model",
+	}, nil)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "endpoint_credentials_required") {
+		t.Fatalf("legacy secret retention was not rejected=%d %s", status, body)
+	}
+
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", map[string]any{
+		"protocol": "openai_chat", "baseUrl": "https://replacement.example/v1", "model": "replacement-model",
+		"apiKey": "replacement-provider-secret", "customHeaders": map[string]string{},
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("explicit legacy replacement=%d %s", status, body)
+	}
+	stored, err := x.store.AISettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := x.api.vault.Decrypt(stored.EncryptedAPIKey)
+	if err != nil || key != "replacement-provider-secret" {
+		t.Fatalf("replacement key=%q err=%v", key, err)
+	}
+	headers, err := decryptAIHeaders(stored.EncryptedHeaders, x.api.vault)
+	if err != nil || len(headers) != 0 {
+		t.Fatalf("legacy headers survived replacement: %v err=%v", headers, err)
+	}
+}
+
 func TestContentSecurityPolicyAllowsOnlyBuiltInlineScripts(t *testing.T) {
 	body := []byte("self.__next_f.push(['safe bootstrap'])")
 	web := t.TempDir()
@@ -764,6 +901,133 @@ func TestTrustedProxyParsingAndSecureRequest(t *testing.T) {
 	if x.api.secureRequest(req) {
 		t.Fatal("untrusted peer spoofed forwarded protocol")
 	}
+}
+
+func TestAdministratorCookieTransportPolicyAndAttributes(t *testing.T) {
+	x := newTestAPI(t)
+
+	// A remote/public plaintext deployment must fail before bootstrap mutates
+	// either administrator or session state, even if the caller spoofs a
+	// loopback Host header.
+	remoteBootstrap := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/admin/bootstrap", strings.NewReader(fmt.Sprintf(`{"username":"admin","password":"correct horse battery staple","bootstrapToken":%q}`, x.bootstrap)))
+	remoteBootstrap.Header.Set("Content-Type", "application/json")
+	remoteBootstrap.Host = "127.0.0.1"
+	remoteBootstrap.RemoteAddr = "198.51.100.9:1234"
+	remoteBootstrapRecorder := httptest.NewRecorder()
+	x.api.Handler().ServeHTTP(remoteBootstrapRecorder, remoteBootstrap)
+	if remoteBootstrapRecorder.Code != http.StatusForbidden || !strings.Contains(remoteBootstrapRecorder.Body.String(), "insecure_admin_transport") {
+		t.Fatalf("plaintext bootstrap=%d %s", remoteBootstrapRecorder.Code, remoteBootstrapRecorder.Body.String())
+	}
+	if count, err := x.store.AdminCount(context.Background()); err != nil || count != 0 {
+		t.Fatalf("plaintext bootstrap mutated administrators: count=%d err=%v", count, err)
+	}
+
+	// A separately selected local listener preserves documented localhost and
+	// container-loopback usability and omits only Secure.
+	x.bootstrapAdmin(t)
+	localLogin := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/auth/login", strings.NewReader(`{"Username":"admin","Password":"correct horse battery staple"}`))
+	localLogin.Header.Set("Content-Type", "application/json")
+	localLogin.Host = "127.0.0.1"
+	localRecorder := httptest.NewRecorder()
+	x.api.LocalHTTPHandler().ServeHTTP(localRecorder, localLogin)
+	if localRecorder.Code != http.StatusOK {
+		t.Fatalf("local login=%d %s", localRecorder.Code, localRecorder.Body.String())
+	}
+	localCookie := cookieByName(t, localRecorder.Result(), sessionCookie)
+	if localCookie.Secure || !localCookie.HttpOnly || localCookie.SameSite != http.SameSiteStrictMode || localCookie.Path != "/" {
+		t.Fatalf("local cookie attributes=%+v", localCookie)
+	}
+
+	localLogout := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/auth/logout", nil)
+	localLogout.Host = "127.0.0.1"
+	localLogout.AddCookie(localCookie)
+	localLogoutRecorder := httptest.NewRecorder()
+	x.api.LocalHTTPHandler().ServeHTTP(localLogoutRecorder, localLogout)
+	if localLogoutRecorder.Code != http.StatusNoContent {
+		t.Fatalf("local logout=%d %s", localLogoutRecorder.Code, localLogoutRecorder.Body.String())
+	}
+	localDeletion := cookieByName(t, localLogoutRecorder.Result(), sessionCookie)
+	if localDeletion.Secure || localDeletion.MaxAge >= 0 || !localDeletion.HttpOnly || localDeletion.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("local deletion attributes=%+v", localDeletion)
+	}
+
+	// The same loopback Host on the ordinary listener is not sufficient.
+	spoofedLogin := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/auth/login", strings.NewReader(`{"Username":"admin","Password":"correct horse battery staple"}`))
+	spoofedLogin.Header.Set("Content-Type", "application/json")
+	spoofedLogin.Host = "127.0.0.1"
+	spoofedLogin.RemoteAddr = "198.51.100.9:1234"
+	spoofedRecorder := httptest.NewRecorder()
+	x.api.Handler().ServeHTTP(spoofedRecorder, spoofedLogin)
+	if spoofedRecorder.Code != http.StatusForbidden {
+		t.Fatalf("spoofed host selected local cookie transport=%d %s", spoofedRecorder.Code, spoofedRecorder.Body.String())
+	}
+
+	// A trusted direct proxy asserting HTTPS receives the secure variant.
+	x.api.trustedProxies, _ = parseTrustedProxies([]string{"10.0.0.2/32"})
+	proxyLogin := httptest.NewRequest(http.MethodPost, "http://console.example/api/v1/auth/login", strings.NewReader(`{"Username":"admin","Password":"correct horse battery staple"}`))
+	proxyLogin.Header.Set("Content-Type", "application/json")
+	proxyLogin.Header.Set("X-Forwarded-Proto", "https")
+	proxyLogin.RemoteAddr = "10.0.0.2:1234"
+	proxyLogin.Host = "console.example"
+	proxyRecorder := httptest.NewRecorder()
+	x.api.Handler().ServeHTTP(proxyRecorder, proxyLogin)
+	if proxyRecorder.Code != http.StatusOK {
+		t.Fatalf("proxy login=%d %s", proxyRecorder.Code, proxyRecorder.Body.String())
+	}
+	secureCookie := cookieByName(t, proxyRecorder.Result(), sessionCookie)
+	if !secureCookie.Secure || !secureCookie.HttpOnly || secureCookie.SameSite != http.SameSiteStrictMode || secureCookie.Path != "/" {
+		t.Fatalf("secure cookie attributes=%+v", secureCookie)
+	}
+
+	untrustedLogin := httptest.NewRequest(http.MethodPost, "http://console.example/api/v1/auth/login", strings.NewReader(`{"Username":"admin","Password":"correct horse battery staple"}`))
+	untrustedLogin.Header.Set("Content-Type", "application/json")
+	untrustedLogin.Header.Set("X-Forwarded-Proto", "https")
+	untrustedLogin.RemoteAddr = "198.51.100.9:1234"
+	untrustedLogin.Host = "console.example"
+	untrustedRecorder := httptest.NewRecorder()
+	x.api.Handler().ServeHTTP(untrustedRecorder, untrustedLogin)
+	if untrustedRecorder.Code != http.StatusForbidden {
+		t.Fatalf("untrusted proxy selected cookie security=%d %s", untrustedRecorder.Code, untrustedRecorder.Body.String())
+	}
+}
+
+func TestExistingHTTPAdminSessionStopsOutsideLocalMode(t *testing.T) {
+	x := newTestAPI(t)
+	x.bootstrapAdmin(t)
+	login := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/auth/login", strings.NewReader(`{"Username":"admin","Password":"correct horse battery staple"}`))
+	login.Header.Set("Content-Type", "application/json")
+	login.Host = "127.0.0.1"
+	loginRecorder := httptest.NewRecorder()
+	x.api.LocalHTTPHandler().ServeHTTP(loginRecorder, login)
+	cookie := cookieByName(t, loginRecorder.Result(), sessionCookie)
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/status", nil)
+	statusRequest.Host = "127.0.0.1"
+	statusRequest.AddCookie(cookie)
+	statusRecorder := httptest.NewRecorder()
+	x.api.Handler().ServeHTTP(statusRecorder, statusRequest)
+	if statusRecorder.Code != http.StatusOK || !strings.Contains(statusRecorder.Body.String(), `"authenticated":false`) {
+		t.Fatalf("insecure status=%d %s", statusRecorder.Code, statusRecorder.Body.String())
+	}
+	meRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/auth/me", nil)
+	meRequest.Host = "127.0.0.1"
+	meRequest.AddCookie(cookie)
+	meRecorder := httptest.NewRecorder()
+	x.api.Handler().ServeHTTP(meRecorder, meRequest)
+	if meRecorder.Code != http.StatusForbidden || !strings.Contains(meRecorder.Body.String(), "insecure_admin_transport") {
+		t.Fatalf("insecure existing session=%d %s", meRecorder.Code, meRecorder.Body.String())
+	}
+}
+
+func cookieByName(t *testing.T, response *http.Response, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("response did not set cookie %q: %v", name, response.Header.Values("Set-Cookie"))
+	return nil
 }
 
 func TestLoginLimiterBoundsAndExpiresSourceKeys(t *testing.T) {

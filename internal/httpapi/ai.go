@@ -40,21 +40,32 @@ func (s *Server) getAISettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, x)
 }
 func maskedHeaders(ciphertext string, v interface{ Decrypt(string) (string, error) }) domain.Headers {
-	if ciphertext == "" {
-		return domain.Headers{}
-	}
-	plain, err := v.Decrypt(ciphertext)
+	headers, err := decryptAIHeaders(ciphertext, v)
 	if err != nil {
-		return domain.Headers{}
-	}
-	var headers domain.Headers
-	if json.Unmarshal([]byte(plain), &headers) != nil {
 		return domain.Headers{}
 	}
 	for k := range headers {
 		headers[k] = "••••••"
 	}
 	return headers
+}
+
+func decryptAIHeaders(ciphertext string, v interface{ Decrypt(string) (string, error) }) (domain.Headers, error) {
+	if ciphertext == "" {
+		return domain.Headers{}, nil
+	}
+	plain, err := v.Decrypt(ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	if plain == "" {
+		return domain.Headers{}, nil
+	}
+	var headers domain.Headers
+	if err = json.Unmarshal([]byte(plain), &headers); err != nil {
+		return nil, err
+	}
+	return headers, nil
 }
 func (s *Server) putAISettings(w http.ResponseWriter, r *http.Request) {
 	var in aiSettingsInput
@@ -65,7 +76,46 @@ func (s *Server) putAISettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "conflicting_key_update", "apiKey and clearApiKey cannot be used together")
 		return
 	}
-	existing, _ := s.store.AISettings(r.Context())
+	if len(in.CustomHeaders) > 20 {
+		writeError(w, 400, "too_many_headers", "at most 20 custom headers are allowed")
+		return
+	}
+	cfg := ai.Config{Protocol: in.Protocol, BaseURL: in.BaseURL, Model: in.Model, CustomHeaders: in.CustomHeaders}
+	if _, err := ai.New(cfg); err != nil {
+		writeError(w, 400, "invalid_ai_settings", err.Error())
+		return
+	}
+	existing, existingErr := s.store.AISettings(r.Context())
+	if existingErr != nil && !errors.Is(existingErr, store.ErrNotFound) {
+		s.fail(w, existingErr)
+		return
+	}
+	if existingErr == nil {
+		sameOrigin, scopeErr := ai.SameCredentialOrigin(existing.Settings.BaseURL, in.BaseURL)
+		if scopeErr != nil {
+			// Older releases accepted a few non-canonical URLs (for example a
+			// trailing empty query marker). The incoming endpoint was validated
+			// above, so an error here can only make the stored origin untrusted.
+			// Treat it as a boundary change and require explicit secret handling;
+			// never trap an administrator on an unreplaceable legacy row.
+			sameOrigin = false
+		}
+		if !sameOrigin {
+			if existing.EncryptedAPIKey != "" && in.APIKey == nil && !in.ClearAPIKey {
+				writeError(w, 400, "endpoint_credentials_required", "changing the AI endpoint requires re-entering or explicitly clearing the API key")
+				return
+			}
+			storedHeaders, headerErr := decryptAIHeaders(existing.EncryptedHeaders, s.vault)
+			if headerErr != nil {
+				s.fail(w, headerErr)
+				return
+			}
+			if len(storedHeaders) > 0 && in.CustomHeaders == nil {
+				writeError(w, 400, "endpoint_credentials_required", "changing the AI endpoint requires re-entering or explicitly clearing custom headers")
+				return
+			}
+		}
+	}
 	encryptedKey := existing.EncryptedAPIKey
 	hint := existing.Settings.APIKeyHint
 	if in.ClearAPIKey {
@@ -84,15 +134,6 @@ func (s *Server) putAISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		hint = ids.Hint(key)
-	}
-	if len(in.CustomHeaders) > 20 {
-		writeError(w, 400, "too_many_headers", "at most 20 custom headers are allowed")
-		return
-	}
-	cfg := ai.Config{Protocol: in.Protocol, BaseURL: in.BaseURL, Model: in.Model, CustomHeaders: in.CustomHeaders}
-	if _, err := ai.New(cfg); err != nil {
-		writeError(w, 400, "invalid_ai_settings", err.Error())
-		return
 	}
 	encryptedHeaders := existing.EncryptedHeaders
 	if in.CustomHeaders != nil {
@@ -126,15 +167,9 @@ func (s *Server) loadAIClient(r *http.Request) (*ai.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	headerText, err := s.vault.Decrypt(stored.EncryptedHeaders)
+	headers, err := decryptAIHeaders(stored.EncryptedHeaders, s.vault)
 	if err != nil {
 		return nil, err
-	}
-	headers := domain.Headers{}
-	if headerText != "" {
-		if err = json.Unmarshal([]byte(headerText), &headers); err != nil {
-			return nil, err
-		}
 	}
 	return ai.New(ai.Config{Protocol: stored.Settings.Protocol, BaseURL: stored.Settings.BaseURL, Model: stored.Settings.Model, APIKey: key, CustomHeaders: headers})
 }
@@ -160,10 +195,21 @@ func (s *Server) testAI(w http.ResponseWriter, r *http.Request) {
 		model = cfg.Model
 		if draft.Settings.APIKey != nil {
 			cfg.APIKey = *draft.Settings.APIKey
-		} else if stored, e := s.store.AISettings(r.Context()); e == nil {
-			cfg.APIKey, _ = s.vault.Decrypt(stored.EncryptedAPIKey)
+		} else if stored, storedErr := s.store.AISettings(r.Context()); storedErr == nil && stored.EncryptedAPIKey != "" {
+			var sameOrigin bool
+			sameOrigin, err = ai.SameCredentialOrigin(stored.Settings.BaseURL, cfg.BaseURL)
+			if err == nil && !sameOrigin {
+				err = errors.New("API key must be supplied when testing a different AI endpoint")
+			}
+			if err == nil {
+				cfg.APIKey, err = s.vault.Decrypt(stored.EncryptedAPIKey)
+			}
+		} else if storedErr != nil && !errors.Is(storedErr, store.ErrNotFound) {
+			err = storedErr
 		}
-		client, err = ai.New(cfg)
+		if err == nil {
+			client, err = ai.New(cfg)
+		}
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, 409, "ai_not_configured", "AI provider is not configured")

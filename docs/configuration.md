@@ -14,6 +14,7 @@ witshield-controller [options]
 | `--data-dir` | `WITSHIELD_DATA_DIR` | Linux 为 `/var/lib/witshield` | SQLite、状态和默认主密钥目录 |
 | `--web-dir` | `WITSHIELD_WEB_DIR` | `/usr/share/witshield/web` | Web 静态资源目录 |
 | `--trusted-proxies` | `WITSHIELD_TRUSTED_PROXIES` | 空 | 允许提供转发头的反向代理 IP/CIDR，逗号分隔；仅配置真实直连代理 |
+| `--local-http-listen` | `WITSHIELD_LOCAL_HTTP_LISTEN` | 空 | 可选的独立本地 HTTP 监听；必须绑定非通配的隔离接口，并只通过宿主 loopback 发布 |
 | `--bootstrap-token` | `WITSHIELD_BOOTSTRAP_TOKEN` | 空 | 首位管理员初始化令牌 |
 | `--bootstrap-token-file` | `WITSHIELD_BOOTSTRAP_TOKEN_FILE` | 空 | 首选：从本机受限文件读取初始化令牌 |
 | `--initial-enrollment-token-file` | `WITSHIELD_INITIAL_ENROLLMENT_TOKEN_FILE` | 空 | 单机首次启动时预置一次性设备 token |
@@ -31,6 +32,8 @@ witshield-controller [options]
 4. 此后使用 `POST /api/v1/auth/login` 登录。
 
 首次创建管理员必须配置 bootstrap token，请求必须精确匹配；未配置时初始化端点返回不可用，即使请求来自 loopback 也不会免 token。原生安装默认使用 `/var/lib/witshield/bootstrap.token`（`0600`）而不是环境变量；初始化完成后删除该文件并重启 Controller。数据库已初始化时该端点仍拒绝重复创建管理员。
+
+Controller 仅在直接 TLS、受信代理声明 HTTPS，或由独立监听器标记的 loopback-only 本地 HTTP 模式下接受管理员登录。原生默认监听 loopback，因此自动启用本地模式。Compose 的 Agent API 监听 `0.0.0.0:8080`，浏览器入口则绑定仅 Controller 加入的 `egress` 网络接口 `admin-listener:8081`，并只把该端口发布到宿主 `127.0.0.1`；Agent 仅加入内部 `control` 网络，即使伪造 `Host` 也不能到达独立监听器或把普通 API 监听器升级成本地管理链路。不要把 `--local-http-listen` 绑定通配地址、与 Agent 共用网络或公开到局域网/公网，它也不是 TLS 的替代品。
 
 主密钥首次使用时生成并以 `0600` 保存。不要把它写入 `.env`、Compose 或数据库。备份时将主密钥与数据库分开保存；丢失主密钥会导致加密的 AI Key、Webhook 密钥和 SMTP 密码无法恢复。
 
@@ -112,7 +115,7 @@ AI 凭据不使用环境变量，避免出现在 Compose、进程环境和常见
 }
 ```
 
-读取设置时不会返回明文 API Key，并对其他敏感请求头进行移除或掩码。若想保留现有 Key，更新其他字段时不要发送 `apiKey`；空字符串不等同于清除。
+读取设置时不会返回明文 API Key，并对其他敏感请求头进行移除或掩码。若想在同一 `scheme + host + 有效端口` 内保留现有 Key，更新路径、模型等字段时不要发送 `apiKey`；空字符串不等同于清除。更换到另一个 endpoint origin 时必须重新输入或显式清除 API Key；已保存的敏感自定义请求头也必须重新提交或用空对象明确清除，系统不会把旧凭据自动带到新地址。未保存设置的“测试连接”遵守同一边界。
 
 更多协议语义见 [AI 提供方](ai-providers.md)。
 
@@ -125,7 +128,7 @@ AI 凭据不使用环境变量，避免出现在 Compose、进程环境和常见
 - 只传递经过清洗的 `X-Forwarded-For`/`Forwarded`，Controller 只信任明确配置的代理；
 - `/agent/v1/sync` 等 Agent API 不得被缓存；
 - 初始化完成前先限制来源，且使用 bootstrap token；
-- Cookie 保持 `HttpOnly`、`Secure`、`SameSite=Strict`。
+- 公网 HTTPS 模式的 Cookie 保持 `HttpOnly`、`Secure`、`SameSite=Strict`；仅 loopback-only 本地 HTTP 模式省略 `Secure`。
 
 不要仅靠隐藏域名保护 Controller。
 

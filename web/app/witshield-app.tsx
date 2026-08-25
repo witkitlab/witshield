@@ -531,6 +531,14 @@ function actionStatusText(status: DashboardSnapshot['actions'][number]['status']
   return ({ draft: '待审批', approved: '已排队', executing: '执行中', awaiting_confirmation: '等待连接确认', confirming: '确认中', succeeded: '已成功', failed: '执行失败', rolling_back: '回滚中', rolled_back: '已回滚', cancelled: '已取消', indeterminate: '需人工核验' } as const)[status];
 }
 
+function sameAIEndpointOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return a.trim() === b.trim();
+  }
+}
+
 function SettingsView({ settings, notifications, schedules, deviceId, onScheduleUpdate, onSaved, onNotificationsSaved, onLogout }: { settings: AISettings; notifications: NotificationSettings; schedules: ScanSchedule[]; deviceId: string; onScheduleUpdate: (schedule: ScanSchedule) => void; onSaved: (settings: AISettings) => void; onNotificationsSaved: (settings: NotificationSettings) => void; onLogout: () => Promise<void> }) {
   const [form, setForm] = useState<AISettings & { apiKey?: string }>({ ...settings, apiKey: '' });
   const [notificationForm, setNotificationForm] = useState({
@@ -550,15 +558,24 @@ function SettingsView({ settings, notifications, schedules, deviceId, onSchedule
   const [notificationResult, setNotificationResult] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [notificationError, setNotificationError] = useState<string | null>(null);
+  const endpointOriginChanged = !sameAIEndpointOrigin(settings.baseUrl, form.baseUrl);
+  const endpointKeyRequired = settings.hasKey && endpointOriginChanged && !form.apiKey;
   async function testConnection() {
+    if (endpointKeyRequired) { setSettingsError('更换 API 地址后，请重新输入该地址对应的 API Key'); return; }
     setTesting(true); setTestResult(null); setSettingsError(null);
     try { const result = await testAISettings(form); setTestResult(`连接成功 · ${result.model} · ${result.latencyMs} ms`); }
     catch (cause) { setTestResult(cause instanceof Error ? cause.message : '连接失败'); }
     finally { setTesting(false); }
   }
   async function save(event: React.FormEvent) {
-    event.preventDefault(); setSaving(true); setSettingsError(null);
-    try { onSaved(await saveAISettings(form)); setForm((current) => ({ ...current, apiKey: '' })); }
+    event.preventDefault();
+    if (endpointKeyRequired) { setSettingsError('更换 API 地址后，请重新输入该地址对应的 API Key'); return; }
+    setSaving(true); setSettingsError(null);
+    try {
+      const clearBoundHeaders = endpointOriginChanged && settings.customHeaderKeys.length > 0;
+      onSaved(await saveAISettings({ ...form, ...(clearBoundHeaders ? { customHeaders: {} } : {}) }));
+      setForm((current) => ({ ...current, apiKey: '' }));
+    }
     catch (cause) { setSettingsError(cause instanceof Error ? cause.message : '保存 AI 设置失败'); }
     finally { setSaving(false); }
   }
@@ -613,8 +630,8 @@ function SettingsView({ settings, notifications, schedules, deviceId, onSchedule
         <div className="form-grid">
           <label><span>兼容协议</span><select value={form.protocol} onChange={(event) => setForm({ ...form, protocol: event.target.value as AISettings['protocol'] })}><option value="openai_responses">OpenAI Responses</option><option value="openai_chat">OpenAI Chat Completions</option><option value="anthropic_messages">Anthropic Messages</option></select></label>
           <label><span>模型名称</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="gpt-5.4" /></label>
-          <label className="span-two"><span>API Base URL</span><input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} inputMode="url" placeholder="https://api.openai.com/v1" /></label>
-          <label className="span-two"><span>API Key</span><div className="secret-input"><KeyRound size={15} /><input type="password" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} placeholder={settings.hasKey ? `${settings.keyHint}（留空保持不变）` : '输入 API Key'} /></div><small>由本机主密钥加密保存，特权 Helper 无法读取。</small></label>
+          <label className="span-two"><span>API Base URL</span><input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} inputMode="url" placeholder="https://api.openai.com/v1" />{settings.customHeaderKeys.length > 0 && <small>{endpointOriginChanged ? `保存时会清除旧地址绑定的自定义请求头：${settings.customHeaderKeys.join('、')}` : `已安全保存自定义请求头：${settings.customHeaderKeys.join('、')}（值不会返回浏览器）`}</small>}</label>
+          <label className="span-two"><span>API Key</span><div className="secret-input"><KeyRound size={15} /><input type="password" value={form.apiKey} required={endpointKeyRequired} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} placeholder={endpointOriginChanged ? '更换地址后需重新输入 API Key' : settings.hasKey ? `${settings.keyHint}（留空保持不变）` : '输入 API Key'} /></div><small>{endpointOriginChanged ? '密钥不会自动带到新的 API 地址；请重新输入以确认信任边界。' : '由本机主密钥加密保存，特权 Helper 无法读取。'}</small></label>
           <label className="span-two"><span>发送给模型的信息</span><input value="最少信息：仅相关发现与必要证据" readOnly aria-readonly="true" /><small>首版固定采用最少信息模式；服务器文本会作为不可信数据与系统指令隔离。</small></label>
         </div>
         <div className="form-actions"><button type="button" className="secondary-button" onClick={() => void testConnection()} disabled={testing}>{testing ? <LoaderCircle className="spin" size={15} /> : <TestTube2 size={15} />}测试连接</button><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}保存设置</button>{testResult && <span className="test-result">{testResult}</span>}</div>

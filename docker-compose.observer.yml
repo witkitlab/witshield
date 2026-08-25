@@ -23,6 +23,8 @@ services:
     command:
       - --listen
       - 0.0.0.0:8080
+      - --local-http-listen
+      - admin-listener:8081
       - --data-dir
       - /data/controller
       - --bootstrap-token-file
@@ -32,12 +34,14 @@ services:
     secrets:
       - bootstrap_token
     ports:
-      - 127.0.0.1:${WITSHIELD_PORT:-8080}:8080
+      - 127.0.0.1:${WITSHIELD_PORT:-8080}:8081
     volumes:
       - controller-data:/data/controller
     networks:
-      - control
-      - egress
+      control: {}
+      egress:
+        aliases:
+          - admin-listener
     pids_limit: 256
     mem_limit: 512m
     cpus: 1.0
@@ -95,7 +99,8 @@ networks:
     driver: bridge
     internal: true
   # Only Controller receives normal egress for administrator-configured AI and
-  # notification endpoints. Agent is restricted to the internal control network.
+  # notification endpoints. The browser-only listener also binds this interface,
+  # which the Agent never joins; only its port is published on host loopback.
   egress:
     driver: bridge
 
