@@ -260,8 +260,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 	// pinned numeric address. Private/loopback providers remain an intentional
 	// administrator-configured capability.
 
-	// codeql[go/request-forgery]
-	resp, err := c.http.Do(req)
+	resp, err := c.http.Do(req) // lgtm[go/request-forgery]
 	if err != nil {
 		return "", fmt.Errorf("AI request failed: %s", c.redact(err.Error()))
 	}
