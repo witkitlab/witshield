@@ -11,6 +11,11 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    ignore:
+      # Framework and tooling majors need a deliberate compatibility review;
+      # the grouped weekly PR remains responsible for minor/patch updates.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       web-minor-patch:
         update-types: [minor, patch]
@@ -22,3 +27,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Keep the builder on the documented Node LTS line until a major upgrade
+      # is explicitly tested across Next.js, vinext and Sites packaging.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
