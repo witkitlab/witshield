@@ -259,6 +259,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 	// and installs safeDialer, which validates every DNS answer before dialing a
 	// pinned numeric address. Private/loopback providers remain an intentional
 	// administrator-configured capability.
+
 	// codeql[go/request-forgery]
 	resp, err := c.http.Do(req)
 	if err != nil {
