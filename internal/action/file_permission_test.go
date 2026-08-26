@@ -154,7 +154,7 @@ func TestFilePermissionRollbackRefusesToOverwriteNewerAdministratorChange(t *tes
 	}
 }
 
-func TestFilePermissionRollbackRefusesAReplacementInodeWithMatchingMetadata(t *testing.T) {
+func TestFilePermissionRollbackRefusesAReplacementInodeWithMatchingMetadataAndContent(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "managed.env")
 	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
@@ -173,13 +173,78 @@ func TestFilePermissionRollbackRefusesAReplacementInodeWithMatchingMetadata(t *t
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(target, []byte("replacement"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rollback := engine.Run(context.Background(), Request{ActionID: "replaced-permission", Actor: "tester", Type: TypeFilePermissionRepair, Operation: OperationRollback, Parameters: parameters, State: apply.State})
 	content, readErr := os.ReadFile(target)
-	if rollback.Success || !rollback.Indeterminate || readErr != nil || string(content) != "replacement" {
+	if rollback.Success || !rollback.Indeterminate || readErr != nil || string(content) != "original" {
 		t.Fatalf("replacement inode was modified by stale rollback: receipt=%#v content=%q err=%v", rollback, content, readErr)
+	}
+	info, statErr := os.Stat(target)
+	if statErr != nil {
+		t.Fatalf("inspect replacement after stale rollback: %v", statErr)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("replacement mode was modified by stale rollback: mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestFileObjectGenerationIsStableAcrossMetadataAndChangesOnReplacement(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "managed.env")
+	if err := os.WriteFile(target, []byte("same-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, err := first.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := fileObjectGeneration(first, firstInfo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Chmod(0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterInfo, err := first.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterMetadata, err := fileObjectGeneration(first, afterInfo, before.Kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != afterMetadata {
+		t.Fatalf("file generation changed across metadata-only mutation: before=%#v after=%#v", before, afterMetadata)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("same-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	replacementInfo, err := replacement.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := fileObjectGeneration(replacement, replacementInfo, before.Kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced == before {
+		t.Fatalf("replacement object reused the prior generation token: %#v", replaced)
 	}
 }
 
