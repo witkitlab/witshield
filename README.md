@@ -1,15 +1,15 @@
-# 妙盾 · AI Agent 服务器管家
+# 妙计巡御 · AI Agent 服务器管家
 
-> **WitShield AI**：主动巡检风险，在你授权后修复，并在攻击发生时按策略自动响应。
+> **妙计巡御（WitShield AI）**：主动巡检风险，在你授权后修复，并在攻击发生时按策略自动响应。
 
 [English](README.en.md) · [架构](docs/architecture.md) · [安全模型](docs/threat-model.md) · [配置参考](docs/configuration.md)
 
 > [!IMPORTANT]
 > 项目目前处于早期开发阶段。自动处置默认关闭；在生产服务器启用修复前，请先阅读[安全模型](docs/threat-model.md)，并验证备份和回滚路径。
 
-## 妙盾解决什么问题
+## 巡御解决什么问题
 
-传统服务器安全工具擅长发现风险，却常把用户留在一串告警和命令面前。妙盾把工作流连成一个可审计的闭环：
+传统服务器安全工具擅长发现风险，却常把用户留在一串告警和命令面前。巡御把工作流连成一个可审计的闭环：
 
 1. 按天或按周检查账号、SSH、敏感权限、端口、防火墙、软件包更新与 Docker Socket 风险；
 2. 用规则给出可复现的证据，再由用户自己的 AI 服务解释影响和修复思路；
@@ -90,7 +90,7 @@ docker compose -f docker-compose.observer.yml up -d controller
 
 ## 使用自己的 AI API
 
-妙盾不内置 WitKitLab 密钥，也不要求经过公共代理。用户可配置：
+巡御不内置 WitKitLab 密钥，也不要求经过公共代理。用户可配置：
 
 - OpenAI Responses / Chat Completions 兼容接口；
 - Anthropic Messages 兼容接口；

@@ -137,7 +137,7 @@ export function WitShieldApp() {
       })
       .catch((cause: unknown) => {
         if (!active) return;
-        setError(cause instanceof Error ? cause.message : '无法连接妙盾服务');
+        setError(cause instanceof Error ? cause.message : '无法连接巡御服务');
         setBootState('error');
       });
     return () => { active = false; };
@@ -181,7 +181,7 @@ export function WitShieldApp() {
       <aside className="sidebar">
         <button className="brand brand-button" onClick={() => setSection('overview')}>
           <span className="brand-mark" aria-hidden="true"><ShieldCheck size={18} strokeWidth={2.2} /></span>
-          <span><strong>妙盾</strong><small>WitShield AI</small></span>
+          <span><strong>妙计巡御</strong><small>WitShield AI</small></span>
         </button>
 
         <nav aria-label="主要导航">
@@ -247,7 +247,7 @@ export function WitShieldApp() {
       {selectedFinding && <FindingDrawer finding={selectedFinding} onClose={() => setSelectedFinding(null)} onPlan={(plan) => {
         setSelectedFinding((finding) => finding ? { ...finding, remediation: plan } : null);
         setDashboard((current) => ({ ...current, findings: current.findings.map((finding) => finding.id === selectedFinding.id ? { ...finding, remediation: plan } : finding) }));
-      }} onApproved={() => { notify('已批准，妙盾正在执行并验证修复'); setSelectedFinding(null); if (!demoMode) void refresh(); }} />}
+      }} onApproved={() => { notify('已批准，巡御正在执行并验证修复'); setSelectedFinding(null); if (!demoMode) void refresh(); }} />}
       {showEnroll && <EnrollmentModal enrollment={enrollment} onClose={() => setShowEnroll(false)} onCopied={() => notify('安装命令已复制')} />}
       {toast && <div className="toast" role="status"><CheckCircle2 size={16} />{toast}</div>}
     </main>
@@ -255,7 +255,7 @@ export function WitShieldApp() {
 }
 
 function sectionTitle(section: Section) {
-  return ({ overview: '服务器安全概览', findings: '风险与变化', reports: '扫描报告', devices: '受保护的设备', policies: '防御策略', audit: '执行与审计记录', settings: '妙盾设置' } as const)[section];
+  return ({ overview: '服务器安全概览', findings: '风险与变化', reports: '扫描报告', devices: '受保护的设备', policies: '防御策略', audit: '执行与审计记录', settings: '巡御设置' } as const)[section];
 }
 
 function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
@@ -274,7 +274,7 @@ function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
           <div className="posture-copy">
             <span className="health-pill"><span className="status-dot" />{dashboard.devicesOnline > 0 ? '防护运行中' : '等待 Agent 上线'}</span>
             <h2>{hasScore ? '今日安全状态' : '等待首次安全扫描'}</h2>
-            <p>{hasScore ? `妙盾已检查 ${dashboard.checks} 项服务器配置，发现 ${dashboard.criticalFindings} 项需要优先处理的问题。` : '尚未收到可验证的扫描报告；在此之前不会把未知状态显示为安全。'}</p>
+            <p>{hasScore ? `巡御已检查 ${dashboard.checks} 项服务器配置，发现 ${dashboard.criticalFindings} 项需要优先处理的问题。` : '尚未收到可验证的扫描报告；在此之前不会把未知状态显示为安全。'}</p>
             <div className="score-row"><strong>{hasScore ? dashboard.score : '—'}</strong><span>{hasScore ? '/ 100' : '待扫描'}<br /><small>{!hasScore ? '尚无安全评分' : dashboard.coverageIssues.length ? '仅基于已完成的检查' : `较昨日提升 ${Math.max(0, (dashboard.score ?? 0) - dashboard.previousScore)} 分`}</small></span></div>
           </div>
           <div className="orbit" aria-label={hasScore ? `安全评分 ${dashboard.score} 分` : '尚无安全评分，等待首次扫描'} style={{ '--score': `${(dashboard.score ?? 0) * 3.6}deg` } as React.CSSProperties}>
@@ -291,7 +291,7 @@ function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
         </div>
 
         <div className="section-heading">
-          <div><p className="eyebrow">需要关注</p><h2>妙盾发现了 {deviceFindings.length} 个变化</h2></div>
+          <div><p className="eyebrow">需要关注</p><h2>巡御发现了 {deviceFindings.length} 个变化</h2></div>
           <button className="text-button" onClick={() => onSection('findings')}>查看全部 <ChevronRight size={14} /></button>
         </div>
         <div className="finding-list">
@@ -338,11 +338,11 @@ function AssistantPanel({ deviceId, finding, hasScanned, onFinding }: { deviceId
   }
   return (
     <aside className="assistant-panel">
-      <div className="assistant-heading"><span className="assistant-mark"><Sparkles size={17} /></span><div><h2>妙盾 Agent</h2><p><span className="status-dot" />随时可以协助</p></div></div>
+      <div className="assistant-heading"><span className="assistant-mark"><Sparkles size={17} /></span><div><h2>巡御 Agent</h2><p><span className="status-dot" />随时可以协助</p></div></div>
       <div className="agent-message">
         <p>{hasScanned ? `今天的扫描已经完成。${finding ? `最值得先处理的是“${finding.title}”，我可以先解释原因或展示安全修复计划。` : '当前没有需要优先处理的风险。'}` : '该设备尚未完成首次扫描。收到可验证的报告后，我会基于最少必要证据解释风险并提出修复方案。'}</p>
-        {messages.map((message, index) => <div className={`mini-message ${message.role}`} key={`${message.role}-${index}`}><strong>{message.role === 'user' ? '你' : '妙盾'}</strong><p>{message.text}</p></div>)}
-        {thinking && <div className="mini-message assistant"><strong>妙盾</strong><p><LoaderCircle className="spin" size={14} /> 正在基于最少必要证据分析…</p></div>}
+        {messages.map((message, index) => <div className={`mini-message ${message.role}`} key={`${message.role}-${index}`}><strong>{message.role === 'user' ? '你' : '巡御'}</strong><p>{message.text}</p></div>)}
+        {thinking && <div className="mini-message assistant"><strong>巡御</strong><p><LoaderCircle className="spin" size={14} /> 正在基于最少必要证据分析…</p></div>}
         <div className="suggestion-list">
           <button onClick={() => finding && void submit(`解释“${finding.title}”的判断依据与实际影响`)}>解释最高风险</button>
           <button onClick={() => finding && onFinding(finding)}>生成安全修复计划</button>
@@ -351,7 +351,7 @@ function AssistantPanel({ deviceId, finding, hasScanned, onFinding }: { deviceId
       </div>
       <div className="guardrail-note"><LockKeyhole size={15} /><div><strong>经你授权才行动</strong><p>执行前展示授权范围、影响和回滚方案。</p></div></div>
       <form className="prompt-box" onSubmit={(event) => { event.preventDefault(); void submit(prompt); }}>
-        <label htmlFor="prompt">与妙盾讨论这台服务器</label>
+        <label htmlFor="prompt">与巡御讨论这台服务器</label>
         <textarea id="prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：为什么 8080 端口突然开放了？" rows={3} />
         <div><span>AI 仅获取最少必要的结构化信息</span><button type="submit" aria-label="发送" disabled={thinking}><ArrowUp size={15} /></button></div>
       </form>
@@ -816,7 +816,7 @@ function FindingDrawer({ finding, onClose, onPlan, onApproved }: { finding: Find
       <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="finding-title">
         <header><div><span className={`severity ${finding.severity}`}>{severityName[finding.severity]}</span><p>{finding.category} · {finding.detectedAt}</p></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
         <div className="drawer-body"><h2 id="finding-title">{finding.title}</h2><p className="lead">{finding.summary}</p><section><h3>判断依据</h3><ul className="evidence-list">{finding.evidence.map((item) => <li key={item}><Check size={14} />{item}</li>)}</ul></section>
-          {plan ? <section className="plan-card"><div className="plan-heading"><div><p className="eyebrow">待你确认的修复计划</p><h3>{plan.title}</h3></div><span className={`plan-risk ${plan.risk}`}>{plan.risk === 'low' ? '低影响' : '需谨慎'}</span></div><p className="plan-checks-label">批准后由设备 Agent 强制执行这些前置检查；任一检查失败都不会修改系统：</p><div className="precheck-list">{plan.checks.map((check) => <span key={check}><ShieldCheck size={14} />{check}</span>)}</div>{plan.steps.map((step, index) => <article className="action-step" key={step.id}><span className="step-number">{index + 1}</span><div><h4>{step.title}</h4><pre>{step.preview}</pre><dl><div><dt>影响</dt><dd>{step.impact}</dd></div><div><dt>回滚</dt><dd>{step.rollback}</dd></div></dl></div></article>)}<label className="approval-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>{packagePlan ? '我已核对授权的软件包范围，并了解目标版本将在设备执行时解析；如 APT 需要修改任何未列出的包，本次操作会在 dpkg 前停止。' : '我已查看具体变更、影响和回滚方案，同意在设备端检查通过后执行这一次修复。'}</span></label></section> : <section className="empty-plan"><Eye size={20} /><div><h3>当前仅提供证据</h3><p>妙盾不会在没有明确修复方案和回滚步骤时执行操作。</p>{canCreateAction(finding) && <button className="secondary-button" onClick={() => void generate()} disabled={generating}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}生成安全修复计划</button>}</div></section>}
+          {plan ? <section className="plan-card"><div className="plan-heading"><div><p className="eyebrow">待你确认的修复计划</p><h3>{plan.title}</h3></div><span className={`plan-risk ${plan.risk}`}>{plan.risk === 'low' ? '低影响' : '需谨慎'}</span></div><p className="plan-checks-label">批准后由设备 Agent 强制执行这些前置检查；任一检查失败都不会修改系统：</p><div className="precheck-list">{plan.checks.map((check) => <span key={check}><ShieldCheck size={14} />{check}</span>)}</div>{plan.steps.map((step, index) => <article className="action-step" key={step.id}><span className="step-number">{index + 1}</span><div><h4>{step.title}</h4><pre>{step.preview}</pre><dl><div><dt>影响</dt><dd>{step.impact}</dd></div><div><dt>回滚</dt><dd>{step.rollback}</dd></div></dl></div></article>)}<label className="approval-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>{packagePlan ? '我已核对授权的软件包范围，并了解目标版本将在设备执行时解析；如 APT 需要修改任何未列出的包，本次操作会在 dpkg 前停止。' : '我已查看具体变更、影响和回滚方案，同意在设备端检查通过后执行这一次修复。'}</span></label></section> : <section className="empty-plan"><Eye size={20} /><div><h3>当前仅提供证据</h3><p>巡御不会在没有明确修复方案和回滚步骤时执行操作。</p>{canCreateAction(finding) && <button className="secondary-button" onClick={() => void generate()} disabled={generating}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}生成安全修复计划</button>}</div></section>}
           {planError && <p className="form-error" role="alert">{planError}</p>}
         </div>
         <footer className="drawer-footer"><button className="secondary-button" onClick={onClose}>暂不处理</button>{plan && <button className="primary-button" disabled={!confirmed || approving} onClick={() => void approve()}>{approving ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />}批准并执行</button>}</footer>
@@ -865,8 +865,8 @@ function AuthScreen({ mode, onReady }: { mode: 'setup' | 'login'; onReady: () =>
     catch (cause) { setError(cause instanceof Error ? cause.message : '操作失败'); }
     finally { setBusy(false); }
   }
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>妙盾</strong><small>WitShield AI</small></div></div><p className="eyebrow">AI Agent 服务器管家</p><h1>{mode === 'setup' ? '创建唯一管理员' : '欢迎回来'}</h1><p className="auth-intro">{mode === 'setup' ? '控制台首版采用单管理员模式。完成初始化后即可连接第一台服务器。' : '登录你的自建妙盾控制台。'}</p><form onSubmit={submit}><label><span>管理员名称</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} /></label>{mode === 'setup' && <><label><span>再次输入密码</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label><label><span>初始化令牌（如安装程序要求）</span><input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} /></label></>}{error && <p className="form-error">{error}</p>}<button className="primary-button auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LockKeyhole size={16} />}{mode === 'setup' ? '完成安全初始化' : '登录控制台'}</button></form><small className="auth-footnote">凭据只保存在你的服务器；妙盾没有公共账号中心。</small></section></main>;
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>妙计巡御</strong><small>WitShield AI</small></div></div><p className="eyebrow">AI Agent 服务器管家</p><h1>{mode === 'setup' ? '创建唯一管理员' : '欢迎回来'}</h1><p className="auth-intro">{mode === 'setup' ? '控制台首版采用单管理员模式。完成初始化后即可连接第一台服务器。' : '登录你的自建巡御控制台。'}</p><form onSubmit={submit}><label><span>管理员名称</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} /></label>{mode === 'setup' && <><label><span>再次输入密码</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label><label><span>初始化令牌（如安装程序要求）</span><input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} /></label></>}{error && <p className="form-error">{error}</p>}<button className="primary-button auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LockKeyhole size={16} />}{mode === 'setup' ? '完成安全初始化' : '登录控制台'}</button></form><small className="auth-footnote">凭据只保存在你的服务器；巡御没有公共账号中心。</small></section></main>;
 }
 
-function LoadingScreen() { return <main className="loading-screen"><span className="brand-mark"><ShieldCheck size={21} /></span><LoaderCircle className="spin" size={22} /><p>正在连接妙盾 Agent…</p></main>; }
-function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) { return <main className="loading-screen"><span className="error-mark"><X size={21} /></span><h1>暂时无法连接妙盾</h1><p>{message}</p><button className="primary-button" onClick={onRetry}><RefreshCw size={15} />重新连接</button></main>; }
+function LoadingScreen() { return <main className="loading-screen"><span className="brand-mark"><ShieldCheck size={21} /></span><LoaderCircle className="spin" size={22} /><p>正在连接巡御 Agent…</p></main>; }
+function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) { return <main className="loading-screen"><span className="error-mark"><X size={21} /></span><h1>暂时无法连接巡御</h1><p>{message}</p><button className="primary-button" onClick={onRetry}><RefreshCw size={15} />重新连接</button></main>; }

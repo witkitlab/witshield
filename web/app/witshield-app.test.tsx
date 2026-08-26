@@ -9,6 +9,7 @@ describe('WitShieldApp', () => {
     render(<WitShieldApp />);
 
     expect(await screen.findByText('服务器安全概览')).toBeInTheDocument();
+    expect(screen.getByText('妙计巡御')).toBeInTheDocument();
     expect(screen.getByText('AI Agent 服务器管家')).toBeInTheDocument();
     expect(screen.getByText('今日安全状态')).toBeInTheDocument();
 
@@ -155,7 +156,7 @@ describe('WitShieldApp', () => {
     await screen.findByText('服务器安全概览');
 
     fireEvent.click(screen.getByRole('button', { name: /^设置$/ }));
-    expect(await screen.findByText('妙盾设置')).toBeInTheDocument();
+    expect(await screen.findByText('巡御设置')).toBeInTheDocument();
     const baseUrl = screen.getByDisplayValue('https://api.openai.com/v1');
     fireEvent.change(baseUrl, { target: { value: 'https://ai.example.test/v1' } });
     expect(screen.getByText(/保存时会清除旧地址绑定的自定义请求头：X-Organization/)).toBeInTheDocument();
