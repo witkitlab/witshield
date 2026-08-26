@@ -11,7 +11,9 @@ on:
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Minor/latest are shared mutable aliases, so releases for different tags
+  # must not race each other between promotion, verification and publication.
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -493,22 +495,10 @@ jobs:
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="${GITHUB_REF_NAME#v}"
-          minor="${version%.*}"
           # Once promotion begins, preserve the draft on failure: one or more
           # public tags may already exist and the job must remain resumable.
           echo 'started=true' >> "$GITHUB_OUTPUT"
-          docker buildx imagetools create \
-            --tag "$image:$version" \
-            --tag "$image:$minor" \
-            --tag "$image:latest" \
-            "$image@$IMAGE_DIGEST"
-          for tag in "$version" "$minor" latest; do
-            actual=$(docker buildx imagetools inspect "$image:$tag" | awk '$1 == "Digest:" {print $2; exit}')
-            [[ "$actual" =~ ^sha256:[0-9a-f]{64}$ ]] \
-              || { echo "$image:$tag returned an invalid digest" >&2; exit 1; }
-            [[ "$actual" == "$IMAGE_DIGEST" ]] \
-              || { echo "$image:$tag resolved to $actual, expected $IMAGE_DIGEST" >&2; exit 1; }
-          done
+          scripts/promote-release-image.sh "$image" "$version" "$IMAGE_DIGEST"
       - name: Publish the fully staged GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
