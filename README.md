@@ -39,7 +39,7 @@ less install.sh
 sudo bash install.sh --mode standalone
 ```
 
-安装器从 GitHub Release 下载对应架构的发布包，强制校验 `SHA256SUMS`；检测到 Cosign 时还会验证发布工作流的 Sigstore 签名。可用 `--require-signature` 强制要求签名验证。
+安装器从 GitHub 不可变 Release 下载对应架构的发布包，校验 `SHA256SUMS` 后还会强制验证发布工作流的 Sigstore 签名；本机没有 Cosign 时，会临时下载经过内置 SHA-256 固定的验证器。已安装版本会记录在本机，安装器默认拒绝降级。
 
 安装完成后，默认仅监听 `127.0.0.1:8080`：
 

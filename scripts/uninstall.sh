@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 PURGE=0
 YES=0
+readonly DELIVERY_LOCK_FILE="/run/witshield-install.lock"
 
 usage() {
   cat <<'EOF'
@@ -19,6 +20,23 @@ EOF
 }
 
 die() { printf '[witshield] ERROR: %s\n' "$*" >&2; exit 1; }
+
+acquire_delivery_lock() {
+  local path="$1" old_umask owner permissions
+  command -v flock >/dev/null 2>&1 || die "required command not found: flock"
+  command -v stat >/dev/null 2>&1 || die "required command not found: stat"
+  [[ ! -L "$path" ]] || die "refusing unsafe installer lock symlink: $path"
+  old_umask=$(umask)
+  umask 077
+  exec 9>>"$path"
+  umask "$old_umask"
+  [[ -f "$path" && ! -L "$path" ]] || die "refusing unsafe installer lock: $path"
+  owner=$(stat -c '%u' "$path")
+  permissions=$(stat -c '%A' "$path")
+  [[ "$owner" == "$EUID" && "${permissions:5:1}" != "w" && "${permissions:8:1}" != "w" ]] \
+    || die "installer lock must be owned by the invoking root user and not group/world writable"
+  flock -n 9 || die "another WitShield installation, upgrade, or uninstall is already running"
+}
 
 ensure_not_mounted() {
   local target="$1" mount_target mounts
@@ -94,9 +112,14 @@ main() {
   if ((YES)) && ((!PURGE)); then
     die "--yes is only valid together with --purge"
   fi
+  acquire_delivery_lock "$DELIVERY_LOCK_FILE"
 
   # Both default uninstall and purge recursively remove these application
   # assets, so reject the target itself and every nested mount before mutation.
+  if [[ -e /usr/share/witshield || -L /usr/share/witshield ]]; then
+    [[ -d /usr/share/witshield && ! -L /usr/share/witshield ]] \
+      || die "refusing unsafe shared-data path: /usr/share/witshield"
+  fi
   ensure_not_mounted /usr/share/witshield
   ensure_not_mounted /usr/share/licenses/witshield
   if ((PURGE)); then
@@ -130,11 +153,18 @@ main() {
   if [[ -d /usr/libexec/witshield ]]; then
     rmdir /usr/libexec/witshield 2>/dev/null || true
   fi
-  rm -rf -- /usr/share/witshield
+  # A normal uninstall keeps the committed and pending version-floor markers
+  # alongside user state, so reinstalling cannot silently downgrade data that
+  # may already have been migrated. Only an explicit purge removes the floor.
+  rm -rf -- \
+    /usr/share/witshield/web \
+    /usr/share/witshield/web.new \
+    /usr/share/witshield/web.previous
   rm -rf -- /usr/share/licenses/witshield
   systemctl daemon-reload
 
   if ((PURGE)); then
+    rm -rf -- /usr/share/witshield
     # Remove identities before state. A failure is reported as an incomplete
     # purge and never followed by a misleading success message.
     for account in witshield-agent witshield-controller; do
@@ -154,7 +184,7 @@ main() {
     rm -f -- /usr/local/sbin/witshield-uninstall
     printf '[witshield] removed program files and permanently purged local data\n' >&2
   else
-    printf '[witshield] removed services and program files; configuration and state were preserved\n' >&2
+    printf '[witshield] removed services and program files; configuration, state, and the anti-downgrade version floor were preserved\n' >&2
     printf '[witshield] run again with --purge only if permanent deletion is intended\n' >&2
   fi
 }

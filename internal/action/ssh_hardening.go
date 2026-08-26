@@ -23,6 +23,8 @@ const maxSSHConfigBytes = 256 << 10
 
 var systemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`)
 
+var errSSHConfigurationConflict = errors.New("SSH configuration changed after apply; refusing to overwrite the newer configuration")
+
 type SSHPasswordHardeningParams struct {
 	// RollbackAfterSeconds is deliberately bounded. Zero selects the helper's
 	// configured default.
@@ -65,10 +67,11 @@ type sshJournal struct {
 }
 
 type SSHPasswordHardeningPlaybook struct {
-	config      SSHHardeningConfig
-	lifecycleMu sync.Mutex
-	mu          sync.Mutex
-	timers      map[string]*time.Timer
+	config        SSHHardeningConfig
+	lifecycleMu   sync.Mutex
+	mu            sync.Mutex
+	timers        map[string]*time.Timer
+	syncDirectory func(string) error
 }
 
 func NewSSHPasswordHardeningPlaybook(config SSHHardeningConfig) (*SSHPasswordHardeningPlaybook, error) {
@@ -91,7 +94,7 @@ func NewSSHPasswordHardeningPlaybook(config SSHHardeningConfig) (*SSHPasswordHar
 	if err := ensurePrivateDirectory(config.JournalDir); err != nil {
 		return nil, fmt.Errorf("prepare SSH rollback journal: %w", err)
 	}
-	playbook := &SSHPasswordHardeningPlaybook{config: config, timers: make(map[string]*time.Timer)}
+	playbook := &SSHPasswordHardeningPlaybook{config: config, timers: make(map[string]*time.Timer), syncDirectory: syncDirectoryPath}
 	if err := playbook.resumeJournals(); err != nil {
 		return nil, err
 	}
@@ -203,36 +206,54 @@ func (p *SSHPasswordHardeningPlaybook) Apply(ctx context.Context, invocation Inv
 		ActionID: invocation.ActionID, ParametersDigest: digestParameters(invocation.Parameters), State: state,
 		StateDigest: digestBytes(state), ConfirmBy: confirmBy,
 	}
+	recoverableFailure := func(message string, failures ...error) (ApplyResult, error) {
+		// Keep both the durable journal and an in-process timer armed. Engine will
+		// immediately attempt Rollback using this state; if that retry also fails,
+		// the timer and restart recovery continue to protect the administrator.
+		p.schedule(journal)
+		return ApplyResult{State: state, ConfirmBy: &confirmBy}, fmt.Errorf("%s: %w", message, errors.Join(failures...))
+	}
+	knownRestoredFailure := func(message string, applyErr error) (ApplyResult, error) {
+		if cleanupErr := p.deleteJournal(invocation.ActionID); cleanupErr != nil {
+			return recoverableFailure(message+"; the snapshot was restored but rollback journal cleanup failed", applyErr, cleanupErr)
+		}
+		return ApplyResult{}, fmt.Errorf("%s and the snapshot was restored: %w", message, applyErr)
+	}
 	// Persist recovery material before changing sshd_config. A process or host
 	// restart after this point cannot silently defeat the rollback deadline.
 	if err := p.writeJournal(journal); err != nil {
-		return ApplyResult{}, err
+		visible, readErr := p.readJournal(invocation.ActionID)
+		if readErr == nil && visible.StateDigest == journal.StateDigest && visible.ParametersDigest == journal.ParametersDigest {
+			p.schedule(journal)
+			return ApplyResult{State: state, ConfirmBy: &confirmBy}, fmt.Errorf("persist SSH rollback journal crossed an uncertain durability boundary: %w", err)
+		}
+		if errors.Is(readErr, os.ErrNotExist) {
+			return ApplyResult{}, err
+		}
+		return ApplyResult{State: state, ConfirmBy: &confirmBy}, fmt.Errorf("SSH rollback journal outcome is unknown: %w", errors.Join(err, readErr))
 	}
 	if err := writeSnapshotFile(p.config.ConfigPath, hardened, snapshot); err != nil {
 		restoreErr := writeSnapshotFile(p.config.ConfigPath, snapshot.Content, snapshot)
 		if restoreErr == nil {
-			_ = p.deleteJournal(invocation.ActionID)
-			return ApplyResult{}, fmt.Errorf("write hardened SSH configuration failed and the snapshot was restored: %w", err)
+			return knownRestoredFailure("write hardened SSH configuration failed", err)
 		}
-		return ApplyResult{}, fmt.Errorf("write hardened SSH configuration failed and the snapshot could not be restored: %w", restoreErr)
+		return recoverableFailure("write hardened SSH configuration failed and the snapshot could not be restored", err, restoreErr)
 	}
 	if _, err := p.config.Runner.Run(ctx, Command{
 		Path: p.config.SSHDPath, Args: []string{"-t", "-f", p.config.ConfigPath}, Timeout: 30 * time.Second,
 	}); err != nil {
 		restoreErr := writeSnapshotFile(p.config.ConfigPath, snapshot.Content, snapshot)
-		_ = p.deleteJournal(invocation.ActionID)
 		if restoreErr != nil {
-			return ApplyResult{}, fmt.Errorf("hardened SSH configuration failed validation and snapshot restoration failed: %w", restoreErr)
+			return recoverableFailure("hardened SSH configuration failed validation and snapshot restoration failed", err, restoreErr)
 		}
-		return ApplyResult{}, fmt.Errorf("hardened SSH configuration failed validation and was restored: %w", err)
+		return knownRestoredFailure("hardened SSH configuration failed validation", err)
 	}
 	if err := p.reload(ctx); err != nil {
 		rollbackErr := p.restoreSnapshot(ctx, snapshot)
-		_ = p.deleteJournal(invocation.ActionID)
 		if rollbackErr != nil {
-			return ApplyResult{}, fmt.Errorf("SSH reload failed and snapshot restoration also failed: %w", rollbackErr)
+			return recoverableFailure("SSH reload failed and snapshot restoration also failed", err, rollbackErr)
 		}
-		return ApplyResult{}, fmt.Errorf("SSH reload failed and the snapshot was restored: %w", err)
+		return knownRestoredFailure("SSH reload failed", err)
 	}
 	p.schedule(journal)
 	return ApplyResult{Result: Result{
@@ -297,7 +318,7 @@ func (p *SSHPasswordHardeningPlaybook) Rollback(ctx context.Context, invocation 
 	if err != nil {
 		return Result{}, errors.New("protected SSH rollback journal is invalid")
 	}
-	if err := p.restoreSnapshot(ctx, authoritative.Snapshot); err != nil {
+	if err := p.restoreSnapshotIfApplied(ctx, authoritative); err != nil {
 		return Result{}, err
 	}
 	p.cancelTimer(journalActionID)
@@ -370,6 +391,30 @@ func (p *SSHPasswordHardeningPlaybook) restoreSnapshot(ctx context.Context, snap
 	return nil
 }
 
+func (p *SSHPasswordHardeningPlaybook) restoreSnapshotIfApplied(ctx context.Context, state sshHardeningState) error {
+	current, err := snapshotRegularFile(p.config.ConfigPath)
+	if err != nil {
+		return err
+	}
+	currentHash := contentHash(current.Content)
+	metadataMatches := current.Mode.Perm() == state.Snapshot.Mode.Perm() && current.UID == state.Snapshot.UID && current.GID == state.Snapshot.GID
+	if currentHash == contentHash(state.Snapshot.Content) && metadataMatches {
+		if _, err := p.config.Runner.Run(ctx, Command{
+			Path: p.config.SSHDPath, Args: []string{"-t", "-f", p.config.ConfigPath}, Timeout: 30 * time.Second,
+		}); err != nil {
+			return fmt.Errorf("existing restored SSH snapshot failed validation: %w", err)
+		}
+		if err := p.reload(ctx); err != nil {
+			return fmt.Errorf("existing restored SSH snapshot could not be reloaded: %w", err)
+		}
+		return nil
+	}
+	if currentHash != state.AppliedHash || !metadataMatches {
+		return errSSHConfigurationConflict
+	}
+	return p.restoreSnapshot(ctx, state.Snapshot)
+}
+
 func hardenSSHConfig(content []byte) ([]byte, int) {
 	newline := "\n"
 	if strings.Contains(string(content), "\r\n") {
@@ -425,6 +470,9 @@ func snapshotRegularFile(path string) (fileSnapshot, error) {
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return fileSnapshot{}, fmt.Errorf("%s must be a regular non-symlink file", path)
+	}
+	if hasSpecialModeBits(info.Mode()) {
+		return fileSnapshot{}, fmt.Errorf("%s has setuid, setgid, or sticky bits and cannot be safely snapshotted", path)
 	}
 	if info.Size() < 0 || info.Size() > maxSSHConfigBytes {
 		return fileSnapshot{}, fmt.Errorf("%s exceeds the SSH configuration size limit", path)
@@ -538,12 +586,7 @@ func (p *SSHPasswordHardeningPlaybook) writeJournal(journal sshJournal) error {
 	if err := os.Rename(tempPath, p.journalPath(journal.ActionID)); err != nil {
 		return err
 	}
-	directory, err := os.Open(p.config.JournalDir)
-	if err == nil {
-		err = directory.Sync()
-		_ = directory.Close()
-	}
-	return err
+	return p.syncDirectory(p.config.JournalDir)
 }
 
 func (p *SSHPasswordHardeningPlaybook) readJournal(actionID string) (sshJournal, error) {
@@ -592,12 +635,7 @@ func (p *SSHPasswordHardeningPlaybook) deleteJournal(actionID string) error {
 	if err != nil {
 		return err
 	}
-	directory, err := os.Open(p.config.JournalDir)
-	if err == nil {
-		err = directory.Sync()
-		_ = directory.Close()
-	}
-	return err
+	return p.syncDirectory(p.config.JournalDir)
 }
 
 func (p *SSHPasswordHardeningPlaybook) resumeJournals() error {
@@ -649,12 +687,19 @@ func (p *SSHPasswordHardeningPlaybook) expire(actionID string) {
 		state, decodeErr := decodeStrict[sshHardeningState](journal.State)
 		if decodeErr == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-			err = p.restoreSnapshot(ctx, state.Snapshot)
+			err = p.restoreSnapshotIfApplied(ctx, state)
 			cancel()
 		}
 	}
 	if err == nil {
 		_ = p.deleteJournal(actionID)
+		p.cancelTimer(actionID)
+		return
+	}
+	if errors.Is(err, errSSHConfigurationConflict) {
+		// Preserve the journal as evidence and for an explicit administrator
+		// decision, but do not repeatedly overwrite or retry against a newer
+		// configuration.
 		p.cancelTimer(actionID)
 		return
 	}
@@ -698,4 +743,13 @@ func (p *SSHPasswordHardeningPlaybook) cancelTimer(actionID string) {
 		delete(p.timers, actionID)
 	}
 	p.mu.Unlock()
+}
+
+func syncDirectoryPath(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

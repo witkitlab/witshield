@@ -1,10 +1,17 @@
 package agent
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/witkitlab/witshield/internal/action"
 )
 
 func TestLoadHelperTokenModes(t *testing.T) {
@@ -36,5 +43,39 @@ func TestLoadHelperTokenModes(t *testing.T) {
 	}
 	if _, err := LoadHelperToken(link); err == nil {
 		t.Fatal("symlink accepted")
+	}
+}
+
+func TestHelperClientMarksLostResponseAfterRequestAsIndeterminate(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "witshield-helper-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "helper.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverErr := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverErr <- acceptErr
+			return
+		}
+		defer connection.Close()
+		_, readErr := bufio.NewReader(connection).ReadString('\n')
+		serverErr <- readErr
+	}()
+
+	client := HelperClient{Socket: socket, Token: "local-token"}
+	_, err = client.Run(context.Background(), "cmd-lost-response", "act-lost-response", action.TypePackageSecurityUpgrade, action.OperationExecute, json.RawMessage(`{"packages":["openssl"]}`), nil)
+	if !errors.Is(err, ErrHelperExecutionIndeterminate) {
+		t.Fatalf("lost post-request response was not indeterminate: %v", err)
+	}
+	if err = <-serverErr; err != nil {
+		t.Fatalf("fake helper did not receive the complete request: %v", err)
 	}
 }

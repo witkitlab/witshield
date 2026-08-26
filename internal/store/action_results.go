@@ -53,7 +53,7 @@ func (s *Store) CreatePolicyActionAndEnqueueLimited(ctx context.Context, x domai
 		maxPerHour = storedMax
 	}
 	var alreadyLive int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM temporary_bans WHERE device_id=? AND source_ip=? AND (status='pending' OR (status='active' AND expires_at>?))`, x.DeviceID, ban.SourceIP, timeText(x.CreatedAt)).Scan(&alreadyLive); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM temporary_bans WHERE device_id=? AND source_ip=? AND (status='pending' OR (status IN ('active','indeterminate') AND expires_at>?))`, x.DeviceID, ban.SourceIP, timeText(x.CreatedAt)).Scan(&alreadyLive); err != nil {
 		return err
 	}
 	if alreadyLive > 0 {
@@ -132,8 +132,10 @@ func (s *Store) StartActionCommand(ctx context.Context, deviceID, commandID stri
 		return false, ErrConflict
 	}
 	var meta struct {
-		ActionID         string `json:"actionId"`
-		PolicyAuthorized bool   `json:"policyAuthorized"`
+		ActionID         string          `json:"actionId"`
+		PolicyAuthorized bool            `json:"policyAuthorized"`
+		Type             action.Type     `json:"type"`
+		Parameters       json.RawMessage `json:"parameters"`
 	}
 	if json.Unmarshal([]byte(payload), &meta) != nil || meta.ActionID == "" {
 		return false, errors.New("action command payload is invalid")
@@ -219,6 +221,16 @@ func (s *Store) StartActionCommand(ctx context.Context, deviceID, commandID stri
 				return false, err
 			}
 		}
+		if meta.Type == action.TypeTemporaryIPBan {
+			var params action.TemporaryIPBanParams
+			if json.Unmarshal(meta.Parameters, &params) != nil || params.TTLSeconds < 1 {
+				return false, errors.New("temporary ban action parameters are invalid")
+			}
+			horizon := now.UTC().Add(time.Duration(params.TTLSeconds) * time.Second)
+			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET expires_at=CASE WHEN expires_at<? THEN ? ELSE expires_at END WHERE action_id=? AND status='pending'`, timeText(horizon), timeText(horizon), meta.ActionID); err != nil {
+				return false, err
+			}
+		}
 	} else {
 		expected := domain.ActionRollingBack
 		if commandType == string(domain.CommandConfirm) {
@@ -254,9 +266,11 @@ type commandActionMeta struct {
 }
 
 type helperReceiptStep struct {
-	Operation action.Operation `json:"operation"`
-	Success   bool             `json:"success"`
-	Result    *struct {
+	Operation  action.Operation `json:"operation"`
+	StartedAt  time.Time        `json:"startedAt"`
+	FinishedAt time.Time        `json:"finishedAt"`
+	Success    bool             `json:"success"`
+	Result     *struct {
 		Details map[string]any `json:"details"`
 	} `json:"result"`
 }
@@ -266,7 +280,10 @@ type helperReceiptProjection struct {
 	Type                action.Type         `json:"type"`
 	Operation           action.Operation    `json:"operation"`
 	ParametersDigest    string              `json:"parametersDigest"`
+	StartedAt           time.Time           `json:"startedAt"`
+	FinishedAt          time.Time           `json:"finishedAt"`
 	Success             bool                `json:"success"`
+	Indeterminate       bool                `json:"indeterminate"`
 	RollbackStateDigest string              `json:"rollbackStateDigest"`
 	ConfirmBy           *time.Time          `json:"confirmBy"`
 	Steps               []helperReceiptStep `json:"steps"`
@@ -274,6 +291,8 @@ type helperReceiptProjection struct {
 
 type storedHelperReceiptStep struct {
 	Operation           action.Operation `json:"operation"`
+	StartedAt           time.Time        `json:"startedAt,omitempty"`
+	FinishedAt          time.Time        `json:"finishedAt,omitempty"`
 	Success             bool             `json:"success"`
 	ConfirmationPending *bool            `json:"confirmationPending,omitempty"`
 }
@@ -283,7 +302,10 @@ type storedHelperReceipt struct {
 	Type                action.Type               `json:"type"`
 	Operation           action.Operation          `json:"operation"`
 	ParametersDigest    string                    `json:"parametersDigest"`
+	StartedAt           time.Time                 `json:"startedAt,omitempty"`
+	FinishedAt          time.Time                 `json:"finishedAt,omitempty"`
 	Success             bool                      `json:"success"`
+	Indeterminate       bool                      `json:"indeterminate,omitempty"`
 	RollbackStateDigest string                    `json:"rollbackStateDigest,omitempty"`
 	ConfirmBy           *time.Time                `json:"confirmBy,omitempty"`
 	Steps               []storedHelperReceiptStep `json:"steps,omitempty"`
@@ -307,6 +329,7 @@ func (s *Store) CompleteCommandAndAction(ctx context.Context, deviceID, commandI
 }
 
 func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceID, commandID string, ok bool, result, rollback, audit json.RawMessage, errorText string, now time.Time) (outcome CommandCompletionOutcome, err error) {
+	submittedOK := ok
 	outcome.OK = ok
 	outcome.Error = errorText
 	if len(result) == 0 {
@@ -361,6 +384,7 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 	isActionCommand := commandType == string(domain.CommandExecuteAction) || commandType == string(domain.CommandRollback) || commandType == string(domain.CommandConfirm)
 	var meta commandActionMeta
 	var receipt helperReceiptProjection
+	expectedOperation := action.OperationExecute
 	if isActionCommand {
 		if json.Unmarshal([]byte(payload), &meta) != nil || meta.ActionID == "" {
 			return outcome, errors.New("action command payload is invalid")
@@ -368,15 +392,18 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		if !started.Valid {
 			return outcome, ErrConflict
 		}
-	}
-	if ok && isActionCommand {
-		expectedOperation := action.OperationExecute
 		if commandType == string(domain.CommandRollback) {
 			expectedOperation = action.OperationRollback
 		} else if commandType == string(domain.CommandConfirm) {
 			expectedOperation = action.OperationConfirm
 		}
-		if json.Unmarshal(audit, &receipt) != nil || receipt.ActionID != meta.ActionID || receipt.Type != meta.Type || receipt.Operation != expectedOperation || receipt.ParametersDigest != action.ParametersDigest(meta.Parameters) || !receipt.Success || !validSuccessfulReceiptSteps(receipt.Steps, commandType) {
+	}
+	receiptMatches := false
+	if isActionCommand && len(audit) > 0 && json.Unmarshal(audit, &receipt) == nil {
+		receiptMatches = receipt.ActionID == meta.ActionID && receipt.Type == meta.Type && receipt.Operation == expectedOperation && receipt.ParametersDigest == action.ParametersDigest(meta.Parameters)
+	}
+	if ok && isActionCommand {
+		if !receiptMatches || !receipt.Success || receipt.Indeterminate || !validSuccessfulReceiptSteps(receipt.Steps, commandType) {
 			ok = false
 			errorText = "privileged helper receipt was missing or did not match the approved action"
 		}
@@ -414,19 +441,64 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		ok = false
 		errorText = "SSH safety confirmation deadline was invalid or already elapsed"
 	}
+	indeterminate := isActionCommand && !submittedOK && errorText == action.ExecutionIndeterminateMessage
+	if indeterminate {
+		// This exact error is bound by the Agent's device-identity signature and
+		// is emitted only after bytes may have reached the privileged Helper. The
+		// absence of a receipt is therefore an unknown outcome, not proof that the
+		// requested change failed.
+		ok = false
+		errorText = commandExecutionIndeterminateMessage
+	}
+	trustedSuccessfulReceipt := !completed.Valid && !submittedOK && !indeterminate && errorText == action.ReceiptPersistenceFailureMessage && isActionCommand && receiptMatches && receipt.Success && !receipt.Indeterminate && validSuccessfulReceiptSteps(receipt.Steps, commandType) && validRecoveredSuccessfulResult(meta, receipt, commandType, rollback, now)
+	trustedExecuteIndeterminateWithState := !completed.Valid && !submittedOK && !indeterminate && commandType == string(domain.CommandExecuteAction) && receiptMatches && !receipt.Success && receipt.Indeterminate && validRollbackState(rollback) && receipt.RollbackStateDigest == digestRollbackState(rollback) && validExecuteReceiptWithRecoverableState(receipt)
+	trustedExecuteIndeterminateWithoutState := !completed.Valid && !submittedOK && !indeterminate && commandType == string(domain.CommandExecuteAction) && receiptMatches && !receipt.Success && receipt.Indeterminate && len(rollback) == 0 && receipt.RollbackStateDigest == "" && validExecuteReceiptWithUnavailableState(receipt)
+	trustedExecuteIndeterminate := trustedExecuteIndeterminateWithState || trustedExecuteIndeterminateWithoutState
+	trustedRollbackIndeterminate := !completed.Valid && !submittedOK && !indeterminate && commandType == string(domain.CommandRollback) && receiptMatches && !receipt.Success && receipt.Indeterminate && len(rollback) == 0 && receipt.RollbackStateDigest == "" && validFailedRollbackReceipt(receipt)
+	trustedConfirmIndeterminate := !completed.Valid && !submittedOK && !indeterminate && commandType == string(domain.CommandConfirm) && receiptMatches && !receipt.Success && receipt.Indeterminate && len(rollback) == 0 && receipt.RollbackStateDigest == "" && validFailedConfirmReceipt(receipt)
+	if trustedSuccessfulReceipt {
+		// The Helper completed every typed step and returned the exact durable
+		// result, but could not save its local replay cache. The signed response
+		// still proves the host outcome to the Controller, so projecting execute,
+		// rollback, or confirmation as failed would be false. Keep the cache error
+		// as an audit warning while deriving the effective outcome from the receipt.
+		ok = true
+	}
+	if trustedExecuteIndeterminate {
+		// Apply is proven, Verify failed, and the automatic Rollback also failed.
+		// The change may still be present, but its intended final state is not
+		// proven. Preserve the sealed state for an explicit administrator retry and
+		// project the action and any temporary ban as indeterminate.
+		indeterminate = true
+		ok = false
+	}
+	if trustedRollbackIndeterminate {
+		indeterminate = true
+		ok = false
+	}
+	if trustedConfirmIndeterminate {
+		indeterminate = true
+		ok = false
+	}
+	trustedRollbackState := (trustedSuccessfulReceipt && commandType == string(domain.CommandExecuteAction)) || trustedExecuteIndeterminateWithState
 	outcome.OK = ok
 	outcome.Error = errorText
 	storedAudit := json.RawMessage(nil)
 	if isActionCommand {
 		storedAudit = sanitizeHelperReceipt(receipt)
 	}
-	if !ok {
-		// Failed execution has no Controller-trusted rollback state. Preserve the
-		// signed full-tuple digest for replay detection, but do not retain
-		// attacker-controlled rollback bytes or arbitrary receipt padding.
+	if !ok && !trustedRollbackState {
+		// Only a matching Helper receipt can make failure-side rollback bytes
+		// Controller-trusted. This deliberately preserves state when Apply was
+		// proven but both Verify and automatic Rollback failed; all other failure
+		// payloads remain attacker-controlled and are discarded.
 		rollback = nil
 	}
-	stored, _ := json.Marshal(map[string]any{"ok": ok, "result": result, "auditReceipt": storedAudit})
+	storedResult := map[string]any{"ok": ok, "result": result, "auditReceipt": storedAudit}
+	if indeterminate {
+		storedResult["indeterminate"] = true
+	}
+	stored, _ := json.Marshal(storedResult)
 	if completed.Valid {
 		// Scan requests are intentionally coalesced while a device is offline. A
 		// previous Agent process may still submit the receipt for a scan that the
@@ -501,9 +573,12 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 	if len(details) == 0 {
 		details = json.RawMessage(`{}`)
 	}
+	banExpiryTimingUncertain := false
 	if commandType == string(domain.CommandExecuteAction) {
 		status := domain.ActionFailed
-		if ok {
+		if indeterminate {
+			status = domain.ActionIndeterminate
+		} else if ok {
 			status = domain.ActionSucceeded
 		}
 		var completedAt, confirmBy any = timeText(now), nil
@@ -520,15 +595,32 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 			return outcome, ErrConflict
 		}
 		banStatus := "failed"
-		if ok {
+		if indeterminate {
+			banStatus = "indeterminate"
+		} else if ok {
 			banStatus = "active"
 		}
-		if ok && meta.Type == action.TypeTemporaryIPBan {
+		if (ok || indeterminate) && meta.Type == action.TypeTemporaryIPBan {
 			var params action.TemporaryIPBanParams
 			if err = json.Unmarshal(meta.Parameters, &params); err != nil || params.TTLSeconds < 1 {
 				return outcome, errors.New("temporary ban action parameters are invalid")
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status=?,expires_at=? WHERE action_id=? AND status='pending'`, banStatus, timeText(now.Add(time.Duration(params.TTLSeconds)*time.Second)), meta.ActionID); err != nil {
+			commandStartedAt, parseErr := parseTime(started.String)
+			if parseErr != nil {
+				return outcome, errors.New("action command start time is invalid")
+			}
+			// The Controller and Agent do not share a trusted clock, and a host may
+			// sleep after final authorization. commandStartedAt+TTL is therefore the
+			// earliest possible kernel expiry, not the exact expiry. It gives us a
+			// guaranteed dedupe horizon without ever restarting TTL from a delayed
+			// result upload. Beyond it, preserve an honest unknown projection and let
+			// a new generation atomically refresh the nftables element if necessary.
+			expiresAt := commandStartedAt.UTC().Add(time.Duration(params.TTLSeconds) * time.Second)
+			if !expiresAt.After(now) {
+				banStatus = "indeterminate"
+				banExpiryTimingUncertain = true
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status=?,expires_at=? WHERE action_id=? AND status='pending'`, banStatus, timeText(expiresAt), meta.ActionID); err != nil {
 				return outcome, err
 			}
 		} else if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status=? WHERE action_id=? AND status='pending'`, banStatus, meta.ActionID); err != nil {
@@ -539,7 +631,9 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		}
 	} else if commandType == string(domain.CommandRollback) {
 		status := domain.ActionFailed
-		if ok {
+		if indeterminate {
+			status = domain.ActionIndeterminate
+		} else if ok {
 			status = domain.ActionRolledBack
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE actions SET status=?,completed_at=?,error=?,updated_at=? WHERE id=? AND device_id=? AND status=?`, string(status), timeText(now), errorText, timeText(now), meta.ActionID, deviceID, string(domain.ActionRollingBack))
@@ -550,8 +644,12 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 			return outcome, ErrConflict
 		}
 		if ok {
-			_, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status='rolled_back' WHERE action_id=? AND status='active'`, meta.ActionID)
+			_, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status='rolled_back' WHERE action_id=? AND status IN ('active','indeterminate')`, meta.ActionID)
 			if err != nil {
+				return outcome, err
+			}
+		} else if indeterminate {
+			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status='indeterminate' WHERE action_id=? AND status IN ('pending','active','indeterminate')`, meta.ActionID); err != nil {
 				return outcome, err
 			}
 		}
@@ -560,7 +658,9 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		}
 	} else {
 		status := domain.ActionFailed
-		if ok {
+		if indeterminate {
+			status = domain.ActionIndeterminate
+		} else if ok {
 			status = domain.ActionSucceeded
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE actions SET status=?,completed_at=?,error=?,updated_at=? WHERE id=? AND device_id=? AND status=?`, string(status), timeText(now), errorText, timeText(now), meta.ActionID, deviceID, string(domain.ActionConfirming))
@@ -578,12 +678,29 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 			return outcome, err
 		}
 	}
+	if trustedSuccessfulReceipt {
+		warning, _ := json.Marshal(map[string]any{"message": errorText, "manualVerificationRequired": false, "operation": expectedOperation})
+		if _, err = tx.ExecContext(ctx, `INSERT INTO action_audit(action_id,actor,event,details,created_at) VALUES(?,?,?,?,?)`, meta.ActionID, "controller", "helper_receipt_persistence_warning", string(warning), timeText(now)); err != nil {
+			return outcome, err
+		}
+	}
+	if banExpiryTimingUncertain {
+		warning, _ := json.Marshal(map[string]any{"message": "temporary ban result arrived after the Controller's guaranteed-active horizon; kernel TTL was not restarted and the current host state is unknown", "manualVerificationRequired": true})
+		if _, err = tx.ExecContext(ctx, `INSERT INTO action_audit(action_id,actor,event,details,created_at) VALUES(?,?,?,?,?)`, meta.ActionID, "controller", "temporary_ban_expiry_indeterminate", string(warning), timeText(now)); err != nil {
+			return outcome, err
+		}
+	}
 	if !ok {
 		message := errorText
 		if len(message) > 1000 {
 			message = message[:1000]
 		}
 		notificationEvent := domain.NotificationEvent{ID: "action-failure:" + commandID, Type: "action_failure", Severity: domain.SeverityHigh, DeviceID: deviceID, Title: "A security action failed", Message: message, OccurredAt: now.UTC()}
+		if indeterminate {
+			notificationEvent.ID = "action-indeterminate:" + commandID
+			notificationEvent.Type = "action_indeterminate"
+			notificationEvent.Title = "A security action needs manual verification"
+		}
 		outcome.NotificationQueued, err = enqueueNotificationTx(ctx, tx, notificationEvent, now)
 		if err != nil {
 			return outcome, err
@@ -593,6 +710,30 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 	err = tx.Commit()
 	outcome.NewlyCompleted = err == nil
 	return outcome, err
+}
+
+// validRecoveredSuccessfulResult applies the success-side semantic checks that
+// normally run only when the Agent submits ok=true. A receipt-cache write error
+// makes the outer response false even though the embedded Helper receipt may
+// prove a successful execution, so that recovery path must repeat these checks
+// before it can derive success.
+func validRecoveredSuccessfulResult(meta commandActionMeta, receipt helperReceiptProjection, commandType string, rollback json.RawMessage, now time.Time) bool {
+	if commandType != string(domain.CommandExecuteAction) {
+		return len(rollback) == 0 && receipt.ConfirmBy == nil
+	}
+	if !validRollbackState(rollback) || receipt.RollbackStateDigest != digestRollbackState(rollback) {
+		return false
+	}
+	if receipt.ConfirmBy != nil && meta.Type != action.TypeSSHPasswordHardening {
+		return false
+	}
+	if meta.Type == action.TypeSSHPasswordHardening {
+		confirmationPending, found := receiptConfirmationPending(receipt.Steps)
+		if !found || confirmationPending != (receipt.ConfirmBy != nil) {
+			return false
+		}
+	}
+	return receipt.ConfirmBy == nil || (receipt.ConfirmBy.After(now) && receipt.ConfirmBy.Before(now.Add(15*time.Minute)))
 }
 
 func legacyActionRollbackMatchesTx(ctx context.Context, tx *sql.Tx, actionID, commandType string, rollback json.RawMessage, receiptConfirmBy *time.Time) (bool, error) {
@@ -657,14 +798,14 @@ func digestRollbackState(value json.RawMessage) string {
 func sanitizeHelperReceipt(receipt helperReceiptProjection) json.RawMessage {
 	stored := storedHelperReceipt{
 		ActionID: receipt.ActionID, Type: receipt.Type, Operation: receipt.Operation,
-		ParametersDigest: receipt.ParametersDigest, Success: receipt.Success,
+		ParametersDigest: receipt.ParametersDigest, StartedAt: receipt.StartedAt, FinishedAt: receipt.FinishedAt, Success: receipt.Success, Indeterminate: receipt.Indeterminate,
 		RollbackStateDigest: receipt.RollbackStateDigest, ConfirmBy: receipt.ConfirmBy,
 	}
 	for index, step := range receipt.Steps {
 		if index >= 5 {
 			break
 		}
-		item := storedHelperReceiptStep{Operation: step.Operation, Success: step.Success}
+		item := storedHelperReceiptStep{Operation: step.Operation, StartedAt: step.StartedAt, FinishedAt: step.FinishedAt, Success: step.Success}
 		if step.Operation == action.OperationVerify && step.Success && step.Result != nil {
 			if pending, ok := step.Result.Details["confirmationPending"].(bool); ok {
 				value := pending
@@ -693,4 +834,86 @@ func validSuccessfulReceiptSteps(steps []helperReceiptStep, commandType string) 
 		}
 	}
 	return true
+}
+
+// validExecuteReceiptWithRecoverableState accepts the two failure envelopes in
+// which retaining the sealed Apply state is both necessary and safe:
+//   - execution itself succeeded, but the Helper could not durably cache its
+//     final response; or
+//   - Apply succeeded and both Verify and the automatic Rollback failed.
+//
+// A successful automatic rollback intentionally does not qualify: replaying a
+// rollback after the host was already restored can itself be unsafe.
+func validExecuteReceiptWithRecoverableState(receipt helperReceiptProjection) bool {
+	if receipt.Success {
+		return validSuccessfulReceiptSteps(receipt.Steps, string(domain.CommandExecuteAction))
+	}
+	verifyRollbackFailure := []struct {
+		operation action.Operation
+		success   bool
+	}{
+		{action.OperationPrecheck, true},
+		{action.OperationPreview, true},
+		{action.OperationApply, true},
+		{action.OperationVerify, false},
+		{action.OperationRollback, false},
+	}
+	applyRollbackFailure := []struct {
+		operation action.Operation
+		success   bool
+	}{
+		{action.OperationPrecheck, true},
+		{action.OperationPreview, true},
+		{action.OperationApply, false},
+		{action.OperationRollback, false},
+	}
+	expected := verifyRollbackFailure
+	if len(receipt.Steps) == len(applyRollbackFailure) {
+		expected = applyRollbackFailure
+	}
+	if len(receipt.Steps) != len(expected) {
+		return false
+	}
+	for index, want := range expected {
+		step := receipt.Steps[index]
+		if step.Operation != want.operation || step.Success != want.success {
+			return false
+		}
+		if want.success && step.Result == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func validExecuteReceiptWithUnavailableState(receipt helperReceiptProjection) bool {
+	if receipt.Success || len(receipt.Steps) != 3 {
+		return false
+	}
+	expected := []struct {
+		operation action.Operation
+		success   bool
+	}{
+		{action.OperationPrecheck, true},
+		{action.OperationPreview, true},
+		{action.OperationApply, false},
+	}
+	for index, want := range expected {
+		step := receipt.Steps[index]
+		if step.Operation != want.operation || step.Success != want.success {
+			return false
+		}
+		if want.success && step.Result == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func validFailedRollbackReceipt(receipt helperReceiptProjection) bool {
+	return !receipt.Success && len(receipt.Steps) == 1 && receipt.Steps[0].Operation == action.OperationRollback && !receipt.Steps[0].Success
+}
+
+func validFailedConfirmReceipt(receipt helperReceiptProjection) bool {
+	return !receipt.Success && len(receipt.Steps) == 1 && receipt.Steps[0].Operation == action.OperationConfirm && !receipt.Steps[0].Success
 }

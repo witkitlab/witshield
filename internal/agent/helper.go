@@ -17,8 +17,16 @@ import (
 )
 
 type HelperClient struct{ Socket, Token string }
+
+// ErrHelperExecutionIndeterminate means a complete or partial request reached
+// the Helper socket, but no trustworthy response came back. Retrying could
+// repeat privileged side effects, so the Controller must require manual
+// verification instead of treating this as an ordinary failed precheck.
+var ErrHelperExecutionIndeterminate = errors.New(action.ExecutionIndeterminateMessage)
+
 type helperRequest struct {
 	Token      string           `json:"token"`
+	AttemptID  string           `json:"attemptId"`
 	ActionID   string           `json:"actionId"`
 	Type       action.Type      `json:"type"`
 	Operation  action.Operation `json:"operation"`
@@ -55,7 +63,7 @@ func LoadHelperToken(path string) (string, error) {
 	}
 	return token, nil
 }
-func (c *HelperClient) Run(ctx context.Context, actionID string, typ action.Type, operation action.Operation, params, state json.RawMessage) (HelperResult, error) {
+func (c *HelperClient) Run(ctx context.Context, attemptID, actionID string, typ action.Type, operation action.Operation, params, state json.RawMessage) (HelperResult, error) {
 	var out HelperResult
 	if c.Socket == "" || c.Token == "" {
 		return out, errors.New("privileged helper is not configured")
@@ -63,7 +71,7 @@ func (c *HelperClient) Run(ctx context.Context, actionID string, typ action.Type
 	if operation != action.OperationExecute && operation != action.OperationRollback && operation != action.OperationConfirm {
 		return out, errors.New("unsupported helper operation")
 	}
-	req := helperRequest{Token: c.Token, ActionID: actionID, Type: typ, Operation: operation, Parameters: params, State: state}
+	req := helperRequest{Token: c.Token, AttemptID: attemptID, ActionID: actionID, Type: typ, Operation: operation, Parameters: params, State: state}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return out, err
@@ -79,24 +87,32 @@ func (c *HelperClient) Run(ctx context.Context, actionID string, typ action.Type
 	defer conn.Close()
 	deadline := time.Now().Add(11 * time.Minute)
 	_ = conn.SetDeadline(deadline)
-	if _, err = conn.Write(append(payload, '\n')); err != nil {
-		return out, err
+	wire := append(payload, '\n')
+	written, writeErr := conn.Write(wire)
+	if writeErr != nil || written != len(wire) {
+		if written > 0 {
+			return out, ErrHelperExecutionIndeterminate
+		}
+		if writeErr != nil {
+			return out, writeErr
+		}
+		return out, io.ErrShortWrite
 	}
 	reader := bufio.NewReaderSize(conn, 4<<20)
 	line, err := reader.ReadSlice('\n')
 	if err != nil && !(errors.Is(err, io.EOF) && len(line) > 0) {
-		return out, err
+		return out, ErrHelperExecutionIndeterminate
 	}
 	if len(line) > 4<<20 {
-		return out, errors.New("helper response too large")
+		return out, ErrHelperExecutionIndeterminate
 	}
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.DisallowUnknownFields()
 	if err = dec.Decode(&out); err != nil {
-		return out, errors.New("invalid helper response")
+		return out, ErrHelperExecutionIndeterminate
 	}
 	if err = dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return out, errors.New("invalid helper response")
+		return out, ErrHelperExecutionIndeterminate
 	}
 	return out, nil
 }

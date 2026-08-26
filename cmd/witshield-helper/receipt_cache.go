@@ -22,6 +22,7 @@ type receiptCache struct {
 }
 
 type cachedReceipt struct {
+	AttemptID     string           `json:"attemptId"`
 	ActionID      string           `json:"actionId"`
 	Type          action.Type      `json:"type"`
 	Operation     action.Operation `json:"operation"`
@@ -67,14 +68,14 @@ func requestDigest(t action.Type, operation action.Operation, parameters, state 
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func (c *receiptCache) path(actionID string, operation action.Operation) string {
-	sum := sha256.Sum256([]byte(actionID + "\x00" + string(operation)))
+func (c *receiptCache) path(attemptID string) string {
+	sum := sha256.Sum256([]byte(attemptID))
 	return filepath.Join(c.dir, hex.EncodeToString(sum[:])+".json")
 }
 
-func (c *receiptCache) load(actionID string, t action.Type, operation action.Operation, parameters, state json.RawMessage) (helperResponse, bool, error) {
+func (c *receiptCache) load(attemptID, actionID string, t action.Type, operation action.Operation, parameters, state json.RawMessage) (helperResponse, bool, error) {
 	var out helperResponse
-	path := c.path(actionID, operation)
+	path := c.path(attemptID)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return out, false, nil
@@ -105,7 +106,7 @@ func (c *receiptCache) load(actionID string, t action.Type, operation action.Ope
 	if err = dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return out, false, errors.New("invalid cached receipt")
 	}
-	if item.ActionID != actionID || item.Type != t || item.Operation != operation || item.RequestDigest != requestDigest(t, operation, parameters, state) {
+	if item.AttemptID != attemptID || item.ActionID != actionID || item.Type != t || item.Operation != operation || item.RequestDigest != requestDigest(t, operation, parameters, state) {
 		return out, false, errors.New("action ID replayed with different operation or parameters")
 	}
 	if item.State != "started" && item.State != "final" {
@@ -114,18 +115,18 @@ func (c *receiptCache) load(actionID string, t action.Type, operation action.Ope
 	return item.Response, true, nil
 }
 
-func (c *receiptCache) begin(actionID string, t action.Type, operation action.Operation, parameters, state json.RawMessage) error {
+func (c *receiptCache) begin(attemptID, actionID string, t action.Type, operation action.Operation, parameters, state json.RawMessage) error {
 	item := cachedReceipt{
-		ActionID: actionID, Type: t, Operation: operation,
+		AttemptID: attemptID, ActionID: actionID, Type: t, Operation: operation,
 		RequestDigest: requestDigest(t, operation, parameters, state), State: "started",
-		Response: helperResponse{OK: false, Error: "a previous execution was interrupted; refusing an automatic replay until an administrator reviews the host"},
+		Response: helperResponse{OK: false, Error: action.ExecutionIndeterminateMessage},
 	}
-	return c.write(c.path(actionID, operation), item, true)
+	return c.write(c.path(attemptID), item, true)
 }
 
-func (c *receiptCache) save(actionID string, t action.Type, operation action.Operation, parameters, state json.RawMessage, response helperResponse) error {
-	item := cachedReceipt{ActionID: actionID, Type: t, Operation: operation, RequestDigest: requestDigest(t, operation, parameters, state), State: "final", Response: response}
-	return c.write(c.path(actionID, operation), item, false)
+func (c *receiptCache) save(attemptID, actionID string, t action.Type, operation action.Operation, parameters, state json.RawMessage, response helperResponse) error {
+	item := cachedReceipt{AttemptID: attemptID, ActionID: actionID, Type: t, Operation: operation, RequestDigest: requestDigest(t, operation, parameters, state), State: "final", Response: response}
+	return c.write(c.path(attemptID), item, false)
 }
 
 func (c *receiptCache) write(path string, item cachedReceipt, exclusive bool) error {

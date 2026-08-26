@@ -405,7 +405,38 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
-          create-storage-record: false
+
+      - name: Verify anonymous image access before creating public tags
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          anonymous_config=$(mktemp -d)
+          trap 'rm -rf "$anonymous_config"' EXIT
+          printf '{"auths":{}}\n' > "$anonymous_config/config.json"
+
+          # GHCR visibility is configured independently from repository
+          # visibility.  Prove the documented anonymous install path against
+          # the untagged, immutable digest before creating any public release
+          # tags, so a private first package remains safely rerunnable.
+          for attempt in 1 2 3 4 5 6; do
+            if inspect_output=$(DOCKER_CONFIG="$anonymous_config" docker buildx imagetools inspect "$image@$IMAGE_DIGEST" 2>&1); then
+              anonymous_digest=$(awk '$1 == "Digest:" {print $2; exit}' <<<"$inspect_output")
+              [[ "$anonymous_digest" == "$IMAGE_DIGEST" ]] \
+                || { echo "anonymous pull resolved to $anonymous_digest, expected $IMAGE_DIGEST" >&2; exit 1; }
+              exit 0
+            fi
+            if (( attempt < 6 )); then
+              sleep 5
+            fi
+          done
+
+          echo "GHCR did not permit an anonymous pull of $image@$IMAGE_DIGEST." >&2
+          echo 'Make the witshield container package public in the organization package settings, then rerun this release.' >&2
+          printf '%s\n' "$inspect_output" >&2
+          exit 1
 
       - name: Create a draft GitHub Release
         id: draft

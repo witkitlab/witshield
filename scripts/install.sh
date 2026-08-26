@@ -14,6 +14,12 @@ readonly CONTROLLER_DATA_DIR="/var/lib/witshield"
 readonly AGENT_DATA_DIR="/var/lib/witshield-agent"
 readonly HELPER_DATA_DIR="/var/lib/witshield-helper"
 readonly SYSTEMD_DIR="/etc/systemd/system"
+readonly INSTALLED_VERSION_FILE="${SHARE_DIR}/VERSION"
+readonly PENDING_VERSION_FILE="${SHARE_DIR}/VERSION.pending"
+readonly INSTALL_LOCK_FILE="/run/witshield-install.lock"
+readonly COSIGN_VERSION="v3.1.3"
+readonly COSIGN_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+readonly COSIGN_ARM64_SHA256="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
 
 # Clear inherited export attributes on internal secret variables. A Bash
 # assignment otherwise preserves an existing export attribute and could leak a
@@ -27,9 +33,10 @@ DEVICE_NAME="$(hostname -f 2>/dev/null || hostname)"
 SCAN_INTERVAL="24h"
 ENROLLMENT_TOKEN_FILE=""
 ENROLLMENT_TOKEN_FROM_ENV="${WITSHIELD_ENROLLMENT_TOKEN:-}"
-REQUIRE_SIGNATURE=0
+ALLOW_DOWNGRADE=0
 START_SERVICES=1
 TMP_DIR=""
+COSIGN_BIN=""
 
 # Do not leak a one-time token to curl, tar, systemctl or other child processes.
 unset WITSHIELD_ENROLLMENT_TOKEN
@@ -48,7 +55,8 @@ Options:
   --device-name NAME                 Agent display name (default: hostname)
   --scan-interval DURATION           Initial Controller scan schedule (default: 24h)
   --enrollment-token-file PATH       Read initial token from a mode-0600 file
-  --require-signature                Fail unless Cosign and the release bundle verify
+  --require-signature                Compatibility flag; signatures are always required
+  --allow-downgrade                  Explicitly allow installing an older release
   --no-start                         Install files without enabling/starting services
   -h, --help                         Show this help
 
@@ -71,6 +79,21 @@ trap cleanup EXIT
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+acquire_install_lock() {
+  local path="$1" old_umask owner permissions
+  [[ ! -L "$path" ]] || die "refusing unsafe installer lock symlink: $path"
+  old_umask=$(umask)
+  umask 077
+  exec 9>>"$path"
+  umask "$old_umask"
+  [[ -f "$path" && ! -L "$path" ]] || die "refusing unsafe installer lock: $path"
+  owner=$(stat -c '%u' "$path")
+  permissions=$(stat -c '%A' "$path")
+  [[ "$owner" == "$EUID" && "${permissions:5:1}" != "w" && "${permissions:8:1}" != "w" ]] \
+    || die "installer lock must be owned by the invoking root user and not group/world writable"
+  flock -n 9 || die "another WitShield installation or upgrade is already running"
 }
 
 wait_unit_active() {
@@ -191,8 +214,113 @@ validate_duration() {
 }
 
 validate_version() {
-  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || die "invalid release version: $1"
+  local version="$1" component
+  local -a components=()
+  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "invalid release version: $version"
+  IFS=. read -r -a components <<<"${version#v}"
+  for component in "${components[@]}"; do
+    ((${#component} <= 9)) || die "invalid release version: $version"
+  done
+}
+
+version_is_older() {
+  local candidate="${1#v}" installed="${2#v}" index
+  local -a candidate_parts=() installed_parts=()
+  IFS=. read -r -a candidate_parts <<<"$candidate"
+  IFS=. read -r -a installed_parts <<<"$installed"
+  for index in 0 1 2; do
+    if ((10#${candidate_parts[$index]} < 10#${installed_parts[$index]})); then
+      return 0
+    fi
+    if ((10#${candidate_parts[$index]} > 10#${installed_parts[$index]})); then
+      return 1
+    fi
+  done
+  return 1
+}
+
+read_version_marker() {
+  local path="$1" value
+  [[ -e "$path" || -L "$path" ]] || return 1
+  [[ -f "$path" && ! -L "$path" ]] || die "refusing unsafe version marker: $path"
+  value=$(<"$path")
+  [[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
+    || die "version marker is malformed: $path"
+  validate_version "$value"
+  printf '%s' "$value"
+}
+
+atomic_write_version_marker() {
+  local target="$1" value="$2" directory temporary
+  directory="${target%/*}"
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -f "$target" && ! -L "$target" ]] || die "refusing unsafe version marker: $target"
+  fi
+  temporary=$(mktemp "${directory}/.${target##*/}.XXXXXXXX")
+  printf '%s\n' "$value" >"$temporary"
+  chmod 0644 "$temporary"
+  mv -f -- "$temporary" "$target"
+}
+
+stage_pending_version() {
+  if [[ -e "$SHARE_DIR" || -L "$SHARE_DIR" ]]; then
+    [[ -d "$SHARE_DIR" && ! -L "$SHARE_DIR" ]] || die "refusing unsafe shared-data directory: $SHARE_DIR"
+  else
+    install -d -o root -g root -m 0755 "$SHARE_DIR"
+  fi
+  if [[ -e "$PENDING_VERSION_FILE" || -L "$PENDING_VERSION_FILE" ]]; then
+    [[ -f "$PENDING_VERSION_FILE" && ! -L "$PENDING_VERSION_FILE" ]] \
+      || die "refusing unsafe pending-version marker: $PENDING_VERSION_FILE"
+  fi
+  atomic_write_version_marker "$PENDING_VERSION_FILE" "$VERSION"
+}
+
+commit_pending_version() {
+  local pending
+  pending=$(read_version_marker "$PENDING_VERSION_FILE") \
+    || die "pending-version marker disappeared before installation commit"
+  [[ "$pending" == "$VERSION" ]] \
+    || die "pending-version marker changed during installation"
+  if [[ -e "$INSTALLED_VERSION_FILE" || -L "$INSTALLED_VERSION_FILE" ]]; then
+    [[ -f "$INSTALLED_VERSION_FILE" && ! -L "$INSTALLED_VERSION_FILE" ]] \
+      || die "refusing unsafe installed-version marker: $INSTALLED_VERSION_FILE"
+  fi
+  mv -f -- "$PENDING_VERSION_FILE" "$INSTALLED_VERSION_FILE"
+}
+
+resolve_cosign() {
+  local candidate binary_name expected_hash actual_hash owner permissions version_output
+  for candidate in /usr/local/bin/cosign /usr/bin/cosign; do
+    if [[ -x "$candidate" && -f "$candidate" && ! -L "$candidate" ]]; then
+      owner=$(stat -c '%u' "$candidate")
+      permissions=$(stat -c '%A' "$candidate")
+      if [[ "$owner" != "0" || "${permissions:5:1}" == "w" || "${permissions:8:1}" == "w" ]]; then
+        continue
+      fi
+      if ! version_output=$("$candidate" version 2>/dev/null) \
+        || ! grep -Eq '(^|[[:space:]])v?3\.1\.3([[:space:]]|$)' <<<"$version_output"; then
+        continue
+      fi
+      COSIGN_BIN="$candidate"
+      return 0
+    fi
+  done
+
+  binary_name="cosign-linux-${ARCH}"
+  case "$ARCH" in
+    amd64) expected_hash="$COSIGN_AMD64_SHA256" ;;
+    arm64) expected_hash="$COSIGN_ARM64_SHA256" ;;
+    *) die "no trusted Cosign bootstrap is available for architecture: $ARCH" ;;
+  esac
+  COSIGN_BIN="${TMP_DIR}/cosign"
+  log "downloading checksum-pinned Cosign ${COSIGN_VERSION} verifier"
+  curl --proto '=https' --tlsv1.2 --fail --show-error --location \
+    --output "$COSIGN_BIN" \
+    "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/${binary_name}"
+  actual_hash=$(sha256sum "$COSIGN_BIN" | awk '{print $1}')
+  [[ "$actual_hash" == "$expected_hash" ]] || die "Cosign bootstrap checksum mismatch"
+  chmod 0700 "$COSIGN_BIN"
 }
 
 validate_url() {
@@ -281,7 +409,8 @@ while (($#)); do
     --enrollment-token-file)
       (($# >= 2)) || die "--enrollment-token-file requires a value"
       ENROLLMENT_TOKEN_FILE="$2"; shift 2 ;;
-    --require-signature) REQUIRE_SIGNATURE=1; shift ;;
+    --require-signature) shift ;;
+    --allow-downgrade) ALLOW_DOWNGRADE=1; shift ;;
     --no-start) START_SERVICES=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -318,11 +447,15 @@ need_command getent
 need_command groupadd
 need_command useradd
 need_command usermod
+need_command flock
+need_command mv
 case "$(uname -m)" in
   x86_64|amd64) ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
   *) die "unsupported CPU architecture: $(uname -m)" ;;
 esac
+
+acquire_install_lock "$INSTALL_LOCK_FILE"
 
 if [[ "$VERSION" == "latest" ]]; then
   log "resolving latest release"
@@ -332,6 +465,21 @@ if [[ "$VERSION" == "latest" ]]; then
   VERSION="${VERSION##*/}"
 fi
 validate_version "$VERSION"
+
+VERSION_FLOOR=""
+for version_marker in "$INSTALLED_VERSION_FILE" "$PENDING_VERSION_FILE"; do
+  if [[ -e "$version_marker" || -L "$version_marker" ]]; then
+    # Keep this assignment outside an `if` condition: malformed/symlink marker
+    # failures must propagate through `set -e` instead of looking like absence.
+    marker_value=$(read_version_marker "$version_marker")
+    if [[ -z "$VERSION_FLOOR" ]] || version_is_older "$VERSION_FLOOR" "$marker_value"; then
+      VERSION_FLOOR="$marker_value"
+    fi
+  fi
+done
+if [[ -n "$VERSION_FLOOR" ]] && version_is_older "$VERSION" "$VERSION_FLOOR" && ((ALLOW_DOWNGRADE == 0)); then
+  die "refusing downgrade below installed/pending floor $VERSION_FLOOR to $VERSION; restore a matching data backup and pass --allow-downgrade only after review"
+fi
 
 TMP_DIR=$(mktemp -d -t witshield-install.XXXXXXXX)
 readonly ASSET="witshield_${VERSION#v}_linux_${ARCH}.tar.gz"
@@ -349,26 +497,18 @@ ACTUAL_HASH=$(sha256sum "${TMP_DIR}/${ASSET}" | awk '{print $1}')
 [[ "$ACTUAL_HASH" == "$EXPECTED_HASH" ]] || die "SHA-256 checksum mismatch"
 log "SHA-256 verified"
 
-BUNDLE_AVAILABLE=0
-if curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-  --output "${TMP_DIR}/SHA256SUMS.bundle" "${RELEASE_BASE}/SHA256SUMS.bundle"; then
-  BUNDLE_AVAILABLE=1
-fi
-
-if command -v cosign >/dev/null 2>&1 && ((BUNDLE_AVAILABLE)); then
-  log "verifying Sigstore release identity"
-  cosign verify-blob \
+curl --proto '=https' --tlsv1.2 --fail --show-error --location \
+  --output "${TMP_DIR}/SHA256SUMS.bundle" "${RELEASE_BASE}/SHA256SUMS.bundle"
+resolve_cosign
+log "verifying Sigstore release identity"
+if ! "$COSIGN_BIN" verify-blob \
     --bundle "${TMP_DIR}/SHA256SUMS.bundle" \
     --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/release.yml@refs/tags/${VERSION}" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-    "${TMP_DIR}/SHA256SUMS" >/dev/null
-  log "Sigstore signature verified"
-elif ((REQUIRE_SIGNATURE)); then
-  ((BUNDLE_AVAILABLE)) || die "release has no SHA256SUMS.bundle"
-  die "Cosign is required for --require-signature"
-else
-  log "Cosign signature not checked (install cosign and use --require-signature to enforce it)"
+    "${TMP_DIR}/SHA256SUMS" >/dev/null; then
+  die "Sigstore release signature verification failed"
 fi
+log "Sigstore signature verified"
 
 # Reject absolute paths, traversal and unexpected archive roots before extraction.
 while IFS= read -r entry; do
@@ -445,6 +585,12 @@ fi
 # Keep a web one-liner's short-lived value only as long as a fresh Agent needs
 # it. This shell variable is not exported to apt, user-management or systemd.
 ENROLLMENT_TOKEN_FROM_ENV=""
+
+# Persist the verified release as a fail-closed version floor before the first
+# package, account, file, or service mutation.  If any later step fails, the
+# pending marker prevents an older installer from overwriting partially
+# upgraded binaries or data.  The global flock serializes this transaction.
+stage_pending_version
 
 # Typed firewall defense calls the distribution-owned nft binary by its fixed
 # absolute path. Install only this declared runtime dependency, and only after
@@ -612,6 +758,7 @@ if ((START_SERVICES)); then
   fi
 fi
 
+commit_pending_version
 log "WitShield AI ${VERSION} installed in ${MODE} mode"
 if [[ ( "$MODE" == "standalone" || "$MODE" == "controller" ) && "$CONTROLLER_FIRST_INSTALL" -eq 1 ]]; then
   cat >&2 <<EOF

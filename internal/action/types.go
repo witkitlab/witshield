@@ -20,6 +20,23 @@ const (
 	TypeFilePermissionRepair   Type = "file_permission_repair"
 )
 
+// ExecutionIndeterminateMessage is returned only after an action request may
+// have crossed into the privileged Helper without a durable final receipt.
+// The Agent identity signature binds this exact value so the Controller can
+// project the action to manual-verification state instead of claiming failure.
+const ExecutionIndeterminateMessage = "privileged execution was interrupted after entering the helper; remote state is unknown and requires manual verification"
+
+// ReceiptPersistenceFailureMessage is the exact fail-closed envelope emitted
+// when a typed operation completed successfully but the Helper could not save
+// its local replay receipt. The signed Helper receipt still proves the host
+// outcome; the Controller records this value as an audit warning.
+const ReceiptPersistenceFailureMessage = "action succeeded but durable receipt persistence failed"
+
+// PrivilegedExecutionTimeout is the maximum lifetime of one Helper request.
+// Controller-side temporary-ban expiry projection uses the same bound when a
+// delayed receipt has unusable timestamps, so the two components cannot drift.
+const PrivilegedExecutionTimeout = 10 * time.Minute
+
 // Operation is one phase in the action lifecycle. Execute is a convenience
 // operation which performs precheck, preview, apply and verify in order.
 type Operation string
@@ -69,6 +86,11 @@ type Result struct {
 
 // ApplyResult includes the state necessary to verify or undo the change.
 // ConfirmBy is set for changes which automatically roll back unless confirmed.
+// State is also the mutation-boundary token for a failed Apply: before the
+// first potentially mutating operation a playbook must return an empty State;
+// after that boundary every error must return the already-created rollback
+// State. The Engine attempts an immediate rollback and preserves the sealed
+// State only when that rollback cannot prove recovery.
 type ApplyResult struct {
 	Result
 	State     json.RawMessage `json:"state"`
@@ -107,16 +129,20 @@ type AuditStep struct {
 // ParametersDigest lets an auditor correlate the receipt with an approved
 // request without disclosing those parameters.
 type Receipt struct {
-	ID               string      `json:"id"`
-	ActionID         string      `json:"actionId"`
-	Actor            string      `json:"actor"`
-	Type             Type        `json:"type"`
-	Operation        Operation   `json:"operation"`
-	ParametersDigest string      `json:"parametersDigest"`
-	StartedAt        time.Time   `json:"startedAt"`
-	FinishedAt       time.Time   `json:"finishedAt"`
-	Success          bool        `json:"success"`
-	Steps            []AuditStep `json:"steps"`
+	ID               string    `json:"id"`
+	ActionID         string    `json:"actionId"`
+	Actor            string    `json:"actor"`
+	Type             Type      `json:"type"`
+	Operation        Operation `json:"operation"`
+	ParametersDigest string    `json:"parametersDigest"`
+	StartedAt        time.Time `json:"startedAt"`
+	FinishedAt       time.Time `json:"finishedAt"`
+	Success          bool      `json:"success"`
+	// Indeterminate is true only when a typed mutation may remain on the host
+	// after all automatic recovery attempts. It is part of the Agent-signed
+	// audit receipt and lets the Controller avoid projecting a false failure.
+	Indeterminate bool        `json:"indeterminate,omitempty"`
+	Steps         []AuditStep `json:"steps"`
 	// State is returned separately as rollbackPayload by the helper. It is not
 	// serialized into an audit receipt because snapshots can contain sensitive
 	// configuration data.

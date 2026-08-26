@@ -73,7 +73,7 @@
 
 原生 Agent 以 `witshield-agent` 普通用户运行，可按安装时存在的系统组获得只读日志权限。独立的 `witshield-helper` 以 root 运行，但只监听本机 Unix Socket，校验 peer credential 和 256-bit 本机 token，并仅接受编译进二进制的强类型 Playbook。Controller 使用独立用户且不在 Helper 访问组，因此 Controller RCE 不能直接调用 Helper。
 
-Helper 仍是高价值边界：它不连接 AI/Controller，也不接受任意 shell、可执行路径或远程插件；`apt` Playbook 需要下载包时，其固定子进程可能访问系统软件源。每次调用的 actor、动作、参数摘要与结果都应生成审计回执。
+Helper 仍是高价值边界：它不连接 AI/Controller，也不接受任意 shell、可执行路径或远程插件；`apt` Playbook 需要下载包时，其固定子进程可能访问系统软件源。软件包变更会在 APT 持有前端锁后读取 version 3 计划，按 `包名:架构` 锁定完整事务，只允许管理员显式授权且已经安装的包做严格单调升级；任何未列出的依赖变化、新增/删除包、同版本重装、架构或 Multi-Arch 切换以及陈旧回滚都会在 `dpkg` 前拒绝。APT 的自动/手动安装标记保持不变。每次调用的 actor、动作、参数摘要与结果都应生成审计回执。
 
 ## 部署拓扑
 
@@ -165,6 +165,7 @@ SSH 加固是额外的失联保护流程：Helper 在修改前持久化原配置
 - 自动解除或回滚方法；
 - 设备级紧急停止；
 - 设备离线时动作留在 Controller 队列且受命令有效期约束；临时封禁的解除由内核 TTL 执行，不依赖 Controller 在线。
+- Controller 不根据迟到的结果重启封禁 TTL，也不假设 Controller/Agent 时钟同步：它只在 `started_at + TTL` 的确定窗口内抑制同源重复动作，窗口过后把远端状态标为 `indeterminate` 并允许新动作以单次 nftables 事务原子刷新。同一 IP 的 element 带动作代际，Helper 在回滚前核验代际，因而旧回滚无法删除后来刷新出的封禁。
 
 SSH 暴力尝试临时封禁是首个实验场景：只临时阻断来源地址，不永久修改账号，不反向访问来源主机，并保护私网/loopback 和用户明确配置的管理员 IP/CIDR allowlist；系统不自动猜测当前管理员来源。
 

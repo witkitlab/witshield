@@ -10,6 +10,7 @@ import {
   Clock3,
   Copy,
   Eye,
+  FileText,
   KeyRound,
   LayoutDashboard,
   LoaderCircle,
@@ -45,6 +46,8 @@ import {
   createSchedule,
   demoMode,
   getServerStatus,
+  getReport,
+  getReportsForDevice,
   loadSnapshot,
   login,
   logout,
@@ -59,11 +62,12 @@ import {
   updateSchedule,
 } from './api-client';
 import { demoDashboard } from './demo-data';
-import type { ActionPlan, AISettings, DashboardSnapshot, DefensePolicy, Finding, NotificationSettings, ScanSchedule, Section, Severity } from './types';
+import type { ActionPlan, AISettings, DashboardSnapshot, DefensePolicy, Finding, NotificationSettings, ScanSchedule, Section, SecurityReport, Severity } from './types';
 
 const navigation: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'overview', label: '总览', icon: LayoutDashboard },
   { id: 'findings', label: '风险', icon: TriangleAlert },
+  { id: 'reports', label: '报告', icon: FileText },
   { id: 'devices', label: '设备', icon: Server },
   { id: 'policies', label: '防御策略', icon: Radar },
   { id: 'audit', label: '执行记录', icon: ScrollText },
@@ -98,9 +102,12 @@ export function WitShieldApp() {
   const refresh = useCallback(async () => {
     const live = await loadSnapshot();
     const openFindings = live.findings.filter((finding) => finding.state === 'open');
-    const score = live.devices.length
-      ? Math.round(live.devices.reduce((sum, device) => sum + device.score, 0) / live.devices.length)
-      : 100;
+    const scoredDevices = live.devices
+      .map((device) => device.score)
+      .filter((score): score is number => score !== null);
+    const score = scoredDevices.length
+      ? Math.round(scoredDevices.reduce((sum, value) => sum + value, 0) / scoredDevices.length)
+      : null;
     setDashboard((current) => ({
       ...current,
       ...live,
@@ -207,7 +214,7 @@ export function WitShieldApp() {
           </div>
           <div className="top-actions">
             <button className="icon-button" aria-label="查看需要关注的记录" onClick={() => setSection('audit')}><Bell size={17} />{dashboard.criticalFindings > 0 && <span className="notification-dot" />}</button>
-            {section !== 'settings' && <button className="secondary-button" onClick={() => setSection('audit')}>查看报告</button>}
+            {section !== 'settings' && <button className="secondary-button" onClick={() => setSection('reports')}>查看报告</button>}
             <button className="primary-button" onClick={handleScan} disabled={scanning || !selectedDevice}>
               {scanning ? <LoaderCircle className="spin" size={15} /> : <ScanSearch size={15} />}
               {scanning ? '扫描中' : '立即扫描'}
@@ -220,6 +227,7 @@ export function WitShieldApp() {
           <Overview dashboard={dashboard} selectedDeviceId={selectedDeviceId} onFinding={setSelectedFinding} onSection={setSection} />
         )}
         {section === 'findings' && <FindingsView findings={dashboard.findings} devices={dashboard.devices} onFinding={setSelectedFinding} />}
+        {section === 'reports' && <ReportsView devices={dashboard.devices} onSelectDevice={setSelectedDeviceId} onFinding={setSelectedFinding} />}
         {section === 'devices' && (
           <DevicesView dashboard={dashboard} selectedDeviceId={selectedDeviceId} onSelect={setSelectedDeviceId} onEnroll={handleEnrollment} />
         )}
@@ -247,7 +255,7 @@ export function WitShieldApp() {
 }
 
 function sectionTitle(section: Section) {
-  return ({ overview: '服务器整体稳定', findings: '风险与变化', devices: '受保护的设备', policies: '防御策略', audit: '执行与审计记录', settings: '妙盾设置' } as const)[section];
+  return ({ overview: '服务器安全概览', findings: '风险与变化', reports: '扫描报告', devices: '受保护的设备', policies: '防御策略', audit: '执行与审计记录', settings: '妙盾设置' } as const)[section];
 }
 
 function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
@@ -257,22 +265,24 @@ function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
   onSection: (section: Section) => void;
 }) {
   const deviceFindings = dashboard.findings.filter((finding) => finding.deviceId === selectedDeviceId && finding.state === 'open');
+  const hasScore = dashboard.score !== null;
+  const selectedDevice = dashboard.devices.find((device) => device.id === selectedDeviceId);
   return (
     <div className="content-grid">
       <section className="main-column">
         <article className="posture-card">
           <div className="posture-copy">
-            <span className="health-pill"><span className="status-dot" />防护运行中</span>
-            <h2>今日安全状态</h2>
-            <p>妙盾已检查 {dashboard.checks} 项服务器配置，发现 {dashboard.criticalFindings} 项需要优先处理的问题。</p>
-            <div className="score-row"><strong>{dashboard.score}</strong><span>/ 100<br /><small>{dashboard.coverageIssues.length ? '仅基于已完成的检查' : `较昨日提升 ${Math.max(0, dashboard.score - dashboard.previousScore)} 分`}</small></span></div>
+            <span className="health-pill"><span className="status-dot" />{dashboard.devicesOnline > 0 ? '防护运行中' : '等待 Agent 上线'}</span>
+            <h2>{hasScore ? '今日安全状态' : '等待首次安全扫描'}</h2>
+            <p>{hasScore ? `妙盾已检查 ${dashboard.checks} 项服务器配置，发现 ${dashboard.criticalFindings} 项需要优先处理的问题。` : '尚未收到可验证的扫描报告；在此之前不会把未知状态显示为安全。'}</p>
+            <div className="score-row"><strong>{hasScore ? dashboard.score : '—'}</strong><span>{hasScore ? '/ 100' : '待扫描'}<br /><small>{!hasScore ? '尚无安全评分' : dashboard.coverageIssues.length ? '仅基于已完成的检查' : `较昨日提升 ${Math.max(0, (dashboard.score ?? 0) - dashboard.previousScore)} 分`}</small></span></div>
           </div>
-          <div className="orbit" aria-label={`安全评分 ${dashboard.score} 分`} style={{ '--score': `${dashboard.score * 3.6}deg` } as React.CSSProperties}>
-            <span>{dashboard.score}</span><small>安全分</small>
+          <div className="orbit" aria-label={hasScore ? `安全评分 ${dashboard.score} 分` : '尚无安全评分，等待首次扫描'} style={{ '--score': `${(dashboard.score ?? 0) * 3.6}deg` } as React.CSSProperties}>
+            <span>{hasScore ? dashboard.score : '—'}</span><small>{hasScore ? '安全分' : '待扫描'}</small>
           </div>
         </article>
 
-        {dashboard.coverageIssues.length > 0 && <article className="coverage-alert" role="status"><ShieldAlert size={19} /><div><strong>{dashboard.coverageIssues.length} 台设备的检查不完整</strong><p>安全分只反映已成功运行的确定性检查，不能视为全量安全分。</p><div className="coverage-list">{dashboard.coverageIssues.map((issue) => <details key={issue.deviceId}><summary>{issue.deviceName} · {issue.completedChecks}/{issue.checks} 项完成（{issue.coveragePercent}%）</summary><ul>{issue.errors.map((error) => <li key={error}>{error}</li>)}</ul></details>)}</div></div></article>}
+        {dashboard.coverageIssues.length > 0 && <article className="coverage-alert" role="status"><ShieldAlert size={19} /><div><strong>{dashboard.coverageIssues.length} 台设备的检查不完整</strong><p>安全分只反映已成功运行的确定性检查，不能视为全量安全分。</p><div className="coverage-list">{dashboard.coverageIssues.map((issue) => <details key={issue.deviceId}><summary>{issue.mode === 'pending' ? `${issue.deviceName} · 等待首次扫描` : `${issue.deviceName} · ${issue.completedChecks}/${issue.checks} 项完成（${issue.coveragePercent}%）`}</summary><ul>{issue.errors.map((error) => <li key={error}>{error}</li>)}</ul></details>)}</div></div></article>}
 
         <div className="metric-grid">
           <Metric icon={Server} label="在线设备" value={`${dashboard.devicesOnline}/${dashboard.devicesTotal}`} detail={dashboard.devicesTotal === 0 ? '尚未接入 Agent' : dashboard.devicesOnline === dashboard.devicesTotal ? '所有 Agent 工作正常' : `${dashboard.devicesTotal - dashboard.devicesOnline} 台需要检查连接`} />
@@ -288,7 +298,7 @@ function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
           {deviceFindings.slice(0, 3).map((finding) => <FindingRow finding={finding} key={finding.id} onClick={() => onFinding(finding)} />)}
         </div>
       </section>
-      <AssistantPanel deviceId={selectedDeviceId} finding={deviceFindings[0]} onFinding={onFinding} />
+      <AssistantPanel deviceId={selectedDeviceId} finding={deviceFindings[0]} hasScanned={typeof selectedDevice?.score === 'number'} onFinding={onFinding} />
     </div>
   );
 }
@@ -307,7 +317,7 @@ function FindingRow({ finding, onClick }: { finding: Finding; onClick: () => voi
   );
 }
 
-function AssistantPanel({ deviceId, finding, onFinding }: { deviceId: string; finding?: Finding; onFinding: (finding: Finding) => void }) {
+function AssistantPanel({ deviceId, finding, hasScanned, onFinding }: { deviceId: string; finding?: Finding; hasScanned: boolean; onFinding: (finding: Finding) => void }) {
   const [prompt, setPrompt] = useState('');
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [thinking, setThinking] = useState(false);
@@ -330,7 +340,7 @@ function AssistantPanel({ deviceId, finding, onFinding }: { deviceId: string; fi
     <aside className="assistant-panel">
       <div className="assistant-heading"><span className="assistant-mark"><Sparkles size={17} /></span><div><h2>妙盾 Agent</h2><p><span className="status-dot" />随时可以协助</p></div></div>
       <div className="agent-message">
-        <p>今天的扫描已经完成。{finding ? `最值得先处理的是“${finding.title}”，我可以先解释原因或展示安全修复计划。` : '当前没有需要优先处理的风险。'}</p>
+        <p>{hasScanned ? `今天的扫描已经完成。${finding ? `最值得先处理的是“${finding.title}”，我可以先解释原因或展示安全修复计划。` : '当前没有需要优先处理的风险。'}` : '该设备尚未完成首次扫描。收到可验证的报告后，我会基于最少必要证据解释风险并提出修复方案。'}</p>
         {messages.map((message, index) => <div className={`mini-message ${message.role}`} key={`${message.role}-${index}`}><strong>{message.role === 'user' ? '你' : '妙盾'}</strong><p>{message.text}</p></div>)}
         {thinking && <div className="mini-message assistant"><strong>妙盾</strong><p><LoaderCircle className="spin" size={14} /> 正在基于最少必要证据分析…</p></div>}
         <div className="suggestion-list">
@@ -339,7 +349,7 @@ function AssistantPanel({ deviceId, finding, onFinding }: { deviceId: string; fi
           <button onClick={() => void submit('总结本周服务器发生的安全变化')}>本周发生了什么？</button>
         </div>
       </div>
-      <div className="guardrail-note"><LockKeyhole size={15} /><div><strong>经你授权才行动</strong><p>执行前展示具体变更、影响和回滚方案。</p></div></div>
+      <div className="guardrail-note"><LockKeyhole size={15} /><div><strong>经你授权才行动</strong><p>执行前展示授权范围、影响和回滚方案。</p></div></div>
       <form className="prompt-box" onSubmit={(event) => { event.preventDefault(); void submit(prompt); }}>
         <label htmlFor="prompt">与妙盾讨论这台服务器</label>
         <textarea id="prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如：为什么 8080 端口突然开放了？" rows={3} />
@@ -372,6 +382,112 @@ function FindingsView({ findings, devices, onFinding }: { findings: Finding[]; d
   );
 }
 
+function ReportsView({ devices, onSelectDevice, onFinding }: {
+  devices: DashboardSnapshot['devices'];
+  onSelectDevice: (id: string) => void;
+  onFinding: (finding: Finding) => void;
+}) {
+  const [deviceFilter, setDeviceFilter] = useState('');
+  const [reports, setReports] = useState<SecurityReport[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyRequest, setHistoryRequest] = useState(0);
+  const [selectedReportId, setSelectedReportId] = useState('');
+  const history = reports ?? [];
+  const selectedSummary = history.find((report) => report.id === selectedReportId) ?? history[0];
+  const selectedReportKey = selectedSummary?.id ?? '';
+  const [loaded, setLoaded] = useState<{ id: string; report?: SecurityReport; error?: string } | null>(null);
+  const [detailRequest, setDetailRequest] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    if (!deviceFilter) return () => { active = false; };
+    getReportsForDevice(deviceFilter)
+      .then((history) => { if (active) setReports(history); })
+      .catch((cause: unknown) => { if (active) setHistoryError(cause instanceof Error ? cause.message : '读取历史报告失败'); });
+    return () => { active = false; };
+  }, [deviceFilter, historyRequest]);
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedReportKey) return () => { active = false; };
+    getReport(selectedReportKey)
+      .then((report) => { if (active) setLoaded({ id: selectedReportKey, report }); })
+      .catch((cause: unknown) => { if (active) setLoaded({ id: selectedReportKey, error: cause instanceof Error ? cause.message : '读取报告失败' }); });
+    return () => { active = false; };
+  }, [selectedReportKey, detailRequest]);
+
+  const current = loaded?.id === selectedReportKey && loaded.report ? loaded.report : selectedSummary;
+  const loading = Boolean(selectedReportKey && !current?.detailsLoaded && loaded?.id !== selectedReportKey);
+  const reportError = loaded?.id === selectedReportKey ? loaded.error : undefined;
+  const detailsReady = Boolean(current?.detailsLoaded && !reportError);
+  const currentDevice = devices.find((device) => device.id === current?.deviceId);
+  function selectDevice(value: string) {
+    setReports(null);
+    setHistoryError(null);
+    setSelectedReportId('');
+    setLoaded(null);
+    setDeviceFilter(value);
+    if (value) onSelectDevice(value);
+  }
+
+  function retryHistory() {
+    setReports(null);
+    setHistoryError(null);
+    setSelectedReportId('');
+    setLoaded(null);
+    setHistoryRequest((value) => value + 1);
+  }
+
+  return (
+    <div className="page-surface reports-surface">
+      <div className="reports-toolbar">
+        <div><p className="eyebrow">确定性扫描结果</p><h2>历史报告与检查覆盖</h2><p>评分只来自实际完成的检查；失败或缺失的检查会明确列出，不会按安全处理。</p></div>
+        <select value={deviceFilter} onChange={(event) => selectDevice(event.target.value)} aria-label="筛选报告设备"><option value="">选择一台设备</option>{devices.map((device) => <option value={device.id} key={device.id}>{device.name}</option>)}</select>
+      </div>
+      {!deviceFilter ? <div className="report-empty"><FileText size={22} /><h3>选择一台设备查看完整历史</h3><p>总览刷新只读取各设备最新报告，避免设备数量与历史保留数量同时放大请求。选择设备后会读取其最多 100 份保留报告。</p></div>
+        : reports === null && !historyError ? <div className="report-empty"><LoaderCircle className="spin" size={22} /><h3>正在读取设备历史</h3><p>正在加载这台设备保留的扫描报告。</p></div>
+          : historyError ? <div className="report-empty" role="alert"><ShieldAlert size={22} /><h3>无法加载此设备的历史报告</h3><p>{historyError}</p><button className="secondary-button" onClick={retryHistory}>重试读取历史报告</button></div>
+            : history.length === 0 ? <div className="report-empty"><FileText size={22} /><h3>还没有扫描报告</h3><p>Agent 完成首次扫描后，评分、覆盖率、检查错误和发现会出现在这里。</p></div> : <div className="reports-layout">
+        <aside className="report-history" aria-label="扫描报告历史">
+          {history.map((report) => {
+            const device = devices.find((item) => item.id === report.deviceId);
+            return <button className={report.id === selectedSummary?.id ? 'report-history-item selected' : 'report-history-item'} key={report.id} onClick={() => setSelectedReportId(report.id)}>
+              <span className="report-score-mini">{report.score}</span>
+              <span><strong>{device?.name ?? report.deviceId}</strong><small>{report.completedAt} · {report.completedChecks}/{report.checks || '—'} 项</small></span>
+              <ChevronRight size={14} />
+            </button>;
+          })}
+        </aside>
+        <section className="report-detail" aria-live="polite">
+          {current && <>
+            <header className="report-detail-header">
+              <div><span className="health-pill"><span className="status-dot" />扫描已完成</span><h2>{currentDevice?.name ?? current.deviceId}</h2><p>{current.completedAt} · {current.mode === 'observer' ? 'Docker 只读观察' : current.mode === 'native' ? '原生 Agent' : current.mode}</p></div>
+              <div className="report-score"><strong>{current.score}</strong><span>/ 100<small>安全分</small></span></div>
+            </header>
+            <div className="report-metrics">
+              <Metric icon={CheckCircle2} label="已完成检查" value={`${current.completedChecks}/${current.checks || '—'}`} detail={`覆盖率 ${current.coveragePercent}%`} />
+              <Metric icon={TriangleAlert} label="报告内发现" value={current.findingCount === null ? '待确认' : String(current.findingCount)} detail={current.findingCount === null ? '完整详情加载后确认' : current.findingCount > 0 ? '按风险优先级列出' : '没有发现新的风险'} warning={(current.findingCount ?? 0) > 0} />
+              <Metric icon={Clock3} label="扫描时间" value={current.completedAt} detail={`开始：${current.startedAt}`} />
+            </div>
+            {(current.coveragePercent < 100 || current.errors.length > 0) && <div className="report-coverage-warning"><ShieldAlert size={18} /><div><strong>这不是全量安全分</strong><p>{current.completedChecks}/{current.checks || '未知'} 项检查完成，未完成部分不会被推定为安全。</p>{current.errors.length > 0 && <ul>{current.errors.map((item) => <li key={item}>{item}</li>)}</ul>}</div></div>}
+            <div className="report-findings-heading"><div><p className="eyebrow">报告内容</p><h3>本次扫描发现</h3></div><span>{loading ? '正在加载详情' : reportError ? '详情读取失败' : detailsReady && current.findings.length ? `${current.findings.length} 项可查看证据` : detailsReady && current.findingCount === 0 ? '暂无报告内发现' : '详情尚未确认'}</span></div>
+            <div className="report-findings">
+              {loading ? <p className="report-loading"><LoaderCircle className="spin" size={14} />正在核对完整报告，尚不判断为“没有发现”…</p>
+                : reportError ? <div className="report-detail-state" role="alert"><strong>无法确认报告详情</strong><p>{reportError}。{current.findingCount === null ? '摘要未提供发现数量，因此不会被当作 0 项。' : `摘要中的 ${current.findingCount} 项发现不会被当作 0 项。`}</p><button className="secondary-button" onClick={() => { setLoaded(null); setDetailRequest((value) => value + 1); }}>重试读取完整报告</button></div>
+                  : !detailsReady ? <p className="report-detail-state">完整报告尚未加载，当前只显示摘要。</p>
+                    : <>
+                      {current.findingCount !== null && current.findingCount !== current.findings.length && <div className="report-detail-state" role="alert"><strong>报告摘要与详情不一致</strong><p>摘要记录了 {current.findingCount} 项发现，但详情返回了 {current.findings.length} 项证据。请重新扫描或检查 Controller 日志。</p></div>}
+                      {current.findings.length ? current.findings.map((finding) => <FindingRow finding={finding} key={finding.id} onClick={() => onFinding(finding)} />)
+                        : current.findingCount === 0 ? <p className="empty-action-records">这份完整报告没有记录新的发现。</p> : null}
+                    </>}
+            </div>
+          </>}
+        </section>
+      </div>}
+    </div>
+  );
+}
+
 function DevicesView({ dashboard, selectedDeviceId, onSelect, onEnroll }: { dashboard: DashboardSnapshot; selectedDeviceId: string; onSelect: (id: string) => void; onEnroll: () => void }) {
   return (
     <div className="page-surface">
@@ -380,7 +496,7 @@ function DevicesView({ dashboard, selectedDeviceId, onSelect, onEnroll }: { dash
         <button className={selectedDeviceId === device.id ? 'device-tile selected' : 'device-tile'} key={device.id} onClick={() => onSelect(device.id)}>
           <div className="device-tile-top"><span className="server-icon"><Server size={19} /></span><span className={`device-status ${device.status}`}><span />{device.status === 'online' ? '在线' : '离线'}</span></div>
           <h3>{device.name}</h3><p>{device.hostname}</p>
-          <dl><div><dt>系统</dt><dd>{device.os}</dd></div><div><dt>架构</dt><dd>{device.arch}</dd></div><div><dt>Agent</dt><dd>{device.version}</dd></div><div><dt>安全分</dt><dd>{device.score}</dd></div></dl>
+          <dl><div><dt>系统</dt><dd>{device.os}</dd></div><div><dt>架构</dt><dd>{device.arch}</dd></div><div><dt>Agent</dt><dd>{device.version}</dd></div><div><dt>安全分</dt><dd>{device.score ?? '待扫描'}</dd></div></dl>
           <footer><span>{device.findings} 个待处理风险</span><span>{device.lastSeen}</span></footer>
         </button>
       ))}</div>
@@ -502,10 +618,13 @@ function AuditView({ dashboard, onChanged }: { dashboard: DashboardSnapshot; onC
           const awaiting = item.status === 'awaiting_confirmation';
           const indeterminate = item.status === 'indeterminate';
           const running = ['approved', 'executing', 'confirming', 'rolling_back'].includes(item.status);
+          const indeterminateDetail = item.error
+            ? `未能确认安全终态：${item.error}。请通过带外终端、Helper 审计和下一次扫描核验真实状态；系统不会自动重试。`
+            : '未能确认安全终态。操作可能已经生效、部分生效或已回滚；请通过带外终端、Helper 审计和下一次扫描核验，系统不会自动重试。';
           return <article className={awaiting || indeterminate ? `action-record urgent${indeterminate ? ' indeterminate' : ''}` : 'action-record'} key={item.id}>
             <span className="action-record-icon">{awaiting || indeterminate ? <ShieldAlert size={17} /> : running ? <LoaderCircle className="spin" size={17} /> : item.status === 'succeeded' ? <CheckCircle2 size={17} /> : <RotateCcw size={17} />}</span>
-            <div><header><strong>{item.title}</strong><span className={`action-status ${item.status}`}>{actionStatusText(item.status)}</span></header><p>{awaiting ? `请先从另一个终端验证 SSH 仍能登录，并在 ${item.confirmBy ?? '安全期限内'}完成保留确认；否则 Helper 自动恢复原配置。` : indeterminate ? 'Controller 没有在安全期限内收到可信设备回执。请通过带外终端、Helper 审计和下一次扫描核验真实状态；系统不会自动重试。' : item.error || `最近更新：${item.updatedAt}`}</p><small>设备 {item.deviceId} · 动作 {item.id}</small></div>
-            <div className="action-record-buttons">{awaiting && <button className="primary-button" disabled={busy === item.id} onClick={() => void confirm(item.id)}>{busy === item.id ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}确认 SSH 可用并保留</button>}{item.canRollback && (item.status === 'succeeded' || item.status === 'failed' || awaiting) && <button className="secondary-button" disabled={busy === item.id} onClick={() => void rollback(item.id)}><RotateCcw size={14} />立即回滚</button>}</div>
+            <div><header><strong>{item.title}</strong><span className={`action-status ${item.status}`}>{actionStatusText(item.status)}</span></header><p>{awaiting ? `请先从另一个终端验证 SSH 仍能登录，并在 ${item.confirmBy ?? '安全期限内'}完成保留确认；否则 Helper 自动恢复原配置。` : indeterminate ? indeterminateDetail : item.error || `最近更新：${item.updatedAt}`}</p><small>设备 {item.deviceId} · 动作 {item.id}</small></div>
+            <div className="action-record-buttons">{awaiting && <button className="primary-button" disabled={busy === item.id} onClick={() => void confirm(item.id)}>{busy === item.id ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}确认 SSH 可用并保留</button>}{item.canRollback && (item.status === 'succeeded' || item.status === 'failed' || item.status === 'indeterminate' || awaiting) && <button className="secondary-button" disabled={busy === item.id} onClick={() => void rollback(item.id)}><RotateCcw size={14} />立即回滚</button>}</div>
           </article>;
         }) : <p className="empty-action-records">当前没有需要确认或可回滚的动作。</p>}</div>
       </section>
@@ -691,12 +810,13 @@ function FindingDrawer({ finding, onClose, onPlan, onApproved }: { finding: Find
     catch (cause) { setPlanError(cause instanceof Error ? cause.message : '批准失败'); }
     finally { setApproving(false); }
   }
+  const packagePlan = plan?.steps.some((step) => step.kind === 'package_upgrade') ?? false;
   return (
     <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="finding-title">
         <header><div><span className={`severity ${finding.severity}`}>{severityName[finding.severity]}</span><p>{finding.category} · {finding.detectedAt}</p></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
         <div className="drawer-body"><h2 id="finding-title">{finding.title}</h2><p className="lead">{finding.summary}</p><section><h3>判断依据</h3><ul className="evidence-list">{finding.evidence.map((item) => <li key={item}><Check size={14} />{item}</li>)}</ul></section>
-          {plan ? <section className="plan-card"><div className="plan-heading"><div><p className="eyebrow">待你确认的修复计划</p><h3>{plan.title}</h3></div><span className={`plan-risk ${plan.risk}`}>{plan.risk === 'low' ? '低影响' : '需谨慎'}</span></div><p className="plan-checks-label">批准后由设备 Agent 强制执行这些前置检查；任一检查失败都不会修改系统：</p><div className="precheck-list">{plan.checks.map((check) => <span key={check}><ShieldCheck size={14} />{check}</span>)}</div>{plan.steps.map((step, index) => <article className="action-step" key={step.id}><span className="step-number">{index + 1}</span><div><h4>{step.title}</h4><pre>{step.preview}</pre><dl><div><dt>影响</dt><dd>{step.impact}</dd></div><div><dt>回滚</dt><dd>{step.rollback}</dd></div></dl></div></article>)}<label className="approval-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>我已查看具体变更、影响和回滚方案，同意在设备端检查通过后执行这一次修复。</span></label></section> : <section className="empty-plan"><Eye size={20} /><div><h3>当前仅提供证据</h3><p>妙盾不会在没有明确修复方案和回滚步骤时执行操作。</p>{canCreateAction(finding) && <button className="secondary-button" onClick={() => void generate()} disabled={generating}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}生成安全修复计划</button>}</div></section>}
+          {plan ? <section className="plan-card"><div className="plan-heading"><div><p className="eyebrow">待你确认的修复计划</p><h3>{plan.title}</h3></div><span className={`plan-risk ${plan.risk}`}>{plan.risk === 'low' ? '低影响' : '需谨慎'}</span></div><p className="plan-checks-label">批准后由设备 Agent 强制执行这些前置检查；任一检查失败都不会修改系统：</p><div className="precheck-list">{plan.checks.map((check) => <span key={check}><ShieldCheck size={14} />{check}</span>)}</div>{plan.steps.map((step, index) => <article className="action-step" key={step.id}><span className="step-number">{index + 1}</span><div><h4>{step.title}</h4><pre>{step.preview}</pre><dl><div><dt>影响</dt><dd>{step.impact}</dd></div><div><dt>回滚</dt><dd>{step.rollback}</dd></div></dl></div></article>)}<label className="approval-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>{packagePlan ? '我已核对授权的软件包范围，并了解目标版本将在设备执行时解析；如 APT 需要修改任何未列出的包，本次操作会在 dpkg 前停止。' : '我已查看具体变更、影响和回滚方案，同意在设备端检查通过后执行这一次修复。'}</span></label></section> : <section className="empty-plan"><Eye size={20} /><div><h3>当前仅提供证据</h3><p>妙盾不会在没有明确修复方案和回滚步骤时执行操作。</p>{canCreateAction(finding) && <button className="secondary-button" onClick={() => void generate()} disabled={generating}>{generating ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}生成安全修复计划</button>}</div></section>}
           {planError && <p className="form-error" role="alert">{planError}</p>}
         </div>
         <footer className="drawer-footer"><button className="secondary-button" onClick={onClose}>暂不处理</button>{plan && <button className="primary-button" disabled={!confirmed || approving} onClick={() => void approve()}>{approving ? <LoaderCircle className="spin" size={15} /> : <ShieldCheck size={15} />}批准并执行</button>}</footer>

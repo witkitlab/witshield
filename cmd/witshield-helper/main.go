@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,11 +36,14 @@ import (
 const (
 	maxRequestBytes       = 1 << 20
 	maxConcurrentRequests = 32
+	packagePlanBase       = "/var/lib/witshield-helper/package-plans"
 )
 
 var version = "dev"
 var commit = "unknown"
 var buildDate = "unknown"
+
+var attemptIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 
 type stringFlags []string
 
@@ -51,6 +55,7 @@ func (values *stringFlags) Set(value string) error {
 
 type helperRequest struct {
 	Token           string           `json:"token,omitempty"`
+	AttemptID       string           `json:"attemptId"`
 	ActionID        string           `json:"actionId"`
 	Type            action.Type      `json:"type"`
 	Operation       action.Operation `json:"operation,omitempty"`
@@ -77,6 +82,17 @@ type server struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "apt-plan-guard" {
+		if len(os.Args) != 3 || os.Geteuid() != 0 {
+			fmt.Fprintln(os.Stderr, "witshield apt plan guard requires one transaction directory and root")
+			os.Exit(2)
+		}
+		if err := action.RunPackagePlanGuard(os.Stdin, os.Args[2], packagePlanBase); err != nil {
+			fmt.Fprintf(os.Stderr, "witshield rejected the locked APT plan: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	var protectedPrefixes, adminIPs stringFlags
 	socketPath := flag.String("socket", "/run/witshield/helper.sock", "Unix socket path")
@@ -146,7 +162,14 @@ func buildEngine(journalDir string, protectedPrefixValues, adminIPValues []strin
 		nftPath       = "/usr/sbin/nft"
 	)
 	runner := action.NewExecRunner(aptGetPath, dpkgQueryPath, sshdPath, systemctlPath, nftPath)
-	packagePlaybook := action.NewPackageSecurityUpgradePlaybook(runner, aptGetPath, dpkgQueryPath)
+	hookPath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve helper executable for APT plan guard: %w", err)
+	}
+	packagePlaybook, err := action.NewPackageSecurityUpgradePlaybook(runner, aptGetPath, dpkgQueryPath, hookPath, packagePlanBase)
+	if err != nil {
+		return nil, fmt.Errorf("configure package upgrade plan guard: %w", err)
+	}
 	sshPlaybook, err := action.NewSSHPasswordHardeningPlaybook(action.SSHHardeningConfig{
 		Runner: runner, SSHDPath: sshdPath, SystemctlPath: systemctlPath,
 		ConfigPath: "/etc/ssh/sshd_config", ServiceName: "ssh", JournalDir: journalDir,
@@ -169,6 +192,11 @@ func buildEngine(journalDir string, protectedPrefixValues, adminIPValues []strin
 	})
 	if err != nil {
 		return nil, err
+	}
+	prepareContext, cancelPrepare := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelPrepare()
+	if err := banPlaybook.Prepare(prepareContext); err != nil {
+		return nil, fmt.Errorf("prepare temporary-ban nftables infrastructure: %w", err)
 	}
 	permissionPlaybook, err := action.NewFilePermissionRepairPlaybook(defaultApprovedPaths(groupID))
 	if err != nil {
@@ -492,6 +520,10 @@ func (s *server) handle(serverContext context.Context, connection *net.UnixConn)
 		return
 	}
 	request.Token = ""
+	if !attemptIDPattern.MatchString(request.AttemptID) {
+		s.writeResponse(connection, helperResponse{Error: "invalid attempt identity"})
+		return
+	}
 	if len(request.State) > 0 && len(request.RollbackPayload) > 0 {
 		s.writeResponse(connection, helperResponse{Error: "state and rollbackPayload are mutually exclusive"})
 		return
@@ -512,7 +544,7 @@ func (s *server) handle(serverContext context.Context, connection *net.UnixConn)
 		s.writeResponse(connection, helperResponse{Error: "rollback state is not accepted for this operation"})
 		return
 	}
-	requestContext, cancel := context.WithTimeout(serverContext, 10*time.Minute)
+	requestContext, cancel := context.WithTimeout(serverContext, action.PrivilegedExecutionTimeout)
 	defer cancel()
 	cacheable := request.Operation == action.OperationExecute || request.Operation == action.OperationRollback || request.Operation == action.OperationConfirm
 	if cacheable {
@@ -520,14 +552,14 @@ func (s *server) handle(serverContext context.Context, connection *net.UnixConn)
 		defer s.actionMu.Unlock()
 	}
 	if s.receipts != nil && cacheable {
-		if cached, found, cacheErr := s.receipts.load(request.ActionID, request.Type, request.Operation, request.Parameters, state); cacheErr != nil {
+		if cached, found, cacheErr := s.receipts.load(request.AttemptID, request.ActionID, request.Type, request.Operation, request.Parameters, state); cacheErr != nil {
 			s.writeResponse(connection, helperResponse{Error: "receipt cache validation failed"})
 			return
 		} else if found {
 			s.writeResponse(connection, cached)
 			return
 		}
-		if err := s.receipts.begin(request.ActionID, request.Type, request.Operation, request.Parameters, state); err != nil {
+		if err := s.receipts.begin(request.AttemptID, request.ActionID, request.Type, request.Operation, request.Parameters, state); err != nil {
 			s.writeResponse(connection, helperResponse{Error: "failed to persist action execution intent"})
 			return
 		}
@@ -546,9 +578,13 @@ func (s *server) handle(serverContext context.Context, connection *net.UnixConn)
 		}
 	}
 	if s.receipts != nil && cacheable {
-		if err := s.receipts.save(request.ActionID, request.Type, request.Operation, request.Parameters, state, response); err != nil {
+		if err := s.receipts.save(request.AttemptID, request.ActionID, request.Type, request.Operation, request.Parameters, state, response); err != nil {
 			response.OK = false
-			response.Error = "action succeeded but durable receipt persistence failed"
+			if receipt.Success {
+				response.Error = action.ReceiptPersistenceFailureMessage
+			} else {
+				response.Error = "action did not reach a verified state and durable receipt persistence also failed: " + receipt.Error
+			}
 		}
 	}
 	if err := s.writeResponse(connection, response); err != nil {

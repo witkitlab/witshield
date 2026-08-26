@@ -113,11 +113,16 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 		receipt.Error = fmt.Errorf("%w: %v", ErrInvalidRequest, err).Error()
 		return receipt
 	}
+	stateOperation := request.Operation == OperationVerify || request.Operation == OperationRollback || request.Operation == OperationConfirm
+	if !stateOperation && len(request.State) != 0 {
+		receipt.Error = ErrInvalidRequest.Error() + ": rollback state is not accepted for this operation"
+		return receipt
+	}
 	invocation := Invocation{
 		ActionID: request.ActionID, Actor: request.Actor,
-		Parameters: request.Parameters, State: request.State,
+		Parameters: request.Parameters,
 	}
-	if request.Operation == OperationVerify || request.Operation == OperationRollback || request.Operation == OperationConfirm {
+	if stateOperation {
 		payload, err := e.openState(request)
 		if err != nil {
 			receipt.Error = err.Error()
@@ -142,8 +147,16 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 	runApply := func() bool {
 		stepStarted := e.now().UTC()
 		result, err := playbook.Apply(ctx, invocation)
-		if err == nil && (!validState(result.State) || len(result.State) > maxRollbackStateBytes) {
+		stateValid := validState(result.State) && len(result.State) <= maxRollbackStateBytes
+		if err == nil && !stateValid {
+			receipt.Indeterminate = true
 			err = errors.New("playbook returned invalid or oversized rollback state")
+		} else if err != nil && len(result.State) > 0 && !stateValid {
+			// A nonempty state on an Apply error means the playbook crossed its
+			// mutation boundary. Without usable recovery material the host state
+			// cannot be called failed/unchanged.
+			receipt.Indeterminate = true
+			err = fmt.Errorf("apply may have changed the host but returned unusable rollback state: %w", err)
 		}
 		step := AuditStep{Operation: OperationApply, StartedAt: stepStarted, FinishedAt: e.now().UTC(), Success: err == nil}
 		if err != nil {
@@ -151,6 +164,8 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 			receipt.Error = err.Error()
 		} else {
 			step.Result = &result.Result
+		}
+		if stateValid {
 			receipt.State = e.sealState(request.ActionID, request.Type, request.Parameters, result.State)
 			receipt.RollbackStateDigest = digestBytes(receipt.State)
 			receipt.ConfirmBy = result.ConfirmBy
@@ -158,6 +173,21 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 		}
 		receipt.Steps = append(receipt.Steps, step)
 		return err == nil
+	}
+	recoverApplyFailure := func() {
+		applyErr := receipt.Error
+		if !validState(invocation.State) {
+			return
+		}
+		if runResult(OperationRollback, func() (Result, error) { return playbook.Rollback(ctx, invocation) }) {
+			receipt.Error = "apply failed and the change was rolled back: " + applyErr
+			receipt.State = nil
+			receipt.RollbackStateDigest = ""
+			receipt.ConfirmBy = nil
+			return
+		}
+		receipt.Indeterminate = true
+		receipt.Error = "apply failed; automatic rollback also failed: " + applyErr + "; " + receipt.Error
 	}
 
 	switch request.Operation {
@@ -167,6 +197,9 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 		receipt.Success = runResult(OperationPreview, func() (Result, error) { return playbook.Preview(ctx, invocation) })
 	case OperationApply:
 		receipt.Success = runApply()
+		if !receipt.Success {
+			recoverApplyFailure()
+		}
 	case OperationVerify:
 		if !validState(invocation.State) {
 			receipt.Error = ErrRollbackStateNeeded.Error()
@@ -179,6 +212,12 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 			break
 		}
 		receipt.Success = runResult(OperationRollback, func() (Result, error) { return playbook.Rollback(ctx, invocation) })
+		if !receipt.Success {
+			// Once a typed rollback has been invoked, an error cannot prove that
+			// none of its restorative mutations committed. Preserve an explicit
+			// unknown outcome instead of claiming the prior effect is still active.
+			receipt.Indeterminate = true
+		}
 	case OperationConfirm:
 		if !validState(invocation.State) {
 			receipt.Error = ErrRollbackStateNeeded.Error()
@@ -190,9 +229,19 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 			break
 		}
 		receipt.Success = runResult(OperationConfirm, func() (Result, error) { return confirmer.Confirm(ctx, invocation) })
+		if !receipt.Success {
+			// A confirmer may cross its durable mutation boundary (for example,
+			// deleting an SSH rollback journal) before its response is lost. Do
+			// not project that outcome as a proven failed confirmation.
+			receipt.Indeterminate = true
+		}
 	case OperationExecute:
 		if !runResult(OperationPrecheck, func() (Result, error) { return playbook.Precheck(ctx, invocation) }) ||
-			!runResult(OperationPreview, func() (Result, error) { return playbook.Preview(ctx, invocation) }) || !runApply() {
+			!runResult(OperationPreview, func() (Result, error) { return playbook.Preview(ctx, invocation) }) {
+			break
+		}
+		if !runApply() {
+			recoverApplyFailure()
 			break
 		}
 		if runResult(OperationVerify, func() (Result, error) { return playbook.Verify(ctx, invocation) }) {
@@ -202,7 +251,11 @@ func (e *Engine) Run(ctx context.Context, request Request) (receipt Receipt) {
 		verifyErr := receipt.Error
 		if runResult(OperationRollback, func() (Result, error) { return playbook.Rollback(ctx, invocation) }) {
 			receipt.Error = "verification failed and the change was rolled back: " + verifyErr
+			receipt.State = nil
+			receipt.RollbackStateDigest = ""
+			receipt.ConfirmBy = nil
 		} else {
+			receipt.Indeterminate = true
 			receipt.Error = "verification failed; automatic rollback also failed: " + verifyErr + "; " + receipt.Error
 		}
 	default:

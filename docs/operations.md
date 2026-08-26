@@ -29,7 +29,7 @@ less install.sh
 sudo bash install.sh --mode standalone --require-signature
 ```
 
-`--require-signature` 要求本机已安装 Cosign，且 Release 的 `SHA256SUMS.bundle` 能验证到本仓库发布工作流身份。不使用此选项时仍强制验证 SHA-256，但校验文件与归档来自同一 Release，安全强度较低。
+签名校验现在始终强制执行；`--require-signature` 仅为兼容旧命令保留。本机没有 `/usr/local/bin/cosign` 或 `/usr/bin/cosign` 时，安装器会临时下载固定版本的 Cosign，并用脚本内分别为 amd64、arm64 固定的 SHA-256 校验后才执行。仓库同时启用 GitHub Immutable Releases，已公开 Release 的资产和关联 tag 不可替换。
 
 上面的“先看脚本”流程仍把首次信任交给人工审阅。需要可验证的引导链时，先下载同一 Release 的脚本、校验表和签名 bundle，再执行：
 
@@ -49,7 +49,7 @@ less install.sh
 sudo bash install.sh --mode standalone --require-signature
 ```
 
-网页生成的“一行命令”是便利入口：它改用正式 Release 的 `install.sh`，脚本再校验二进制归档，但管道本身无法在执行前验证安装脚本。高保证环境应使用上面的分步流程。
+网页生成的“一行命令”是便利入口：它改用不可变正式 Release 的 `install.sh`，脚本再强制校验二进制归档和 Sigstore 身份，但管道本身无法在执行前验证安装脚本。高保证环境应使用上面的分步流程。
 
 ### 安装模式
 
@@ -147,6 +147,8 @@ Webhook 使用 `X-WitShield-Timestamp` 和 `X-WitShield-Signature: v1=<hex>`。�
 
 在策略页启用 SSH 自动遏制前，必须至少填写一个非回环管理员 IP/CIDR allowlist，并设置失败阈值、统计窗口、封禁 TTL 和每小时上限。系统不会自动推断 NAT、跳板机或动态出口；错误 allowlist 仍可能造成失联，因此生产启用前要验证带外控制台，并按需为 Helper 配置 `--admin-ip`/`--protected-prefix` 的第二层本机保护。
 
+临时封禁的真实到期由主机内核的 nftables TTL 执行，不依赖 Controller 在线。Controller 与 Agent 没有共享可信时钟，主机也可能在最终授权后休眠，因此 Controller 只把“命令开始时间 + TTL”作为**最早可能到期、确定仍应去重的窗口**；窗口过去后若没有新的主机证据，记录转为“需核验”而不会谎称已经解除，也不会用迟到的结果重新开始 TTL。相同 IP 的后续封禁会在单个 nftables 原子事务中刷新，并携带动作代际；旧动作的迟到回滚不能删除新一代封禁。
+
 设备级紧急停止会阻止新的自动决策，并原子取消尚未进入 Helper 的已排队策略动作；Agent 在特权执行前还会再次向 Controller 取得最终授权，处理停止开关与队列领取之间的竞态。它不会谎报已经开始执行的动作已取消，也不会立即移除已经生效的临时封禁：后者继续按 TTL 自动解除，或由管理员从动作记录发起回滚。
 
 SSH 配置加固执行后不会立即显示为最终成功。Helper 会保留原配置并启动本机持久化回滚计时器，动作进入“等待安全确认”；管理员应从第二个会话验证密钥登录后再确认。未在窗口内确认会触发 Helper 自动恢复。Controller 显示“已取消/已触发安全回滚”不是回滚成功回执，网络异常时仍需通过带外控制台与审计复核实际配置。
@@ -193,7 +195,7 @@ WITSHIELD_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 sudo bash install.sh --mode standalone --version vX.Y.Z --require-signature
 ```
 
-安装器保留已有环境文件和数据目录，只替换二进制、systemd unit 与 Web 资产。Agent 已有设备身份时不会要求或生成新的 enrollment token。升级后检查：
+安装器保留已有环境文件和数据目录，只替换二进制、systemd unit 与 Web 资产。Agent 已有设备身份时不会要求或生成新的 enrollment token。安装与卸载共享全局锁并拒绝并发执行；签名和归档验证通过后、任何系统变更发生前，目标版本先写入 `/usr/share/witshield/VERSION.pending`。全部服务验证成功后才原子提交为 `VERSION`；中途失败留下的 pending 版本也会成为反降级下限，防止部分升级或数据库迁移后被旧版覆盖。普通卸载会保留该下限及用户数据，只有明确 `--purge` 才清除。确需回退时，必须先恢复匹配版本的数据备份并显式增加 `--allow-downgrade`，不能只覆盖二进制。升级后检查：
 
 ```bash
 systemctl is-active witshield-controller witshield-helper witshield-agent

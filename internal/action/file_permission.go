@@ -69,17 +69,23 @@ type ApprovedPath struct {
 }
 
 type filePermissionState struct {
-	Path        string      `json:"path"`
-	Mode        fs.FileMode `json:"mode"`
-	UID         int         `json:"uid"`
-	GID         int         `json:"gid"`
-	AppliedMode fs.FileMode `json:"appliedMode"`
-	AppliedUID  int         `json:"appliedUid"`
-	AppliedGID  int         `json:"appliedGid"`
+	Path            string      `json:"path"`
+	Device          uint64      `json:"device"`
+	Inode           uint64      `json:"inode"`
+	Mode            fs.FileMode `json:"mode"`
+	UID             int         `json:"uid"`
+	GID             int         `json:"gid"`
+	AppliedMode     fs.FileMode `json:"appliedMode"`
+	AppliedUID      int         `json:"appliedUid"`
+	AppliedGID      int         `json:"appliedGid"`
+	AppliedComplete bool        `json:"appliedComplete,omitempty"`
 }
 
 type FilePermissionRepairPlaybook struct {
-	approved []ApprovedPath
+	approved            []ApprovedPath
+	beforeOpen          func(Operation)
+	beforeMetadataWrite func(Operation)
+	afterMetadataWrite  func(Operation)
 }
 
 func NewFilePermissionRepairPlaybook(approved []ApprovedPath) (*FilePermissionRepairPlaybook, error) {
@@ -146,6 +152,9 @@ func (p *FilePermissionRepairPlaybook) validateTarget(params FilePermissionRepai
 	}
 	if info.Mode()&os.ModeSymlink != 0 || (!info.Mode().IsRegular() && !info.IsDir()) {
 		return "", 0, ApprovedPath{}, errors.New("permission target must be a regular file or directory, not a symlink or special file")
+	}
+	if hasSpecialModeBits(info.Mode()) {
+		return "", 0, ApprovedPath{}, errors.New("permission target has setuid, setgid, or sticky bits and is outside the repair model")
 	}
 	resolved, err := filepath.EvalSymlinks(cleaned)
 	if err != nil {
@@ -232,6 +241,9 @@ func (p *FilePermissionRepairPlaybook) Apply(_ context.Context, invocation Invoc
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	if p.beforeOpen != nil {
+		p.beforeOpen(OperationApply)
+	}
 	file, err := openValidatedTarget(rule.resolved, path)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("open permission target: %w", err)
@@ -241,7 +253,17 @@ func (p *FilePermissionRepairPlaybook) Apply(_ context.Context, invocation Invoc
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	if hasSpecialModeBits(info.Mode()) {
+		return ApplyResult{}, errors.New("permission target gained setuid, setgid, or sticky bits during validation")
+	}
+	if !modeAllowedForTarget(info, mode, rule) {
+		return ApplyResult{}, errors.New("permission target type changed after validation and the requested mode is not approved for its actual type")
+	}
 	uid, gid, err := ownership(info)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	device, inode, err := fileIdentity(info)
 	if err != nil {
 		return ApplyResult{}, err
 	}
@@ -253,22 +275,43 @@ func (p *FilePermissionRepairPlaybook) Apply(_ context.Context, invocation Invoc
 		targetGID = *params.GID
 	}
 	stateValue := filePermissionState{
-		Path: path, Mode: info.Mode().Perm(), UID: uid, GID: gid,
+		Path: path, Device: device, Inode: inode, Mode: info.Mode().Perm(), UID: uid, GID: gid,
 		AppliedMode: mode, AppliedUID: targetUID, AppliedGID: targetGID,
 	}
 	state, err := encodeState(stateValue)
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	if targetUID != uid || targetGID != gid {
-		if err := file.Chown(targetUID, targetGID); err != nil {
-			return ApplyResult{}, fmt.Errorf("change approved target ownership: %w", err)
+	if p.beforeMetadataWrite != nil {
+		p.beforeMetadataWrite(OperationApply)
+	}
+	original := openedPermissionTuple{Device: device, Inode: inode, Mode: info.Mode().Perm(), UID: uid, GID: gid, Directory: info.IsDir()}
+	target := original
+	target.Mode, target.UID, target.GID = mode, targetUID, targetGID
+	if err := verifyPermissionPath(rule.resolved, path, original); err != nil {
+		return ApplyResult{}, fmt.Errorf("permission target changed before metadata mutation: %w", err)
+	}
+	if err := mutateOpenedPermissionTuple(file, original, target); err != nil {
+		if restoreErr := restoreRecognizedOpenedPermissionTuple(file, original, target, original); restoreErr == nil {
+			return ApplyResult{}, fmt.Errorf("change approved target permissions failed and the opened inode was restored: %w", err)
+		} else {
+			return ApplyResult{State: state}, fmt.Errorf("change approved target permissions failed and direct restoration was incomplete: %w", errors.Join(err, restoreErr))
 		}
 	}
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Chown(uid, gid)
-		_ = file.Chmod(info.Mode().Perm())
-		return ApplyResult{}, fmt.Errorf("change approved target mode: %w", err)
+	if p.afterMetadataWrite != nil {
+		p.afterMetadataWrite(OperationApply)
+	}
+	if err := verifyPermissionPath(rule.resolved, path, target); err != nil {
+		if restoreErr := restoreExactOpenedPermissionTuple(file, target, original); restoreErr == nil {
+			return ApplyResult{}, fmt.Errorf("permission target pathname changed during apply; the opened inode was restored: %w", err)
+		} else {
+			return ApplyResult{State: state}, fmt.Errorf("permission target pathname changed during apply and the opened inode could not be safely restored: %w", errors.Join(err, restoreErr))
+		}
+	}
+	stateValue.AppliedComplete = true
+	state, err = encodeState(stateValue)
+	if err != nil {
+		return ApplyResult{State: state}, fmt.Errorf("encode completed permission rollback state: %w", err)
 	}
 	return ApplyResult{Result: Result{Summary: "approved file permissions repaired", Details: map[string]any{
 		"path": path, "mode": fmt.Sprintf("%04o", mode),
@@ -288,6 +331,9 @@ func (p *FilePermissionRepairPlaybook) Verify(_ context.Context, invocation Invo
 	if state.Path != path || state.AppliedMode != mode {
 		return Result{}, errors.New("file permission state does not match the request")
 	}
+	if p.beforeOpen != nil {
+		p.beforeOpen(OperationVerify)
+	}
 	file, err := openValidatedTarget(rule.resolved, path)
 	if err != nil {
 		return Result{}, err
@@ -300,6 +346,16 @@ func (p *FilePermissionRepairPlaybook) Verify(_ context.Context, invocation Invo
 	uid, gid, err := ownership(info)
 	if err != nil {
 		return Result{}, err
+	}
+	device, inode, err := fileIdentity(info)
+	if err != nil {
+		return Result{}, err
+	}
+	if device != state.Device || inode != state.Inode {
+		return Result{}, errors.New("permission target was replaced after apply")
+	}
+	if hasSpecialModeBits(info.Mode()) {
+		return Result{}, errors.New("permission target gained special bits after apply")
 	}
 	if info.Mode().Perm() != state.AppliedMode || uid != state.AppliedUID || gid != state.AppliedGID {
 		return Result{}, errors.New("file permission verification did not observe the requested mode and ownership")
@@ -322,20 +378,201 @@ func (p *FilePermissionRepairPlaybook) Rollback(_ context.Context, invocation In
 	if state.Path != path {
 		return Result{}, errors.New("file permission rollback target does not match the request")
 	}
+	if p.beforeOpen != nil {
+		p.beforeOpen(OperationRollback)
+	}
 	file, err := openValidatedTarget(rule.resolved, path)
 	if err != nil {
 		return Result{}, err
 	}
 	defer file.Close()
-	if err := file.Chown(state.UID, state.GID); err != nil {
-		return Result{}, fmt.Errorf("restore file ownership: %w", err)
+	info, err := file.Stat()
+	if err != nil {
+		return Result{}, err
 	}
-	if err := file.Chmod(state.Mode); err != nil {
-		return Result{}, fmt.Errorf("restore file mode: %w", err)
+	uid, gid, err := ownership(info)
+	if err != nil {
+		return Result{}, err
+	}
+	device, inode, err := fileIdentity(info)
+	if err != nil {
+		return Result{}, err
+	}
+	if device != state.Device || inode != state.Inode {
+		return Result{}, errors.New("permission target was replaced after apply; refusing stale rollback")
+	}
+	if hasSpecialModeBits(info.Mode()) {
+		return Result{}, errors.New("permission target gained special bits after apply; refusing stale rollback")
+	}
+	if !permissionRollbackMetadataRecognized(state, info.Mode().Perm(), uid, gid) {
+		return Result{}, errors.New("permission target has an unrecognized partial state; refusing rollback")
+	}
+	if p.beforeMetadataWrite != nil {
+		p.beforeMetadataWrite(OperationRollback)
+	}
+	guard := openedPermissionTuple{Device: device, Inode: inode, Mode: info.Mode().Perm(), UID: uid, GID: gid, Directory: info.IsDir()}
+	original := openedPermissionTuple{Device: state.Device, Inode: state.Inode, Mode: state.Mode, UID: state.UID, GID: state.GID, Directory: info.IsDir()}
+	if err := verifyPermissionPath(rule.resolved, path, guard); err != nil {
+		return Result{}, fmt.Errorf("permission target changed before rollback metadata mutation: %w", err)
+	}
+	if err := mutateOpenedPermissionTuple(file, guard, original); err != nil {
+		if restoreErr := restoreRecognizedOpenedPermissionTuple(file, guard, original, guard); restoreErr != nil {
+			return Result{}, fmt.Errorf("restore file permissions failed and the opened inode could not return to its pre-rollback tuple: %w", errors.Join(err, restoreErr))
+		}
+		return Result{}, fmt.Errorf("restore file permissions failed without leaving the opened inode changed: %w", err)
+	}
+	if p.afterMetadataWrite != nil {
+		p.afterMetadataWrite(OperationRollback)
+	}
+	if err := verifyPermissionPath(rule.resolved, path, original); err != nil {
+		if restoreErr := restoreExactOpenedPermissionTuple(file, original, guard); restoreErr != nil {
+			return Result{}, fmt.Errorf("permission pathname changed during rollback and the opened inode could not return to its pre-rollback tuple: %w", errors.Join(err, restoreErr))
+		}
+		return Result{}, fmt.Errorf("permission pathname changed during rollback; the opened inode was returned to its pre-rollback tuple: %w", err)
 	}
 	return Result{Summary: "original file mode and ownership restored", Details: map[string]any{
 		"path": path, "mode": fmt.Sprintf("%04o", state.Mode),
 	}}, nil
+}
+
+type openedPermissionTuple struct {
+	Device    uint64
+	Inode     uint64
+	Mode      fs.FileMode
+	UID       int
+	GID       int
+	Directory bool
+}
+
+func openedPermissionTupleFor(file *os.File) (openedPermissionTuple, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return openedPermissionTuple{}, err
+	}
+	if hasSpecialModeBits(info.Mode()) || (!info.Mode().IsRegular() && !info.IsDir()) {
+		return openedPermissionTuple{}, errors.New("opened permission target has unsupported type or special bits")
+	}
+	device, inode, err := fileIdentity(info)
+	if err != nil {
+		return openedPermissionTuple{}, err
+	}
+	uid, gid, err := ownership(info)
+	if err != nil {
+		return openedPermissionTuple{}, err
+	}
+	return openedPermissionTuple{Device: device, Inode: inode, Mode: info.Mode().Perm(), UID: uid, GID: gid, Directory: info.IsDir()}, nil
+}
+
+func verifyExactOpenedPermissionTuple(file *os.File, expected openedPermissionTuple) error {
+	observed, err := openedPermissionTupleFor(file)
+	if err != nil {
+		return err
+	}
+	if observed != expected {
+		return errors.New("opened permission target changed since its metadata guard")
+	}
+	return nil
+}
+
+func mutateOpenedPermissionTuple(file *os.File, expected, target openedPermissionTuple) error {
+	if expected.Device != target.Device || expected.Inode != target.Inode || expected.Directory != target.Directory {
+		return errors.New("permission metadata mutation cannot change target identity or type")
+	}
+	if err := verifyExactOpenedPermissionTuple(file, expected); err != nil {
+		return err
+	}
+	if expected.UID != target.UID || expected.GID != target.GID {
+		if err := file.Chown(target.UID, target.GID); err != nil {
+			return fmt.Errorf("change opened target ownership: %w", err)
+		}
+	}
+	if expected.Mode != target.Mode {
+		if err := file.Chmod(target.Mode); err != nil {
+			return fmt.Errorf("change opened target mode: %w", err)
+		}
+	}
+	return verifyExactOpenedPermissionTuple(file, target)
+}
+
+func restoreExactOpenedPermissionTuple(file *os.File, expected, target openedPermissionTuple) error {
+	if err := verifyExactOpenedPermissionTuple(file, expected); err != nil {
+		return err
+	}
+	return setAndVerifyOpenedPermissionTuple(file, target)
+}
+
+func restoreRecognizedOpenedPermissionTuple(file *os.File, first, second, target openedPermissionTuple) error {
+	observed, err := openedPermissionTupleFor(file)
+	if err != nil {
+		return err
+	}
+	ownershipRecognized := (observed.UID == first.UID && observed.GID == first.GID) || (observed.UID == second.UID && observed.GID == second.GID)
+	if observed.Device != target.Device || observed.Inode != target.Inode || observed.Directory != target.Directory ||
+		(observed.Mode != first.Mode && observed.Mode != second.Mode) || !ownershipRecognized {
+		return errors.New("opened permission target entered an unrecognized metadata state")
+	}
+	return setAndVerifyOpenedPermissionTuple(file, target)
+}
+
+func setAndVerifyOpenedPermissionTuple(file *os.File, target openedPermissionTuple) error {
+	observed, err := openedPermissionTupleFor(file)
+	if err != nil {
+		return err
+	}
+	if observed.Device != target.Device || observed.Inode != target.Inode || observed.Directory != target.Directory {
+		return errors.New("opened permission target identity changed before restoration")
+	}
+	if observed.UID != target.UID || observed.GID != target.GID {
+		if err = file.Chown(target.UID, target.GID); err != nil {
+			return err
+		}
+	}
+	if observed.Mode != target.Mode {
+		if err = file.Chmod(target.Mode); err != nil {
+			return err
+		}
+	}
+	return verifyExactOpenedPermissionTuple(file, target)
+}
+
+func verifyPermissionPath(approvedRoot, path string, expected openedPermissionTuple) error {
+	file, err := openValidatedTarget(approvedRoot, path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	observed, err := openedPermissionTupleFor(file)
+	if err != nil {
+		return err
+	}
+	if observed.Device != expected.Device || observed.Inode != expected.Inode {
+		return errors.New("permission target pathname now resolves to a replacement inode")
+	}
+	if observed != expected {
+		return errors.New("permission target pathname does not expose the expected mode and ownership")
+	}
+	return nil
+}
+
+func hasSpecialModeBits(mode fs.FileMode) bool {
+	return mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0
+}
+
+func modeAllowedForTarget(info fs.FileInfo, mode fs.FileMode, rule ApprovedPath) bool {
+	if info.IsDir() {
+		return modeAllowed(mode, rule.DirectoryModes)
+	}
+	return info.Mode().IsRegular() && modeAllowed(mode, rule.FileModes)
+}
+
+func permissionRollbackMetadataRecognized(state filePermissionState, mode fs.FileMode, uid, gid int) bool {
+	originalMetadata := mode == state.Mode && uid == state.UID && gid == state.GID
+	appliedMetadata := mode == state.AppliedMode && uid == state.AppliedUID && gid == state.AppliedGID
+	if state.AppliedComplete {
+		return originalMetadata || appliedMetadata
+	}
+	ownershipRecognized := (uid == state.UID && gid == state.GID) || (uid == state.AppliedUID && gid == state.AppliedGID)
+	return (mode == state.Mode || mode == state.AppliedMode) && ownershipRecognized
 }
 
 func pathWithin(root, target string) bool {
@@ -367,6 +604,22 @@ func ownership(info fs.FileInfo) (int, int, error) {
 		return 0, 0, errors.New("file ownership is unavailable on this platform")
 	}
 	return int(stat.Uid), int(stat.Gid), nil
+}
+
+func fileIdentity(info fs.FileInfo) (uint64, uint64, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, errors.New("file identity is unavailable on this platform")
+	}
+	device, err := strconv.ParseUint(fmt.Sprint(stat.Dev), 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid file device identifier: %w", err)
+	}
+	inode, err := strconv.ParseUint(fmt.Sprint(stat.Ino), 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid file inode identifier: %w", err)
+	}
+	return device, inode, nil
 }
 
 func openValidatedTarget(approvedRoot, path string) (*os.File, error) {

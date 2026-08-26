@@ -52,7 +52,11 @@ func (s *Store) Maintain(ctx context.Context, now time.Time) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM agent_request_nonces WHERE expires_at<=?`, timeText(now)); err != nil {
 		errs = append(errs, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE temporary_bans SET status='expired' WHERE simulated=0 AND status='active' AND expires_at<=?`, timeText(now)); err != nil {
+	// expires_at is the Controller-owned earliest possible kernel expiry. Once
+	// that guaranteed-active horizon passes, clocks/suspend gaps prevent us from
+	// claiming the element is gone. Release dedupe but retain an explicit unknown
+	// state until a rollback, replacement generation, or later evidence resolves it.
+	if _, err := s.db.ExecContext(ctx, `UPDATE temporary_bans SET status='indeterminate' WHERE simulated=0 AND status='active' AND expires_at<=?`, timeText(now)); err != nil {
 		errs = append(errs, err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM temporary_bans WHERE (simulated=1 AND expires_at<?) OR (simulated=0 AND status IN ('failed','cancelled','rolled_back','expired') AND expires_at<?) OR (simulated=0 AND status='indeterminate' AND expires_at<?)`, timeText(now.Add(-24*time.Hour)), timeText(now.Add(-30*24*time.Hour)), timeText(now.Add(-90*24*time.Hour))); err != nil {
@@ -69,9 +73,9 @@ func (s *Store) Compact(ctx context.Context, now time.Time) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM temporary_bans WHERE id IN (
 		SELECT id FROM (
 			SELECT id,row_number() OVER (PARTITION BY device_id ORDER BY created_at DESC,rowid DESC) AS retained_rank
-			FROM temporary_bans WHERE simulated=1 OR status IN ('failed','cancelled','rolled_back','expired','indeterminate')
+			FROM temporary_bans WHERE simulated=1 OR status IN ('failed','cancelled','rolled_back','expired') OR (status='indeterminate' AND expires_at<=?)
 		) WHERE retained_rank>?
-	)`, maxTerminalBansPerDevice); err != nil {
+	)`, timeText(now), maxTerminalBansPerDevice); err != nil {
 		errs = append(errs, err)
 	}
 	if _, err := s.db.ExecContext(ctx, `WITH audit_sizes AS (
@@ -82,7 +86,7 @@ func (s *Store) Compact(ctx context.Context, now time.Time) error {
 			sum(length(CAST(a.parameters AS BLOB))+length(CAST(a.preview AS BLOB))+coalesce(length(CAST(a.rollback_payload AS BLOB)),0)+length(CAST(a.error AS BLOB))+coalesce(s.audit_bytes,0)+512)
 			OVER (PARTITION BY a.device_id ORDER BY CASE WHEN a.status='indeterminate' THEN 0 ELSE 1 END,a.updated_at DESC,a.rowid DESC) AS retained_bytes
 		FROM actions a LEFT JOIN audit_sizes s ON s.action_id=a.id WHERE a.status IN ('succeeded','failed','rolled_back','cancelled','indeterminate')
-			AND NOT EXISTS (SELECT 1 FROM temporary_bans b WHERE b.action_id=a.id AND (b.status='pending' OR (b.status='active' AND b.expires_at>?)))
+			AND NOT EXISTS (SELECT 1 FROM temporary_bans b WHERE b.action_id=a.id AND (b.status='pending' OR (b.status IN ('active','indeterminate') AND b.expires_at>?)))
 	)
 	DELETE FROM actions WHERE id IN (SELECT id FROM terminal WHERE retained_rank>? OR retained_bytes>?)`, timeText(now), maxTerminalActionsPerDevice, maxTerminalActionBytesPerDevice); err != nil {
 		errs = append(errs, err)

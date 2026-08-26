@@ -10,6 +10,8 @@ help_output=$(bash "$installer" --help)
 [[ "$help_output" == *'--mode standalone|controller|agent'* ]] || fail 'help omits modes'
 [[ "$help_output" == *'--hub URL'* ]] || fail 'help omits web UI hub alias'
 [[ "$help_output" == *'WITSHIELD_ENROLLMENT_TOKEN'* ]] || fail 'help omits one-line environment contract'
+[[ "$help_output" == *'signatures are always required'* ]] || fail 'help does not disclose mandatory signature verification'
+[[ "$help_output" == *'--allow-downgrade'* ]] || fail 'help omits explicit downgrade override'
 
 set +e
 bad_output=$(bash "$installer" --token visible-secret 2>&1)
@@ -38,6 +40,14 @@ prerelease_status=$?
 set -e
 ((prerelease_status != 0)) || fail 'unpublished prerelease version unexpectedly accepted'
 [[ "$prerelease_output" == *'invalid release version: v1.2.3-rc.1'* ]] || fail 'prerelease rejection is not actionable'
+
+set +e
+oversized_version_output=$(bash "$installer" --version v1234567890.2.3 2>&1)
+oversized_version_status=$?
+set -e
+((oversized_version_status != 0)) || fail 'oversized numeric version component unexpectedly accepted'
+[[ "$oversized_version_output" == *'invalid release version: v1234567890.2.3'* ]] \
+  || fail 'oversized numeric version rejection is not actionable'
 
 set +e
 duration_output=$(bash "$installer" --scan-interval tomorrow 2>&1)

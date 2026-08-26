@@ -143,15 +143,19 @@ func signedActionResult(t *testing.T, x *testAPI, deviceID, commandID string, va
 	t.Helper()
 	if audit, ok := value["auditReceipt"].(map[string]any); ok && audit["success"] == true {
 		if _, exists := audit["steps"]; !exists {
+			receiptStarted := time.Now().UTC().Add(-time.Second)
 			operation, _ := audit["operation"].(string)
 			operations := []string{operation}
 			if operation == "execute" {
 				operations = []string{"precheck", "preview", "apply", "verify"}
 			}
 			steps := make([]map[string]any, 0, len(operations))
-			for _, stepOperation := range operations {
-				steps = append(steps, map[string]any{"operation": stepOperation, "success": true, "result": map[string]any{"details": map[string]any{}}})
+			for index, stepOperation := range operations {
+				startedAt := receiptStarted.Add(time.Duration(index) * time.Millisecond)
+				steps = append(steps, map[string]any{"operation": stepOperation, "startedAt": startedAt, "finishedAt": startedAt.Add(time.Millisecond), "success": true, "result": map[string]any{"details": map[string]any{}}})
 			}
+			audit["startedAt"] = receiptStarted
+			audit["finishedAt"] = receiptStarted.Add(time.Duration(len(operations)+1) * time.Millisecond)
 			audit["steps"] = steps
 		}
 	}
@@ -295,10 +299,17 @@ func TestEndToEndAdminAgentActionAndReport(t *testing.T) {
 		t.Fatalf("device leak/status: %d %s", status, body)
 	}
 	now := time.Now().UTC()
-	report := domain.Report{ID: "rpt_e2e", DeviceID: "attacker-controlled", StartedAt: now.Add(-time.Second), CompletedAt: now, Score: 70, Summary: json.RawMessage(`{"mode":"test"}`), Findings: []domain.Finding{{Fingerprint: "1234567890abcdef1234567890abcdef", Category: "ssh", Severity: domain.SeverityHigh, Title: "Password login", Description: "enabled", Status: domain.FindingResolved}}}
+	report := domain.Report{ID: "rpt_e2e", DeviceID: "attacker-controlled", StartedAt: now.Add(-time.Second), CompletedAt: now, Score: 70, Summary: json.RawMessage(`{"checks":1,"completedChecks":1,"coveragePercent":100,"findingCount":1,"checkErrors":[],"mode":"native"}`), Findings: []domain.Finding{{Fingerprint: "1234567890abcdef1234567890abcdef", Category: "ssh", Severity: domain.SeverityHigh, Title: "Password login", Description: "enabled", Status: domain.FindingResolved}}}
 	status, body = request(t, http.DefaultClient, "POST", x.server.URL+"/agent/v1/reports", report, auth)
 	if status != 201 {
 		t.Fatalf("report=%d %s", status, body)
+	}
+	malformed := report
+	malformed.ID = "rpt_e2e_malformed"
+	malformed.Summary = json.RawMessage(`{"checks":1,"completedChecks":0,"coveragePercent":0,"findingCount":1,"checkErrors":"oops","mode":{}}`)
+	status, body = request(t, http.DefaultClient, "POST", x.server.URL+"/agent/v1/reports", malformed, auth)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), "invalid_report") {
+		t.Fatalf("malformed report summary=%d %s", status, body)
 	}
 	status, body = request(t, x.admin, "GET", x.server.URL+"/api/v1/findings?deviceId="+deviceID, nil, nil)
 	if status != 200 || !strings.Contains(string(body), `"status":"open"`) {

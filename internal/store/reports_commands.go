@@ -799,7 +799,7 @@ func expireStaleActionCommands(ctx context.Context, tx *sql.Tx, deviceID string,
 			return updateErr
 		}
 		if changed, _ := res.RowsAffected(); changed == 1 {
-			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status='indeterminate' WHERE action_id=? AND status='pending'`, payload.ActionID); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status='indeterminate' WHERE action_id=? AND status IN ('pending','active','indeterminate')`, payload.ActionID); err != nil {
 				return err
 			}
 			details, _ := json.Marshal(map[string]any{"commandId": item.id, "commandType": item.typ, "timeout": domain.ActionExecutionTimeout.String(), "manualVerificationRequired": true})

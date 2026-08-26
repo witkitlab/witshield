@@ -13,8 +13,13 @@ import (
 )
 
 type lifecyclePlaybook struct {
-	verifyError error
-	calls       []Operation
+	verifyError            error
+	applyError             error
+	applyErrorWithoutState bool
+	invalidApplyState      bool
+	rollbackError          error
+	confirmError           error
+	calls                  []Operation
 }
 
 func (p *lifecyclePlaybook) Type() Type { return "test_action" }
@@ -38,14 +43,23 @@ func (p *lifecyclePlaybook) Preview(context.Context, Invocation) (Result, error)
 	return p.step(OperationPreview), nil
 }
 func (p *lifecyclePlaybook) Apply(context.Context, Invocation) (ApplyResult, error) {
-	return ApplyResult{Result: p.step(OperationApply), State: json.RawMessage(`{"secretSnapshot":"do-not-audit"}`)}, nil
+	state := json.RawMessage(`{"secretSnapshot":"do-not-audit"}`)
+	if p.applyErrorWithoutState {
+		state = nil
+	} else if p.invalidApplyState {
+		state = json.RawMessage(`null`)
+	}
+	return ApplyResult{Result: p.step(OperationApply), State: state}, p.applyError
 }
 func (p *lifecyclePlaybook) Verify(context.Context, Invocation) (Result, error) {
 	result := p.step(OperationVerify)
 	return result, p.verifyError
 }
 func (p *lifecyclePlaybook) Rollback(context.Context, Invocation) (Result, error) {
-	return p.step(OperationRollback), nil
+	return p.step(OperationRollback), p.rollbackError
+}
+func (p *lifecyclePlaybook) Confirm(context.Context, Invocation) (Result, error) {
+	return p.step(OperationConfirm), p.confirmError
 }
 
 func TestEngineReceiptIsFinalizedAndOmitsRollbackStateFromAuditJSON(t *testing.T) {
@@ -99,8 +113,126 @@ func TestEngineRollsBackWhenVerificationFails(t *testing.T) {
 	if len(receipt.Steps) != 5 || receipt.Steps[4].Operation != OperationRollback || !receipt.Steps[4].Success {
 		t.Fatalf("automatic rollback step missing: %#v", receipt.Steps)
 	}
+	if len(receipt.State) != 0 || receipt.RollbackStateDigest != "" || receipt.ConfirmBy != nil {
+		t.Fatalf("successful automatic rollback leaked replayable recovery state: %#v", receipt)
+	}
 	if receipt.FinishedAt.IsZero() || receipt.Digest == "" {
 		t.Fatal("failed receipt was not finalized")
+	}
+}
+
+func TestEngineApplyFailureUsesMutationBoundaryState(t *testing.T) {
+	tests := []struct {
+		name              string
+		playbook          *lifecyclePlaybook
+		wantIndeterminate bool
+		wantState         bool
+		wantSteps         int
+	}{
+		{
+			name:      "automatic rollback proves recovery",
+			playbook:  &lifecyclePlaybook{applyError: errors.New("partial apply")},
+			wantSteps: 4,
+		},
+		{
+			name:              "failed automatic rollback preserves recovery state",
+			playbook:          &lifecyclePlaybook{applyError: errors.New("partial apply"), rollbackError: errors.New("restore failed")},
+			wantIndeterminate: true, wantState: true, wantSteps: 4,
+		},
+		{
+			name:      "pre-mutation failure remains a known failure",
+			playbook:  &lifecyclePlaybook{applyError: errors.New("pre-mutation failure"), applyErrorWithoutState: true},
+			wantSteps: 3,
+		},
+		{
+			name:              "unusable state after reported mutation is unknown",
+			playbook:          &lifecyclePlaybook{invalidApplyState: true},
+			wantIndeterminate: true, wantSteps: 3,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			engine, _ := NewEngine(test.playbook)
+			receipt := engine.Run(context.Background(), Request{
+				ActionID: "apply-boundary", Actor: "tester", Type: test.playbook.Type(),
+				Operation: OperationExecute, Parameters: json.RawMessage(`{"safe":true}`),
+			})
+			if receipt.Success || receipt.Indeterminate != test.wantIndeterminate || (len(receipt.State) > 0) != test.wantState || len(receipt.Steps) != test.wantSteps {
+				t.Fatalf("receipt=%#v", receipt)
+			}
+			if test.wantState && receipt.RollbackStateDigest != digestBytes(receipt.State) {
+				t.Fatal("indeterminate apply did not bind its recovery state")
+			}
+			if !test.wantState && receipt.RollbackStateDigest != "" {
+				t.Fatalf("terminal receipt retained stale state digest %q", receipt.RollbackStateDigest)
+			}
+		})
+	}
+}
+
+func TestEngineDirectApplyFailureUsesTheSameAutomaticRecovery(t *testing.T) {
+	playbook := &lifecyclePlaybook{applyError: errors.New("partial direct apply"), rollbackError: errors.New("direct restore failed")}
+	engine, _ := NewEngine(playbook)
+	receipt := engine.Run(context.Background(), Request{
+		ActionID: "direct-apply-boundary", Actor: "tester", Type: playbook.Type(),
+		Operation: OperationApply, Parameters: json.RawMessage(`{"safe":true}`),
+	})
+	if receipt.Success || !receipt.Indeterminate || len(receipt.State) == 0 || len(receipt.Steps) != 2 || receipt.Steps[0].Operation != OperationApply || receipt.Steps[1].Operation != OperationRollback {
+		t.Fatalf("direct apply did not use compensated failure semantics: %#v", receipt)
+	}
+}
+
+func TestEngineRejectsInjectedStateOnApplyBeforeCallingPlaybook(t *testing.T) {
+	playbook := &lifecyclePlaybook{applyError: errors.New("pre-mutation failure"), applyErrorWithoutState: true}
+	engine, _ := NewEngine(playbook)
+	receipt := engine.Run(context.Background(), Request{
+		ActionID: "injected-apply-state", Actor: "tester", Type: playbook.Type(),
+		Operation: OperationApply, Parameters: json.RawMessage(`{"safe":true}`), State: json.RawMessage(`{"attacker":"chosen"}`),
+	})
+	if receipt.Success || !strings.Contains(receipt.Error, "rollback state is not accepted") || len(receipt.Steps) != 0 || len(playbook.calls) != 0 {
+		t.Fatalf("caller-controlled apply state reached the playbook: receipt=%#v calls=%v", receipt, playbook.calls)
+	}
+}
+
+func TestEngineTypedRollbackFailureIsIndeterminate(t *testing.T) {
+	playbook := &lifecyclePlaybook{}
+	engine, _ := NewEngine(playbook)
+	parameters := json.RawMessage(`{"safe":true}`)
+	apply := engine.Run(context.Background(), Request{
+		ActionID: "rollback-boundary", Actor: "tester", Type: playbook.Type(),
+		Operation: OperationApply, Parameters: parameters,
+	})
+	if !apply.Success {
+		t.Fatal(apply.Error)
+	}
+	playbook.rollbackError = errors.New("restore response lost")
+	receipt := engine.Run(context.Background(), Request{
+		ActionID: "rollback-boundary", Actor: "tester", Type: playbook.Type(),
+		Operation: OperationRollback, Parameters: parameters, State: apply.State,
+	})
+	if receipt.Success || !receipt.Indeterminate || len(receipt.Steps) != 1 || receipt.Steps[0].Operation != OperationRollback || receipt.Steps[0].Success {
+		t.Fatalf("rollback error was not kept unknown: %#v", receipt)
+	}
+}
+
+func TestEngineTypedConfirmFailureIsIndeterminate(t *testing.T) {
+	playbook := &lifecyclePlaybook{}
+	engine, _ := NewEngine(playbook)
+	parameters := json.RawMessage(`{"safe":true}`)
+	apply := engine.Run(context.Background(), Request{
+		ActionID: "confirm-boundary", Actor: "tester", Type: playbook.Type(),
+		Operation: OperationApply, Parameters: parameters,
+	})
+	if !apply.Success {
+		t.Fatal(apply.Error)
+	}
+	playbook.confirmError = errors.New("confirmation response lost")
+	receipt := engine.Run(context.Background(), Request{
+		ActionID: "confirm-boundary", Actor: "tester", Type: playbook.Type(),
+		Operation: OperationConfirm, Parameters: parameters, State: apply.State,
+	})
+	if receipt.Success || !receipt.Indeterminate || len(receipt.Steps) != 1 || receipt.Steps[0].Operation != OperationConfirm || receipt.Steps[0].Success {
+		t.Fatalf("confirmation error was not kept unknown: %#v", receipt)
 	}
 }
 

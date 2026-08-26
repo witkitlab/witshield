@@ -237,7 +237,15 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 		return "", err
 	}
 	u := *c.endpoint
-	u.Path = path.Join(strings.TrimSuffix(u.Path, "/"), endpoint)
+	basePath := strings.TrimSuffix(u.Path, "/")
+	if c.cfg.Protocol == domain.AIProtocolAnthropic && basePath == "" {
+		// Anthropic documents its Base URL as the origin while the Messages API
+		// itself is versioned. Preserve explicit gateway paths, including /v1,
+		// but make the provider's root URL resolve to /v1/messages.
+		u.Path = "/v1/messages"
+	} else {
+		u.Path = path.Join(basePath, endpoint)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(payload))
 	if err != nil {
 		return "", err

@@ -35,6 +35,11 @@ less install.sh
 sudo bash install.sh --mode standalone
 ```
 
+The installer downloads from an immutable GitHub Release, verifies the
+release-workflow Sigstore identity, and bootstraps a checksum-pinned Cosign
+verifier when the host does not already provide one. It records the installed
+version and refuses implicit downgrades.
+
 The controller listens on `127.0.0.1:8080` by default. Docker is supported only as a constrained read-only observer; native systemd installation is required for remediation.
 
 Licensed under [Apache-2.0](LICENSE).

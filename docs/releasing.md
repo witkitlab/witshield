@@ -63,9 +63,11 @@ for test_script in scripts/tests/*.sh; do "$test_script"; done
 7. 批准后重新核对源码身份，下载 preflight 的短期制品，再登录 GHCR；
 8. 多架构镜像先按不可变 digest 推送且不附加公开版本标签，随后用 GitHub OIDC 和 Cosign 完成 keyless 签名；
 9. 把镜像 digest 写入 `CONTAINER_IMAGE.txt`，为安装器、归档、SBOM 和 digest 清单生成统一校验表并签名；
-10. 生成 build provenance，把完整资产上传到草稿 Release，并逐项核对远端资产名称；
-11. 最后把已签名 digest 提升为版本、次版本和 `latest` 镜像标签，再公开草稿 Release；
-12. 在干净虚拟机用公开 Release 重做安装烟测，并发布安全与升级说明。
+10. 生成并存储 release archive 的 build provenance；
+11. 使用完全空白的 Docker 凭据目录按不可变 digest 验证匿名拉取；私有包会在创建草稿 Release 或任何公开标签前安全中止；
+12. 匿名拉取解析到预期 digest 后，创建草稿 Release，上传完整资产并逐项核对远端资产名称；
+13. 把已签名 digest 提升为版本、次版本和 `latest` 镜像标签，再公开已经核验的草稿 Release；
+14. 在干净虚拟机用公开 Release 重做安装烟测，并发布安全与升级说明。
 
 workflow 使用 keyless 制品签名，不保存长期 Cosign 私钥。只有 `publish` job 拥有 `contents: write`、`packages: write`、`id-token: write` 和 `attestations: write`；preflight 只有 `contents: read`，所有 checkout 都禁用凭据持久化。workflow 会拒绝以下输入：
 
@@ -82,6 +84,8 @@ workflow 使用 keyless 制品签名，不保存长期 Cosign 私钥。只有 `p
 - 建立名为 `release` 的 Environment，配置至少一名 required reviewer，并禁止管理员绕过；
 - 用 repository ruleset 保护 `v*` tag，只允许受控发布角色创建或更新；
 - 保护发布来源分支并要求 CI、代码审查和线性历史；
+- 启用 GitHub Immutable Releases，使已发布资产与关联 tag 无法被替换；
+- 确认 `witshield` Container package 为 Public；workflow 会在公开 Release 前以匿名身份复验，私有包会中止发布；
 - 限制 Actions workflow 修改权限，并定期复核具有仓库写权限和 Environment 审批权的人员。
 
 发布者还必须在 GitHub 账号中登记 Git/GPG/SSH 签名公钥，并用对应私钥创建 annotated tag；这与 Cosign keyless 制品签名是两条独立信任链。workflow 不会创建、注册或托管维护者的长期签名密钥。

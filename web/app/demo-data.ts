@@ -22,6 +22,47 @@ export const demoDashboard: DashboardSnapshot = {
       version: 'v0.1.0', lastSeen: '18 秒前', lastScan: '今天 03:00', score: 93, findings: 2,
     },
   ],
+  reports: [
+    {
+      id: 'report_demo_local', deviceId: 'dev_local', startedAt: '今天 09:41', completedAt: '今天 09:42',
+      score: 86, checks: 46, completedChecks: 46, coveragePercent: 100, findingCount: 3, mode: 'native', errors: [],
+      detailsLoaded: true,
+      findings: [
+        {
+          id: 'finding_ssh_password', deviceId: 'dev_local', severity: 'critical', category: 'SSH',
+          title: 'SSH 允许密码登录', summary: '公网 SSH 服务仍允许使用账号密码认证，增加凭据撞库与暴力破解风险。',
+          evidence: ['sshd_config: PasswordAuthentication yes', '22/tcp 监听于 0.0.0.0'], detectedAt: '今天 09:42', state: 'open',
+        },
+        {
+          id: 'finding_packages', deviceId: 'dev_local', severity: 'medium', category: '软件包',
+          title: '3 个安全更新待安装', summary: 'openssl、curl 与 linux-libc-dev 存在可用的发行版安全更新。',
+          evidence: ['openssl 3.0.13-0ubuntu3.4 → 3.0.13-0ubuntu3.5'], detectedAt: '今天 09:42', state: 'open',
+        },
+        {
+          id: 'finding_port', deviceId: 'dev_local', severity: 'low', category: '网络暴露',
+          title: '发现新的监听端口 8080', summary: '端口由 docker-proxy 暴露，当前没有对应的用途说明。',
+          evidence: ['0.0.0.0:8080 → container/web:8080'], detectedAt: '今天 09:42', state: 'open',
+        },
+      ],
+    },
+    {
+      id: 'report_demo_edge', deviceId: 'dev_edge', startedAt: '今天 02:59', completedAt: '今天 03:00',
+      score: 93, checks: 44, completedChecks: 44, coveragePercent: 100, findingCount: 2, mode: 'observer', errors: [],
+      detailsLoaded: true,
+      findings: [
+        {
+          id: 'finding_updates_edge', deviceId: 'dev_edge', severity: 'medium', category: '软件包',
+          title: '边缘节点内核需要安全更新', summary: '新内核安装后需要在维护窗口重启。',
+          evidence: ['linux-image-amd64 6.1.140-1 可用', '当前运行 6.1.137-1'], detectedAt: '今天 03:00', state: 'open',
+        },
+        {
+          id: 'finding_audit', deviceId: 'dev_edge', severity: 'info', category: '审计',
+          title: '审计日志保留期较短', summary: 'journald 当前最大占用为 128 MB，预计仅保留约 4 天。',
+          evidence: ['SystemMaxUse=128M', '最近 24 小时日志量 31 MB'], detectedAt: '今天 03:00', state: 'open',
+        },
+      ],
+    },
+  ],
   findings: [
     {
       id: 'finding_ssh_password', deviceId: 'dev_local', severity: 'critical', category: 'SSH',
@@ -47,11 +88,11 @@ export const demoDashboard: DashboardSnapshot = {
       detectedAt: '今天 09:42', state: 'open',
       remediation: {
         id: 'plan_packages', title: '安装指定安全更新', risk: 'low', requiresApproval: true,
-        expiresAt: '30 分钟后', checks: ['验证 APT 锁可用', '只安装列出的三个包', '保留当前包版本记录'],
+        expiresAt: '30 分钟后', checks: ['验证 APT 锁和已安装架构', '目标版本在执行时解析；未列出的包一律拒绝', '记录实际版本变化用于验证与回滚'],
         steps: [{
           id: 'step_packages', title: '升级三个安全软件包', kind: 'package_upgrade',
           preview: 'openssl curl linux-libc-dev（仅安全仓库候选版本）',
-          impact: '相关动态库可能被服务重新加载；不重启服务器。',
+          impact: '目标版本由设备执行时从已配置软件源解析；相关服务可能重新加载，如需触碰未列出的包会在 dpkg 前停止。',
           rollback: '使用缓存包恢复原版本；若仓库不再提供则停止并报告。',
         }],
       },

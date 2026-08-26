@@ -17,11 +17,18 @@ import (
 
 func TestProtocols(t *testing.T) {
 	tests := []struct {
+		name       string
 		p          domain.AIProtocol
+		basePath   string
 		path, body string
-	}{{domain.AIProtocolOpenAIResponses, "/v1/responses", `{"output":[{"content":[{"text":"response ok"}]}]}`}, {domain.AIProtocolOpenAIChat, "/v1/chat/completions", `{"choices":[{"message":{"content":"chat ok"}}]}`}, {domain.AIProtocolAnthropic, "/v1/messages", `{"content":[{"type":"text","text":"anthropic ok"}]}`}}
+	}{
+		{"OpenAI Responses", domain.AIProtocolOpenAIResponses, "/v1", "/v1/responses", `{"output":[{"content":[{"text":"response ok"}]}]}`},
+		{"OpenAI Chat", domain.AIProtocolOpenAIChat, "/v1", "/v1/chat/completions", `{"choices":[{"message":{"content":"chat ok"}}]}`},
+		{"Anthropic explicit v1", domain.AIProtocolAnthropic, "/v1", "/v1/messages", `{"content":[{"type":"text","text":"anthropic ok"}]}`},
+		{"Anthropic origin Base URL", domain.AIProtocolAnthropic, "", "/v1/messages", `{"content":[{"type":"text","text":"anthropic root ok"}]}`},
+	}
 	for _, tt := range tests {
-		t.Run(string(tt.p), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != tt.path {
 					t.Errorf("path=%s", r.URL.Path)
@@ -47,7 +54,7 @@ func TestProtocols(t *testing.T) {
 				fmt.Fprint(w, tt.body)
 			}))
 			defer srv.Close()
-			c, err := New(Config{Protocol: tt.p, BaseURL: srv.URL + "/v1", Model: "test", APIKey: "secret-key"})
+			c, err := New(Config{Protocol: tt.p, BaseURL: srv.URL + tt.basePath, Model: "test", APIKey: "secret-key"})
 			if err != nil {
 				t.Fatal(err)
 			}

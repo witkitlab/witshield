@@ -135,7 +135,7 @@ func TestHelperProtocolReturnsRollbackPayloadSeparatelyFromAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := helperRequest{
-		Token: string(token), ActionID: "helper-action", Type: "helper_test",
+		Token: string(token), AttemptID: "helper-command", ActionID: "helper-action", Type: "helper_test",
 		Parameters: json.RawMessage(`{}`),
 	}
 	encoded, _ := json.Marshal(request)

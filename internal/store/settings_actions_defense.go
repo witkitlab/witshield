@@ -282,7 +282,7 @@ func (s *Store) RequestRollbackAndEnqueue(ctx context.Context, id, adminID strin
 	if err = ensureUnfinishedActionCapacityTx(ctx, tx, cmd.DeviceID); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE actions SET status=?,updated_at=? WHERE id=? AND rollback_payload IS NOT NULL AND status IN (?,?,?)`, string(domain.ActionRollingBack), timeText(now), id, string(domain.ActionSucceeded), string(domain.ActionAwaitingConfirmation), string(domain.ActionFailed))
+	res, err := tx.ExecContext(ctx, `UPDATE actions SET status=?,updated_at=? WHERE id=? AND rollback_payload IS NOT NULL AND status IN (?,?,?,?)`, string(domain.ActionRollingBack), timeText(now), id, string(domain.ActionSucceeded), string(domain.ActionAwaitingConfirmation), string(domain.ActionFailed), string(domain.ActionIndeterminate))
 	if err != nil {
 		return err
 	}
@@ -566,7 +566,7 @@ func (s *Store) CountRecentBans(ctx context.Context, deviceID string, since time
 func (s *Store) ActiveBan(ctx context.Context, deviceID, sourceIP string, now time.Time) (domain.TemporaryBan, error) {
 	var x domain.TemporaryBan
 	var expires, created string
-	err := s.db.QueryRowContext(ctx, `SELECT id,device_id,action_id,source_ip,reason,expires_at,created_at,simulated,status FROM temporary_bans WHERE device_id=? AND source_ip=? AND (status='pending' OR (status='active' AND expires_at>?)) ORDER BY expires_at DESC LIMIT 1`, deviceID, sourceIP, timeText(now)).Scan(&x.ID, &x.DeviceID, &x.ActionID, &x.SourceIP, &x.Reason, &expires, &created, &x.Simulated, &x.Status)
+	err := s.db.QueryRowContext(ctx, `SELECT id,device_id,action_id,source_ip,reason,expires_at,created_at,simulated,status FROM temporary_bans WHERE device_id=? AND source_ip=? AND (status='pending' OR (status IN ('active','indeterminate') AND expires_at>?)) ORDER BY expires_at DESC LIMIT 1`, deviceID, sourceIP, timeText(now)).Scan(&x.ID, &x.DeviceID, &x.ActionID, &x.SourceIP, &x.Reason, &expires, &created, &x.Simulated, &x.Status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, ErrNotFound
 	}

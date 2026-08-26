@@ -374,8 +374,11 @@ func (r *Runner) handleCommand(ctx context.Context, cmd domain.DeviceCommand) er
 		} else if cmd.Type == domain.CommandConfirm {
 			operation = action.OperationConfirm
 		}
-		helperResult, err := r.helper.Run(ctx, payload.ActionID, payload.Type, operation, payload.Parameters, payload.RollbackPayload)
+		helperResult, err := r.helper.Run(ctx, cmd.ID, payload.ActionID, payload.Type, operation, payload.Parameters, payload.RollbackPayload)
 		if err != nil {
+			if errors.Is(err, ErrHelperExecutionIndeterminate) {
+				return r.queueActionResult(ctx, cmd.ID, map[string]any{"ok": false, "error": action.ExecutionIndeterminateMessage})
+			}
 			return r.queueActionResult(ctx, cmd.ID, map[string]any{"ok": false, "error": "privileged helper unavailable: " + err.Error()})
 		}
 		return r.queueActionResult(ctx, cmd.ID, helperResult)

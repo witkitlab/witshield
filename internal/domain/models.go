@@ -205,9 +205,11 @@ const (
 	ActionRollingBack          ActionStatus = "rolling_back"
 	ActionRolledBack           ActionStatus = "rolled_back"
 	ActionCancelled            ActionStatus = "cancelled"
-	// ActionIndeterminate means the privileged operation started but its signed
-	// result never reached the Controller. It must never be silently retried:
-	// the remote state is unknown and requires administrator verification.
+	// ActionIndeterminate means the privileged operation started but no verified
+	// safe terminal state reached the Controller. It covers a missing signed
+	// result as well as a proven Apply followed by failed Verify and failed
+	// automatic Rollback. It must never be silently retried: the remote state is
+	// unknown and requires administrator verification.
 	ActionIndeterminate ActionStatus = "indeterminate"
 )
 

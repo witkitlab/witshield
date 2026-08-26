@@ -10,6 +10,7 @@ import type {
   Finding,
   NotificationSettings,
   ScanSchedule,
+  SecurityReport,
   SecurityObservation,
   Severity,
 } from './types';
@@ -149,9 +150,11 @@ interface RawFinding {
 interface RawReport {
   id: string;
   deviceId: string;
+  startedAt?: string;
   completedAt: string;
   score: number;
-  summary?: RawReportSummary | string;
+  summary?: unknown;
+  findings?: RawFinding[];
 }
 
 interface RawReportSummary {
@@ -161,6 +164,14 @@ interface RawReportSummary {
   findingCount?: number;
   checkErrors?: string[];
   mode?: string;
+  formatErrors: string[];
+}
+
+interface VerifiedReportCoverage {
+  known: boolean;
+  checks: number;
+  completedChecks: number;
+  coveragePercent: number;
 }
 
 interface RawAudit {
@@ -271,6 +282,7 @@ function mapDefense(raw: RawDefensePolicy): DefensePolicy {
 
 export interface LiveSnapshot {
   devices: Device[];
+  reports: SecurityReport[];
   findings: Finding[];
   policies: DefensePolicy[];
   audit: AuditEvent[];
@@ -304,6 +316,9 @@ async function requestLatestReportsForDevices(devices: RawDevice[]): Promise<Raw
   const concurrency = 8;
   for (let offset = 0; offset < devices.length; offset += concurrency) {
     const pages = await Promise.all(devices.slice(offset, offset + concurrency).map((device) =>
+      // The dashboard needs only the current score and coverage. Keep refresh
+      // cost bounded to one report per device; full history is fetched only
+      // after an administrator explicitly selects one device in Reports.
       requestItems<RawReport>(`/reports?deviceId=${encodeURIComponent(device.id)}&limit=1`),
     ));
     reports.push(...pages.flat());
@@ -335,6 +350,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
   if (demoMode) {
     return {
       devices: structuredClone(demoDashboard.devices),
+      reports: structuredClone(demoDashboard.reports),
       findings: structuredClone(demoDashboard.findings),
       policies: structuredClone(demoDashboard.policies),
       audit: structuredClone(demoDashboard.audit),
@@ -348,7 +364,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     };
   }
   const rawDevices = await requestItems<RawDevice>('/devices');
-  const [rawFindings, reports, rawAudit, rawSecurityEvents, rawActions, rawAI, rawNotifications, rawSchedules, policyResults] = await Promise.all([
+  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawNotifications, rawSchedules, policyResults] = await Promise.all([
     requestCurrentFindingsForDevices(rawDevices),
     requestLatestReportsForDevices(rawDevices),
     requestItems<RawAudit>('/audit?limit=200'),
@@ -361,6 +377,8 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       request<RawDefensePolicy>(`/devices/${encodeURIComponent(device.id)}/defense-policy`).catch(() => null),
     )),
   ]);
+  const reportsByID = new Map(reportHistory.map((report) => [report.id, report]));
+  const reports = [...reportsByID.values()].sort((left, right) => new Date(right.completedAt).getTime() - new Date(left.completedAt).getTime());
   const findings = rawFindings.map(mapFinding);
   const latestReports = new Map<string, RawReport>();
   for (const report of reports) {
@@ -381,7 +399,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       version: raw.agentVersion,
       lastSeen: dateText(raw.lastSeenAt),
       lastScan: dateText(report?.completedAt),
-      score: report?.score ?? 100,
+      score: report?.score ?? null,
       findings: findings.filter((finding) => finding.deviceId === raw.id && finding.state === 'open').length,
     };
   });
@@ -397,24 +415,45 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
   }));
   let checks = 0;
   const coverageIssues: DashboardSnapshot['coverageIssues'] = [];
+  for (const device of devices) {
+    if (!latestReports.has(device.id)) {
+      coverageIssues.push({
+        deviceId: device.id,
+        deviceName: device.name,
+        completedChecks: 0,
+        checks: 0,
+        coveragePercent: 0,
+        mode: 'pending',
+        errors: ['尚未收到首次扫描报告'],
+      });
+    }
+  }
   for (const report of latestReports.values()) {
     const summary = parseReportSummary(report.summary);
-    checks += summary.checks ?? 0;
-    if ((summary.checkErrors?.length ?? 0) > 0 || (summary.coveragePercent ?? 100) < 100) {
+    const coverage = verifiedReportCoverage(summary);
+    checks += coverage.known ? coverage.checks : 0;
+    const summaryErrors = [...summary.formatErrors, ...(summary.checkErrors ?? [])];
+    if (!coverage.known || summaryErrors.length > 0 || coverage.coveragePercent < 100) {
       const device = devices.find((item) => item.id === report.deviceId);
+      const errors = summaryErrors.length
+        ? summaryErrors
+        : coverage.known
+          ? []
+          : ['报告摘要缺少可验证的检查覆盖信息'];
       coverageIssues.push({
         deviceId: report.deviceId,
         deviceName: device?.name ?? report.deviceId,
-        completedChecks: summary.completedChecks ?? Math.max(0, (summary.checks ?? 0) - (summary.checkErrors?.length ?? 0)),
-        checks: summary.checks ?? 0,
-        coveragePercent: summary.coveragePercent ?? 0,
+        completedChecks: coverage.known ? coverage.completedChecks : 0,
+        checks: coverage.known ? coverage.checks : 0,
+        coveragePercent: coverage.known ? coverage.coveragePercent : 0,
         mode: summary.mode ?? 'unknown',
-        errors: summary.checkErrors ?? [],
+        errors,
       });
     }
   }
   return {
     devices,
+    reports: reports.map((report) => mapReport(report)),
     findings,
     audit,
     securityEvents: rawSecurityEvents.map((item) => ({
@@ -443,11 +482,130 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
   };
 }
 
+function mapReport(raw: RawReport, detailsLoaded = Array.isArray(raw.findings)): SecurityReport {
+  const summary = parseReportSummary(raw.summary);
+  const coverage = verifiedReportCoverage(summary);
+  const errors = [...summary.formatErrors, ...(summary.checkErrors ?? [])];
+  if (!coverage.known && errors.length === 0) errors.push('报告摘要缺少可验证的检查覆盖信息');
+  return {
+    id: raw.id,
+    deviceId: raw.deviceId,
+    startedAt: dateText(raw.startedAt),
+    completedAt: dateText(raw.completedAt),
+    score: raw.score,
+    checks: coverage.known ? coverage.checks : 0,
+    completedChecks: coverage.known ? coverage.completedChecks : 0,
+    coveragePercent: coverage.known ? coverage.coveragePercent : 0,
+    findingCount: summary.findingCount ?? (detailsLoaded ? (raw.findings?.length ?? 0) : null),
+    mode: summary.mode ?? 'unknown',
+    errors,
+    findings: (raw.findings ?? []).map(mapFinding),
+    detailsLoaded,
+  };
+}
+
+export async function getReport(reportId: string): Promise<SecurityReport> {
+  if (demoMode) {
+    const report = demoDashboard.reports.find((item) => item.id === reportId);
+    if (!report) throw new APIError('没有找到这份报告', 404, 'report_not_found');
+    return structuredClone(report);
+  }
+  return mapReport(await request<RawReport>(`/reports/${encodeURIComponent(reportId)}`), true);
+}
+
+/**
+ * The Controller retains at most 100 reports for each device. This request is
+ * intentionally user-driven rather than part of `loadSnapshot`, so a fleet
+ * refresh cannot grow with both device count and report retention.
+ */
+export async function getReportsForDevice(deviceId: string): Promise<SecurityReport[]> {
+  if (demoMode) {
+    return structuredClone(demoDashboard.reports.filter((report) => report.deviceId === deviceId));
+  }
+  const reports = await requestItems<RawReport>(`/reports?deviceId=${encodeURIComponent(deviceId)}&limit=100`);
+  const unique = new Map(reports.map((report) => [report.id, report]));
+  return [...unique.values()]
+    .sort((left, right) => new Date(right.completedAt).getTime() - new Date(left.completedAt).getTime())
+    .map((report) => mapReport(report));
+}
+
 function parseReportSummary(summary?: RawReport['summary']): RawReportSummary {
-  if (!summary) return {};
-  if (typeof summary !== 'string') return summary;
-  try { return JSON.parse(summary) as RawReportSummary; }
-  catch { return {}; }
+  const invalid = (): RawReportSummary => ({ formatErrors: ['报告摘要格式无效，无法验证扫描覆盖信息'] });
+  if (summary === undefined || summary === null || summary === '') return { formatErrors: [] };
+  let value: unknown = summary;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value) as unknown; }
+    catch { return invalid(); }
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return invalid();
+  const source = value as Record<string, unknown>;
+  let malformed = false;
+  const readInteger = (key: string, maximum: number): number | undefined => {
+    if (!(key in source)) return undefined;
+    const candidate = source[key];
+    if (!Number.isInteger(candidate) || (candidate as number) < 0 || (candidate as number) > maximum) {
+      malformed = true;
+      return undefined;
+    }
+    return candidate as number;
+  };
+  const checks = readInteger('checks', 10_000);
+  const completedChecks = readInteger('completedChecks', 10_000);
+  const findingCount = readInteger('findingCount', 100_000);
+  let coveragePercent: number | undefined;
+  if ('coveragePercent' in source) {
+    const candidate = source.coveragePercent;
+    if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0 && candidate <= 100) coveragePercent = candidate;
+    else malformed = true;
+  }
+  let checkErrors: string[] | undefined;
+  if ('checkErrors' in source) {
+    const candidate = source.checkErrors;
+    if (Array.isArray(candidate) && candidate.length <= 10_000 && candidate.every((item) => typeof item === 'string' && item.length <= 4_000)) {
+      checkErrors = candidate.slice();
+    } else malformed = true;
+  }
+  let mode: string | undefined;
+  if ('mode' in source) {
+    if (source.mode === 'native' || source.mode === 'observer') mode = source.mode;
+    else malformed = true;
+  }
+  if (checks !== undefined && completedChecks !== undefined && completedChecks > checks) malformed = true;
+  return {
+    checks,
+    completedChecks: malformed && completedChecks !== undefined && checks !== undefined && completedChecks > checks ? undefined : completedChecks,
+    coveragePercent,
+    findingCount,
+    checkErrors,
+    mode,
+    formatErrors: malformed ? ['报告摘要格式无效，无法验证扫描覆盖信息'] : [],
+  };
+}
+
+function verifiedReportCoverage(summary: RawReportSummary): VerifiedReportCoverage {
+  const checks = summary.checks;
+  const completedChecks = summary.completedChecks;
+  const coveragePercent = summary.coveragePercent;
+  const expectedCoverage = checks && completedChecks !== undefined
+    ? Math.floor((completedChecks * 100) / checks)
+    : undefined;
+  const known = summary.formatErrors.length === 0
+    && Number.isInteger(checks)
+    && (checks ?? 0) > 0
+    && Number.isInteger(completedChecks)
+    && (completedChecks ?? -1) >= 0
+    && (completedChecks ?? Number.MAX_SAFE_INTEGER) <= (checks ?? 0)
+    && typeof coveragePercent === 'number'
+    && Number.isFinite(coveragePercent)
+    && coveragePercent >= 0
+    && coveragePercent <= 100
+    && coveragePercent === expectedCoverage;
+  return {
+    known,
+    checks: known ? (checks ?? 0) : 0,
+    completedChecks: known ? (completedChecks ?? 0) : 0,
+    coveragePercent: known ? (coveragePercent ?? 0) : 0,
+  };
 }
 
 function mapNotifications(raw: RawNotificationSettings): NotificationSettings {
@@ -626,7 +784,7 @@ function actionPlan(raw: RawAction, approvalNonce: string): ActionPlan {
     expiresAt: '本次页面会话有效',
     checks: isSSH
       ? ['执行前验证当前 SSH 配置', '变更后要求你确认当前连接仍可用', '未在期限内确认则自动恢复原配置']
-      : ['执行前验证包管理器状态', '只允许显式列出的包名并先模拟', '记录升级前版本用于回滚'],
+      : ['执行前验证包管理器状态与已安装架构', '执行时解析目标版本；APT 如需触碰未列出的包会在 dpkg 前停止', '记录实际版本变化用于验证与回滚'],
     steps: [{
       id: `${raw.id}_step`,
       title: String(preview.summary ?? (isSSH ? '修改 SSH 登录策略' : '升级安全软件包')),

@@ -665,7 +665,12 @@ func (s *Store) RevokeDevice(ctx context.Context, id string, now time.Time) erro
 			if item.started {
 				banStatus = "indeterminate"
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status=? WHERE action_id=? AND status='pending'`, banStatus, meta.ActionID); err != nil {
+			if item.started {
+				_, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status=? WHERE action_id=? AND status IN ('pending','active','indeterminate')`, banStatus, meta.ActionID)
+			} else {
+				_, err = tx.ExecContext(ctx, `UPDATE temporary_bans SET status=? WHERE action_id=? AND status='pending'`, banStatus, meta.ActionID)
+			}
+			if err != nil {
 				return err
 			}
 			details, _ := json.Marshal(map[string]any{"commandId": item.id, "manualVerificationRequired": item.started})

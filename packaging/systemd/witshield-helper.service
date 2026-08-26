@@ -27,7 +27,8 @@ ProtectHome=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-RestrictSUIDSGID=yes
+# Deliberately omit RestrictSUIDSGID: apt/dpkg must be able to restore the
+# SUID/SGID bits declared by signed Debian packages during an approved upgrade.
 RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes

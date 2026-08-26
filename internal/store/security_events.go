@@ -159,7 +159,7 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM temporary_bans WHERE device_id=? AND simulated=0 AND created_at>=?`, event.DeviceID, timeText(now.Add(-time.Hour))).Scan(&recentAttempts); err != nil {
 		return out, err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM temporary_bans WHERE device_id=? AND source_ip=? AND (status='pending' OR (status='active' AND expires_at>?))`, event.DeviceID, event.SourceIP, timeText(now)).Scan(&active); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM temporary_bans WHERE device_id=? AND source_ip=? AND (status='pending' OR (status IN ('active','indeterminate') AND expires_at>?))`, event.DeviceID, event.SourceIP, timeText(now)).Scan(&active); err != nil {
 		return out, err
 	}
 	out.Decision = defense.Evaluate(policy, event.SourceIP, failureCount, recentAttempts, active > 0, now)

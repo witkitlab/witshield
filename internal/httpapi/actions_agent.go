@@ -27,6 +27,39 @@ var packageName = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}(?::[a-z0-9][a-
 var agentIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 var findingCategory = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 
+type agentReportSummary struct {
+	Checks          *int      `json:"checks"`
+	CompletedChecks *int      `json:"completedChecks"`
+	CoveragePercent *int      `json:"coveragePercent"`
+	FindingCount    *int      `json:"findingCount"`
+	CheckErrors     *[]string `json:"checkErrors"`
+	Mode            *string   `json:"mode"`
+}
+
+func validAgentReportSummary(raw json.RawMessage, score, findings int) bool {
+	var summary agentReportSummary
+	if len(raw) == 0 || json.Unmarshal(raw, &summary) != nil || summary.Checks == nil || summary.CompletedChecks == nil || summary.CoveragePercent == nil || summary.FindingCount == nil || summary.CheckErrors == nil || summary.Mode == nil {
+		return false
+	}
+	checks, completed, coverage := *summary.Checks, *summary.CompletedChecks, *summary.CoveragePercent
+	if checks < 0 || checks > 10_000 || completed < 0 || completed > checks || coverage < 0 || coverage > 100 || *summary.FindingCount != findings || score > coverage || (*summary.Mode != "native" && *summary.Mode != "observer") {
+		return false
+	}
+	expectedCoverage := 100
+	if checks > 0 {
+		expectedCoverage = completed * 100 / checks
+	}
+	if coverage != expectedCoverage || len(*summary.CheckErrors) != checks-completed {
+		return false
+	}
+	for _, checkError := range *summary.CheckErrors {
+		if checkError == "" || len(checkError) > 4_000 {
+			return false
+		}
+	}
+	return true
+}
+
 func strictRaw(raw json.RawMessage, dst any) error {
 	if len(raw) == 0 || len(raw) > 64*1024 {
 		return errors.New("parameters must be 1-65536 bytes")
@@ -58,7 +91,12 @@ func validateAction(actionType string, raw json.RawMessage) (map[string]any, err
 			}
 			seen[name] = true
 		}
-		return map[string]any{"summary": "Upgrade only the explicitly listed packages", "changes": p.Packages, "impact": "Package services may restart; review the agent-side apt simulation before execution.", "rollback": "Attempt restoring recorded package versions if still available."}, nil
+		return map[string]any{
+			"summary":  "Upgrade only the explicitly authorized installed packages",
+			"changes":  p.Packages,
+			"impact":   "Target versions are resolved from the device's configured repositories at execution. Package services may restart; the action stops before dpkg if APT would touch any package outside this list.",
+			"rollback": "Attempt restoring the exact recorded package versions if they are still available.",
+		}, nil
 	case action.TypeSSHPasswordHardening:
 		var p action.SSHPasswordHardeningParams
 		if err := strictRaw(raw, &p); err != nil {
@@ -414,7 +452,7 @@ func (s *Server) agentReport(w http.ResponseWriter, r *http.Request) {
 	}
 	report.DeviceID = device.ID
 	now := s.now()
-	if !validAgentIdentifier(report.ID) || report.StartedAt.IsZero() || report.CompletedAt.Before(report.StartedAt) || report.CompletedAt.After(now.Add(5*time.Minute)) || report.CompletedAt.Sub(report.StartedAt) > 6*time.Hour || report.Score < 0 || report.Score > 100 || len(report.Findings) > 1000 || len(report.Summary) > 64*1024 {
+	if !validAgentIdentifier(report.ID) || report.StartedAt.IsZero() || report.CompletedAt.Before(report.StartedAt) || report.CompletedAt.After(now.Add(5*time.Minute)) || report.CompletedAt.Sub(report.StartedAt) > 6*time.Hour || report.Score < 0 || report.Score > 100 || len(report.Findings) > 1000 || len(report.Summary) > 64*1024 || !validAgentReportSummary(report.Summary, report.Score, len(report.Findings)) {
 		writeError(w, 400, "invalid_report", "report timestamps, score or size are invalid")
 		return
 	}

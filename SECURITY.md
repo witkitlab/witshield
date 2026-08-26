@@ -55,6 +55,6 @@
 - SPDX 与 CycloneDX SBOM；
 - 由 GitHub Actions OIDC 进行的 Sigstore/Cosign keyless 签名和证明。
 
-安装脚本始终校验 SHA-256；使用 `--require-signature` 可以要求 Cosign 验证成功后才安装。
+安装脚本始终校验 SHA-256，并强制使用 Cosign 验证 Sigstore keyless 签名；任一验证失败都会在安装前终止。旧版 `--require-signature` 参数仅为命令兼容保留，不能关闭或改变这项强制验证。
 
 感谢负责任地帮助我们保护用户。

@@ -13,7 +13,7 @@ export interface Device {
   version: string;
   lastSeen: string;
   lastScan: string;
-  score: number;
+  score: number | null;
   findings: number;
 }
 
@@ -28,6 +28,22 @@ export interface Finding {
   detectedAt: string;
   state: 'open' | 'accepted' | 'resolved';
   remediation?: ActionPlan;
+}
+
+export interface SecurityReport {
+  id: string;
+  deviceId: string;
+  startedAt: string;
+  completedAt: string;
+  score: number;
+  checks: number;
+  completedChecks: number;
+  coveragePercent: number;
+  findingCount: number | null;
+  mode: string;
+  errors: string[];
+  findings: Finding[];
+  detailsLoaded: boolean;
 }
 
 export interface ActionStep {
@@ -137,7 +153,7 @@ export interface NotificationSettings {
 }
 
 export interface DashboardSnapshot {
-  score: number;
+  score: number | null;
   previousScore: number;
   checks: number;
   devicesOnline: number;
@@ -147,6 +163,7 @@ export interface DashboardSnapshot {
   lastScan: string;
   nextScan: string;
   devices: Device[];
+  reports: SecurityReport[];
   findings: Finding[];
   policies: DefensePolicy[];
   audit: AuditEvent[];
@@ -166,4 +183,4 @@ export interface DashboardSnapshot {
   }>;
 }
 
-export type Section = 'overview' | 'findings' | 'devices' | 'policies' | 'audit' | 'settings';
+export type Section = 'overview' | 'findings' | 'reports' | 'devices' | 'policies' | 'audit' | 'settings';
