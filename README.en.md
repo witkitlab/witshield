@@ -1,6 +1,6 @@
 # WitShield AI
 
-**WitShield AI (妙盾)** is an open-source, agentic security guard for Linux servers. It continuously inspects a server, explains evidence-backed findings, proposes structured remediation, and acts only within explicit approval and policy boundaries.
+**WitShield AI (妙计巡御)** is an open-source, agentic security guard for Linux servers. It continuously inspects a server, explains evidence-backed findings, proposes structured remediation, and acts only within explicit approval and policy boundaries.
 
 Key properties:
 

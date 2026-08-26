@@ -1,6 +1,6 @@
 # Docker 观察模式的安全边界
 
-妙盾的 Docker 镜像只用于**只读观察**，不是原生 Agent 的等价替代。完整说明与命令见 [`docker/README.md`](../docker/README.md)。
+巡御的 Docker 镜像只用于**只读观察**，不是原生 Agent 的等价替代。完整说明与命令见 [`docker/README.md`](../docker/README.md)。
 
 ## 为什么不提供 privileged 模式
 
