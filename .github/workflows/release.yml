@@ -376,7 +376,13 @@ jobs:
               || { echo 'registry returned an invalid manifest digest' >&2; exit 1; }
             [[ "$actual" == "$IMAGE_DIGEST" ]] \
               || { echo "$image:$version already exists at $actual; immutable release expected $IMAGE_DIGEST" >&2; exit 1; }
-          elif ! grep -Eqi '(manifest unknown|name_unknown|404[[:space:]]+not found)' <<<"$inspect_output"; then
+          # Buildx normalizes a missing GHCR tag to this exact one-line error.
+          # Accept only the fully qualified tag we just queried; fail closed
+          # for every other authentication, transport, gateway, or registry
+          # response instead of searching arbitrary output for error phrases.
+          elif [[ "$inspect_output" == "ERROR: $image:$version: not found" ]]; then
+            :
+          else
             echo 'could not determine whether the immutable version image exists' >&2
             printf '%s\n' "$inspect_output" >&2
             exit 1
