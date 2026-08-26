@@ -2,7 +2,10 @@
 
 # Keep readable tags for auditability and immutable digests for reproducible
 # resolution. Dependabot proposes digest updates for review.
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS web-build
+# The Web output is architecture-independent.  Build and test it once on the
+# native builder instead of re-running browser-like tests under QEMU for every
+# target architecture.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS web-build
 ARG COMMIT=unknown
 ENV WITSHIELD_BUILD_ID=${COMMIT}
 WORKDIR /src/web
@@ -11,10 +14,12 @@ RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run typecheck && npm run test && npm run build:embedded
 
-FROM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS go-build
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
+ARG TARGETOS
+ARG TARGETARCH
 # The default keeps the official checksum-verified module path and a direct
 # fallback. Builders in restricted networks can override this explicitly, for
 # example: --build-arg GOPROXY=https://goproxy.cn,direct. go.sum verification
@@ -27,10 +32,10 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
       -o /out/witshield-controller ./cmd/witshield-controller && \
-    CGO_ENABLED=0 go build -trimpath \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
       -o /out/witshield-agent ./cmd/witshield-agent && \
     mkdir -p /out/data/controller /out/data/agent && \
