@@ -80,7 +80,7 @@ if version_is_older v2.0.0 v1.9.9; then fail 'upgrade was treated as a downgrade
 # Exercise atomic marker creation and strict parsing with the real functions.
 (
   # Invoked indirectly by the sourced installer helpers.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   die() { printf 'marker failure: %s\n' "$*" >&2; exit 91; }
   # shellcheck disable=SC1091
   source /dev/stdin <<<"$(sed -n '/^validate_version() {$/,/^}$/p' "$installer")"
@@ -113,7 +113,7 @@ if command -v flock >/dev/null 2>&1; then
     lock_output=$(
       (
         # Invoked indirectly by the sourced installer helper.
-        # shellcheck disable=SC2329
+        # shellcheck disable=SC2317,SC2329
         die() { printf '%s\n' "$*" >&2; exit 91; }
         # shellcheck disable=SC1091
         source /dev/stdin <<<"$(sed -n '/^acquire_install_lock() {$/,/^}$/p' "$installer")"
