@@ -9,6 +9,7 @@ describe('WitShieldApp', () => {
     render(<WitShieldApp />);
 
     expect(await screen.findByText('服务器安全概览')).toBeInTheDocument();
+    expect(screen.getByText('AI Agent 服务器管家')).toBeInTheDocument();
     expect(screen.getByText('今日安全状态')).toBeInTheDocument();
 
     const findingButtons = screen.getAllByRole('button', { name: /SSH 允许密码登录/ });

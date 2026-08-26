@@ -1,6 +1,6 @@
-# 妙盾（开源服务器 AI Agent 智能守卫）
+# 妙盾 · AI Agent 服务器管家
 
-> **WitShield AI**：持续巡检、解释风险，经授权修复并按策略响应攻击的开源服务器智能 Agent。
+> **WitShield AI**：主动巡检风险，在你授权后修复，并在攻击发生时按策略自动响应。
 
 [English](README.en.md) · [架构](docs/architecture.md) · [安全模型](docs/threat-model.md) · [配置参考](docs/configuration.md)
 
