@@ -50,7 +50,7 @@ describe('WitShieldApp', () => {
 
     fireEvent.change(screen.getByRole('combobox', { name: '筛选报告设备' }), { target: { value: 'dev_edge' } });
     expect(await screen.findByText('边缘节点')).toBeInTheDocument();
-    expect(screen.getAllByText(/44\/44/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/7\/7/).length).toBeGreaterThan(0);
     expect((await screen.findAllByText('边缘节点内核需要安全更新')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('审计日志保留期较短').length).toBeGreaterThan(0);
     expect(screen.queryByText('这份报告没有记录新的发现。')).not.toBeInTheDocument();
