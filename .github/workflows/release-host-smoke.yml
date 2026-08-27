@@ -76,6 +76,7 @@ jobs:
             --tag witshield-release-smoke:debian12 \
             .
           docker run --detach --privileged \
+            --cgroupns=host \
             --name witshield-release-smoke \
             --tmpfs /run \
             --tmpfs /run/lock \
@@ -88,7 +89,9 @@ jobs:
             [[ "$state" == running || "$state" == degraded ]] && exit 0
             sleep 1
           done
-          docker exec witshield-release-smoke systemctl --no-pager --full status
+          docker inspect witshield-release-smoke --format '{{json .State}}' || true
+          docker logs witshield-release-smoke || true
+          docker exec witshield-release-smoke systemctl --no-pager --full status || true
           exit 1
       - name: Exercise install, enrollment, scan, action, rollback, reinstall and purge
         env:
@@ -102,6 +105,8 @@ jobs:
       - name: Collect logs
         if: always()
         run: |
+          docker inspect witshield-release-smoke --format '{{json .State}}' || true
+          docker logs witshield-release-smoke || true
           docker exec witshield-release-smoke \
             journalctl --no-pager -n 300 \
               -u witshield-controller.service \
