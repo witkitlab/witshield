@@ -20,6 +20,8 @@ describe('MarketingHome', () => {
     expect(screen.getByTitle('交互式产品演示')).toHaveAttribute('src', '/demo');
     expect(screen.getByText('固定演示数据 · 不连接真实服务器')).toBeInTheDocument();
     expect(screen.getByText('智能守卫在线')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: '妙计巡御核心闭环能力' })).toBeInTheDocument();
+    expect(screen.getByText('验证回滚')).toBeInTheDocument();
     expect(screen.getByText('动作许可链')).toBeInTheDocument();
     expect(screen.getByText('等待批准')).toBeInTheDocument();
     expect(screen.getByText('Docker 观察模式')).toBeInTheDocument();
@@ -34,6 +36,8 @@ describe('MarketingHome', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/An intelligent.*guard for every.*server you run\./);
     expect(screen.getByText('AI proposes.')).toBeInTheDocument();
     expect(screen.getByText('Agent guard online')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'WitShield core control-loop capabilities' })).toBeInTheDocument();
+    expect(screen.getAllByText('Verify and roll back')).toHaveLength(2);
     expect(screen.getByText('Action permission chain')).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute('lang', 'en');
   });

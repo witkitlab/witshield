@@ -45,6 +45,7 @@ const copy = {
     guardOnline: '智能守卫在线',
     guardHealthy: '演示数据 · 策略链路正常',
     guardCore: '巡御核心',
+    proofPoints: ['定时巡检', '风险证据', 'AI 解释', '管理员审批', '受限执行', '验证回滚'],
     scanComplete: '本轮巡检完成',
     scanTime: '刚刚 · 14 / 14 项',
     riskFound: '发现 1 项高优先级风险',
@@ -109,6 +110,7 @@ const copy = {
     guardOnline: 'Agent guard online',
     guardHealthy: 'Fixture data · policy chain healthy',
     guardCore: 'Guard core',
+    proofPoints: ['Scheduled scans', 'Risk evidence', 'AI explanation', 'Admin approval', 'Typed execution', 'Verify and roll back'],
     scanComplete: 'Inspection complete',
     scanTime: 'Just now · 14 / 14 checks',
     riskFound: '1 high-priority risk found',
@@ -248,6 +250,9 @@ export function MarketingHome() {
             <iframe src="/demo" title={text.demoLabel} />
           </div>
         </div>
+        <ul className={styles.proofRail} aria-label={language === 'zh' ? '妙计巡御核心闭环能力' : 'WitShield core control-loop capabilities'}>
+          {text.proofPoints.map((item, index) => <li key={item}><span>{String(index + 1).padStart(2, '0')}</span>{item}</li>)}
+        </ul>
       </section>
 
       <section className={styles.workflow} id="workflow">
