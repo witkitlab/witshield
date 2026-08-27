@@ -214,7 +214,7 @@ validate_duration() {
 }
 
 read_os_id() {
-  local os_release_file="${1:-/etc/os-release}" os_id
+  local os_release_file="$1" os_id
   [[ -r "$os_release_file" ]] || die "cannot identify this operating system"
   # os-release is shell-compatible and root-owned on supported systems, but it
   # defines generic names such as VERSION. Source it in a subshell so none of
@@ -444,7 +444,7 @@ fi
 [[ -n "$DEVICE_NAME" && ${#DEVICE_NAME} -le 100 && "$DEVICE_NAME" != *$'\n'* && "$DEVICE_NAME" != *$'\r'* ]] \
   || die "device name must contain 1-100 characters without newlines"
 [[ "${EUID}" -eq 0 ]] || die "run this installer as root"
-OS_ID=$(read_os_id)
+OS_ID=$(read_os_id /etc/os-release)
 case "$OS_ID" in
   ubuntu|debian) ;;
   *) die "supported systems are Ubuntu and Debian (found $OS_ID)" ;;
