@@ -2,17 +2,22 @@
 
 import {
   ArrowRight,
+  Bot,
   Check,
   Copy,
+  Cpu,
   FileCheck2,
   GitBranch,
   Languages,
   LockKeyhole,
+  Network,
   Radar,
   RotateCcw,
+  ScanLine,
   ScrollText,
   Server,
   ShieldCheck,
+  Sparkles,
   Terminal,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -37,9 +42,17 @@ const copy = {
     statTwoLabel: '本轮安全检查',
     statThree: '1 项',
     statThreeLabel: '等待管理员批准',
+    guardOnline: '智能守卫在线',
+    guardHealthy: '演示数据 · 策略链路正常',
+    guardCore: '巡御核心',
+    scanComplete: '本轮巡检完成',
+    scanTime: '刚刚 · 14 / 14 项',
+    riskFound: '发现 1 项高优先级风险',
+    approvalQueued: '修复计划等待管理员批准',
     workflowEyebrow: '从发现到闭环',
     workflowTitle: '不是再发一封告警，\n而是把问题处理完。',
     workflowLead: '规则负责事实，AI 负责解释，策略与管理员共同决定动作能否发生。每一步都有记录，每一次变更都要验证。',
+    flowLegend: ['规则事实', 'AI 解释', '策略校验', '管理员批准', '受限执行'],
     workflowSteps: [
       { number: '01', title: '持续巡检', body: '按天或按周检查账号、SSH、敏感权限、端口、防火墙、软件更新与容器风险。' },
       { number: '02', title: '解释影响', body: '把可复现的证据交给你自己的 AI 服务，说明影响范围、优先级和处理思路。' },
@@ -50,6 +63,8 @@ const copy = {
     controlTitle: 'AI 提建议，\n策略决定能不能做。',
     controlLead: '巡御不把一个不受限制的 root Shell 交给模型。规则、审批、强类型动作与本机 Helper 共同构成安全边界。',
     controlProof: '模型输出不能绕过策略。自动响应只覆盖你明确授权、可逆、限时且有频率限制的本机防御动作。',
+    policyLabel: '动作许可链',
+    policyStages: ['AI 提案', '策略校验', '等待批准', 'Helper 执行'],
     controls: [
       { title: '默认等待批准', body: '修复与防御默认不会自动发生。', icon: LockKeyhole },
       { title: '强类型动作', body: '执行器只接受预先定义并校验的 Playbook。', icon: FileCheck2 },
@@ -91,9 +106,17 @@ const copy = {
     statTwoLabel: 'security checks',
     statThree: '1',
     statThreeLabel: 'awaiting approval',
+    guardOnline: 'Agent guard online',
+    guardHealthy: 'Fixture data · policy chain healthy',
+    guardCore: 'Guard core',
+    scanComplete: 'Inspection complete',
+    scanTime: 'Just now · 14 / 14 checks',
+    riskFound: '1 high-priority risk found',
+    approvalQueued: 'Remediation plan awaits approval',
     workflowEyebrow: 'From signal to closure',
     workflowTitle: 'Not another alert.\nA problem carried to completion.',
     workflowLead: 'Rules establish facts. AI explains them. Policies and the administrator decide what may happen. Every step is recorded and every change is verified.',
+    flowLegend: ['Rule facts', 'AI explanation', 'Policy check', 'Admin approval', 'Typed execution'],
     workflowSteps: [
       { number: '01', title: 'Inspect continuously', body: 'Check identities, SSH, sensitive permissions, ports, firewalls, security updates, and container exposure daily or weekly.' },
       { number: '02', title: 'Explain the impact', body: 'Give reproducible evidence to the AI service you choose, with scope, priority, and a concrete remediation approach.' },
@@ -104,6 +127,8 @@ const copy = {
     controlTitle: 'AI proposes.\nPolicy decides.',
     controlLead: 'WitShield never hands the model an unrestricted root shell. Rules, approvals, typed actions, and a local helper form the security boundary together.',
     controlProof: 'Model output cannot bypass policy. Automated response is limited to reversible, time-bound, rate-limited defenses you explicitly authorize on your own hosts.',
+    policyLabel: 'Action permission chain',
+    policyStages: ['AI proposal', 'Policy check', 'Await approval', 'Helper execution'],
     controls: [
       { title: 'Approval by default', body: 'Remediation and defense do not happen automatically.', icon: LockKeyhole },
       { title: 'Typed actions', body: 'The executor accepts only predefined, validated playbooks.', icon: FileCheck2 },
@@ -185,11 +210,31 @@ export function MarketingHome() {
             <a className={styles.secondaryCta} href="https://github.com/witkitlab/witshield" target="_blank" rel="noreferrer"><GitBranch size={16} />{text.github}</a>
           </div>
         </div>
-        <dl className={styles.heroStats} aria-label={language === 'zh' ? '演示环境概况' : 'Demo environment summary'}>
-          <div><dt>{text.statOne}</dt><dd>{text.statOneLabel}</dd></div>
-          <div><dt>{text.statTwo}</dt><dd>{text.statTwoLabel}</dd></div>
-          <div><dt>{text.statThree}</dt><dd>{text.statThreeLabel}</dd></div>
-        </dl>
+        <div className={styles.heroVisual} role="group" aria-label={language === 'zh' ? '固定演示环境的智能守卫运行概况' : 'Agent guard status using fixed demo data'}>
+          <div className={styles.heroHud}>
+            <span><i />{text.guardOnline}</span>
+            <small>{text.guardHealthy}</small>
+          </div>
+          <div className={styles.topology} aria-hidden="true">
+            <i className={styles.signalOne} />
+            <i className={styles.signalTwo} />
+            <i className={styles.signalThree} />
+            <div className={`${styles.serverNode} ${styles.serverNodeOne}`}><Server size={14} /><span>edge-sg-01</span><b /></div>
+            <div className={`${styles.serverNode} ${styles.serverNodeTwo}`}><Server size={14} /><span>dev-bj-02</span><b /></div>
+            <div className={styles.guardCore}><span><ShieldCheck size={24} /></span><small>{text.guardCore}</small></div>
+            <span className={`${styles.pulseNode} ${styles.pulseNodeOne}`} />
+            <span className={`${styles.pulseNode} ${styles.pulseNodeTwo}`} />
+          </div>
+          <div className={styles.guardActivity}>
+            <div><span><Check size={13} />{text.scanComplete}</span><small>{text.scanTime}</small></div>
+            <div><span className={styles.riskSignal}>{text.riskFound}</span><small>{text.approvalQueued}</small></div>
+          </div>
+          <dl className={styles.heroStats}>
+            <div><dt>{text.statOne}</dt><dd>{text.statOneLabel}</dd></div>
+            <div><dt>{text.statTwo}</dt><dd>{text.statTwoLabel}</dd></div>
+            <div><dt>{text.statThree}</dt><dd>{text.statThreeLabel}</dd></div>
+          </dl>
+        </div>
       </section>
 
       <section className={styles.productSection} id="product">
@@ -198,7 +243,7 @@ export function MarketingHome() {
           <a href="/demo" target="_blank">{text.openDemo}<ArrowRight size={14} /></a>
         </div>
         <div className={styles.demoFrame}>
-          <div className={styles.windowBar} aria-hidden="true"><i /><i /><i /><span>demo.witshield.local</span></div>
+          <div className={styles.windowBar} aria-hidden="true"><i /><i /><i /><span>demo.witshield.local</span><em>FIXTURE / ISOLATED</em></div>
           <div className={styles.demoViewport}>
             <iframe src="/demo" title={text.demoLabel} />
           </div>
@@ -210,6 +255,9 @@ export function MarketingHome() {
           <p className={styles.sectionEyebrow}>{text.workflowEyebrow}</p>
           <h2>{text.workflowTitle.split('\n').map((line) => <span key={line}>{line}</span>)}</h2>
           <p>{text.workflowLead}</p>
+          <div className={styles.flowLegend} aria-label={language === 'zh' ? '巡御处理链路' : 'WitShield processing chain'}>
+            {text.flowLegend.map((item, index) => <span key={item}><i>{index + 1}</i>{item}</span>)}
+          </div>
         </div>
         <ol className={styles.workflowList}>
           {text.workflowSteps.map((step) => (
@@ -227,6 +275,10 @@ export function MarketingHome() {
           <p className={styles.sectionEyebrow}>{text.controlEyebrow}</p>
           <h2>{text.controlTitle.split('\n').map((line) => <span key={line}>{line}</span>)}</h2>
           <p>{text.controlLead}</p>
+          <div className={styles.policyFlow}>
+            <small><Network size={13} />{text.policyLabel}</small>
+            <div>{text.policyStages.map((stage, index) => <span key={stage} data-pending={index === 2 ? 'true' : undefined}><i />{stage}</span>)}</div>
+          </div>
           <div className={styles.controlProof}><ShieldCheck size={20} /><span>{text.controlProof}</span></div>
         </div>
         <div className={styles.controlGrid}>
@@ -267,6 +319,9 @@ export function MarketingHome() {
             <div className={styles.openActions}>
               <a href="https://github.com/witkitlab/witshield" target="_blank" rel="noreferrer"><GitBranch size={16} />{text.repository}</a>
               <a href="https://github.com/witkitlab/witshield/blob/main/docs/threat-model.md" target="_blank" rel="noreferrer">{text.threatModel}<ArrowRight size={14} /></a>
+            </div>
+            <div className={styles.openSignals} aria-hidden="true">
+              <span><Bot size={14} />AGENT</span><span><Cpu size={14} />HELPER</span><span><ScanLine size={14} />SCANNER</span><span><Sparkles size={14} />YOUR AI</span>
             </div>
           </div>
         </div>
