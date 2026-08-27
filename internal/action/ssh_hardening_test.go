@@ -117,7 +117,11 @@ func TestSSHConfirmationDisarmsTimedRollback(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("PasswordAuthentication yes\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	playbook := newTestSSHPlaybook(t, successfulSSHRunner(configPath), configPath, journalDir, 150*time.Millisecond)
+	// Keep a generous real deadline so a loaded CI runner cannot expire the
+	// safety window between Apply and Confirm. Invoke expire directly below to
+	// prove deterministically that confirmation removed the durable rollback
+	// trigger and disarmed its timer.
+	playbook := newTestSSHPlaybook(t, successfulSSHRunner(configPath), configPath, journalDir, 2*time.Second)
 	engine, _ := NewEngine(playbook)
 	parameters := json.RawMessage(`{}`)
 	apply := engine.Run(context.Background(), Request{
@@ -134,7 +138,7 @@ func TestSSHConfirmationDisarmsTimedRollback(t *testing.T) {
 	if !confirm.Success {
 		t.Fatalf("confirmation failed: %s", confirm.Error)
 	}
-	time.Sleep(300 * time.Millisecond)
+	playbook.expire("ssh-confirm")
 	content, _ := os.ReadFile(configPath)
 	if !strings.Contains(string(content), "PasswordAuthentication no") {
 		t.Fatalf("confirmed SSH change was rolled back: %s", content)

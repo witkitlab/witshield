@@ -86,6 +86,8 @@ jobs:
           for test_script in scripts/tests/*.sh; do
             "$test_script"
           done
+      - name: Validate clean-host smoke image
+        run: docker build --build-arg BASE_IMAGE=debian:12-slim --file scripts/tests/fixtures/systemd-host.Dockerfile --tag witshield-smoke-host:test .
       - name: Validate systemd units
         run: |
           sudo groupadd --system witshield-controller

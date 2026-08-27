@@ -67,7 +67,8 @@ for test_script in scripts/tests/*.sh; do "$test_script"; done
 11. 使用完全空白的 Docker 凭据目录按不可变 digest 验证匿名拉取；私有包会在创建草稿 Release 或任何公开标签前安全中止；
 12. 匿名拉取解析到预期 digest 后，创建草稿 Release，上传完整资产并逐项核对远端资产名称；
 13. 把已签名 digest 提升为版本、次版本和 `latest` 镜像标签，再公开已经核验的草稿 Release；
-14. 在干净虚拟机用公开 Release 重做安装烟测，并发布安全与升级说明。
+14. Release 公开后自动触发 `Release host smoke`：在 Ubuntu 22.04/24.04 的 amd64 原生临时机、Ubuntu 24.04 的 arm64 原生临时机，以及 Debian 12 的 amd64/arm64 systemd 容器中，用公开签名制品重做安装、初始化、Agent 注册、扫描、审批修复、回滚、服务重启、保留数据卸载、重装与彻底清理；任一矩阵失败都必须作为发布阻断事故处理；
+15. 在目标云厂商的干净原生虚拟机补做网络、内核和 nftables 拓扑烟测，并发布安全与升级说明。systemd 容器覆盖发行版用户态兼容性，但不能替代真实宿主机内核验证。
 
 workflow 使用 keyless 制品签名，不保存长期 Cosign 私钥。只有 `publish` job 拥有 `contents: write`、`packages: write`、`id-token: write` 和 `attestations: write`；preflight 只有 `contents: read`，所有 checkout 都禁用凭据持久化。workflow 会拒绝以下输入：
 
