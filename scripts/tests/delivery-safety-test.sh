@@ -10,6 +10,22 @@ trap 'rm -rf -- "$tmp_dir"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+# /etc/os-release defines a generic VERSION variable. Loading it must not
+# overwrite the selected WitShield release, which previously made every real
+# Ubuntu/Debian installation reject the OS version as a release tag.
+(
+  # Invoked indirectly by the sourced installer helper.
+  # shellcheck disable=SC2317,SC2329
+  die() { printf 'OS detection failure: %s\n' "$*" >&2; exit 91; }
+  # shellcheck disable=SC1091
+  source /dev/stdin <<<"$(sed -n '/^read_os_id() {$/,/^}$/p' "$installer")"
+  os_release="${tmp_dir}/os-release"
+  printf 'ID=ubuntu\nVERSION="24.04.4 LTS (Noble Numbat)"\n' >"$os_release"
+  RELEASE_VERSION=v1.2.3
+  [[ "$(read_os_id "$os_release")" == ubuntu ]] || exit 92
+  [[ "$RELEASE_VERSION" == v1.2.3 ]] || exit 93
+) || fail 'OS detection overwrote the selected release version'
+
 # Exercise the real environment-file writer against a dangling symlink. `-e`
 # alone would miss this case, so the installer must reject before `install`.
 # shellcheck disable=SC1091

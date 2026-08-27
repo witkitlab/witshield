@@ -27,7 +27,7 @@ readonly COSIGN_ARM64_SHA256="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c0
 unset ENROLLMENT_TOKEN_FROM_ENV ENROLLMENT_TOKEN BOOTSTRAP_TOKEN
 
 MODE="standalone"
-VERSION="latest"
+RELEASE_VERSION="latest"
 CONTROLLER_URL="${WITSHIELD_CONTROLLER_URL:-}"
 DEVICE_NAME="$(hostname -f 2>/dev/null || hostname)"
 SCAN_INTERVAL="24h"
@@ -213,6 +213,22 @@ validate_duration() {
   esac
 }
 
+read_os_id() {
+  local os_release_file="${1:-/etc/os-release}" os_id
+  [[ -r "$os_release_file" ]] || die "cannot identify this operating system"
+  # os-release is shell-compatible and root-owned on supported systems, but it
+  # defines generic names such as VERSION. Source it in a subshell so none of
+  # those names can overwrite installer state such as RELEASE_VERSION.
+  os_id=$(
+    unset ID
+    # shellcheck disable=SC1090
+    source "$os_release_file"
+    printf '%s' "${ID:-}"
+  )
+  [[ "$os_id" =~ ^[a-z0-9._-]+$ ]] || die "operating system ID is missing or invalid"
+  printf '%s\n' "$os_id"
+}
+
 validate_version() {
   local version="$1" component
   local -a components=()
@@ -273,14 +289,14 @@ stage_pending_version() {
     [[ -f "$PENDING_VERSION_FILE" && ! -L "$PENDING_VERSION_FILE" ]] \
       || die "refusing unsafe pending-version marker: $PENDING_VERSION_FILE"
   fi
-  atomic_write_version_marker "$PENDING_VERSION_FILE" "$VERSION"
+  atomic_write_version_marker "$PENDING_VERSION_FILE" "$RELEASE_VERSION"
 }
 
 commit_pending_version() {
   local pending
   pending=$(read_version_marker "$PENDING_VERSION_FILE") \
     || die "pending-version marker disappeared before installation commit"
-  [[ "$pending" == "$VERSION" ]] \
+  [[ "$pending" == "$RELEASE_VERSION" ]] \
     || die "pending-version marker changed during installation"
   if [[ -e "$INSTALLED_VERSION_FILE" || -L "$INSTALLED_VERSION_FILE" ]]; then
     [[ -f "$INSTALLED_VERSION_FILE" && ! -L "$INSTALLED_VERSION_FILE" ]] \
@@ -394,7 +410,7 @@ while (($#)); do
       MODE="$2"; shift 2 ;;
     --version)
       (($# >= 2)) || die "--version requires a value"
-      VERSION="$2"; shift 2 ;;
+      RELEASE_VERSION="$2"; shift 2 ;;
     --controller-url|--hub)
       (($# >= 2)) || die "$1 requires a value"
       CONTROLLER_URL="$2"; shift 2 ;;
@@ -418,8 +434,8 @@ while (($#)); do
 done
 
 [[ "$MODE" == "standalone" || "$MODE" == "controller" || "$MODE" == "agent" ]] || die "unsupported mode: $MODE"
-if [[ "$VERSION" != "latest" ]]; then
-  validate_version "$VERSION"
+if [[ "$RELEASE_VERSION" != "latest" ]]; then
+  validate_version "$RELEASE_VERSION"
 fi
 validate_duration "$SCAN_INTERVAL"
 if [[ -n "$CONTROLLER_URL" ]]; then
@@ -428,12 +444,10 @@ fi
 [[ -n "$DEVICE_NAME" && ${#DEVICE_NAME} -le 100 && "$DEVICE_NAME" != *$'\n'* && "$DEVICE_NAME" != *$'\r'* ]] \
   || die "device name must contain 1-100 characters without newlines"
 [[ "${EUID}" -eq 0 ]] || die "run this installer as root"
-[[ -r /etc/os-release ]] || die "cannot identify this operating system"
-# shellcheck disable=SC1091
-source /etc/os-release
-case "${ID:-}" in
+OS_ID=$(read_os_id)
+case "$OS_ID" in
   ubuntu|debian) ;;
-  *) die "supported systems are Ubuntu and Debian (found ${ID:-unknown})" ;;
+  *) die "supported systems are Ubuntu and Debian (found $OS_ID)" ;;
 esac
 
 need_command curl
@@ -457,14 +471,14 @@ esac
 
 acquire_install_lock "$INSTALL_LOCK_FILE"
 
-if [[ "$VERSION" == "latest" ]]; then
+if [[ "$RELEASE_VERSION" == "latest" ]]; then
   log "resolving latest release"
   EFFECTIVE_URL=$(curl --proto '=https' --tlsv1.2 -fsSIL -o /dev/null -w '%{url_effective}' \
     "https://github.com/${REPOSITORY}/releases/latest")
-  VERSION="${EFFECTIVE_URL%/}"
-  VERSION="${VERSION##*/}"
+  RELEASE_VERSION="${EFFECTIVE_URL%/}"
+  RELEASE_VERSION="${RELEASE_VERSION##*/}"
 fi
-validate_version "$VERSION"
+validate_version "$RELEASE_VERSION"
 
 VERSION_FLOOR=""
 for version_marker in "$INSTALLED_VERSION_FILE" "$PENDING_VERSION_FILE"; do
@@ -477,13 +491,13 @@ for version_marker in "$INSTALLED_VERSION_FILE" "$PENDING_VERSION_FILE"; do
     fi
   fi
 done
-if [[ -n "$VERSION_FLOOR" ]] && version_is_older "$VERSION" "$VERSION_FLOOR" && ((ALLOW_DOWNGRADE == 0)); then
-  die "refusing downgrade below installed/pending floor $VERSION_FLOOR to $VERSION; restore a matching data backup and pass --allow-downgrade only after review"
+if [[ -n "$VERSION_FLOOR" ]] && version_is_older "$RELEASE_VERSION" "$VERSION_FLOOR" && ((ALLOW_DOWNGRADE == 0)); then
+  die "refusing downgrade below installed/pending floor $VERSION_FLOOR to $RELEASE_VERSION; restore a matching data backup and pass --allow-downgrade only after review"
 fi
 
 TMP_DIR=$(mktemp -d -t witshield-install.XXXXXXXX)
-readonly ASSET="witshield_${VERSION#v}_linux_${ARCH}.tar.gz"
-readonly RELEASE_BASE="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
+readonly ASSET="witshield_${RELEASE_VERSION#v}_linux_${ARCH}.tar.gz"
+readonly RELEASE_BASE="https://github.com/${REPOSITORY}/releases/download/${RELEASE_VERSION}"
 
 log "downloading ${ASSET}"
 curl --proto '=https' --tlsv1.2 --fail --show-error --location \
@@ -503,7 +517,7 @@ resolve_cosign
 log "verifying Sigstore release identity"
 if ! "$COSIGN_BIN" verify-blob \
     --bundle "${TMP_DIR}/SHA256SUMS.bundle" \
-    --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/release.yml@refs/tags/${VERSION}" \
+    --certificate-identity "https://github.com/${REPOSITORY}/.github/workflows/release.yml@refs/tags/${RELEASE_VERSION}" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
     "${TMP_DIR}/SHA256SUMS" >/dev/null; then
   die "Sigstore release signature verification failed"
@@ -759,7 +773,7 @@ if ((START_SERVICES)); then
 fi
 
 commit_pending_version
-log "WitShield AI ${VERSION} installed in ${MODE} mode"
+log "WitShield AI ${RELEASE_VERSION} installed in ${MODE} mode"
 if [[ ( "$MODE" == "standalone" || "$MODE" == "controller" ) && "$CONTROLLER_FIRST_INSTALL" -eq 1 ]]; then
   cat >&2 <<EOF
 

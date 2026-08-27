@@ -1,0 +1,110 @@
+name: Release host smoke
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Published stable release tag (vX.Y.Z)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published stable release tag (vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-host-smoke-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  ubuntu-native:
+    name: Native ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Ubuntu 22.04 amd64
+            runner: ubuntu-22.04
+          - label: Ubuntu 24.04 amd64
+            runner: ubuntu-24.04
+          - label: Ubuntu 24.04 arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version }}
+          persist-credentials: false
+      - name: Install smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+      - name: Exercise install, enrollment, scan, action, rollback, reinstall and purge
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: sudo env WITSHIELD_SMOKE_ALLOW_PURGE=1 bash scripts/smoke-release-install.sh "$RELEASE_VERSION"
+
+  debian-systemd:
+    name: Systemd container ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Debian 12 amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - label: Debian 12 arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.version }}
+          persist-credentials: false
+      - name: Build clean systemd host
+        run: |
+          docker build \
+            --platform '${{ matrix.platform }}' \
+            --build-arg BASE_IMAGE=debian:12-slim \
+            --file scripts/tests/fixtures/systemd-host.Dockerfile \
+            --tag witshield-release-smoke:debian12 \
+            .
+          docker run --detach --privileged \
+            --name witshield-release-smoke \
+            --tmpfs /run \
+            --tmpfs /run/lock \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            witshield-release-smoke:debian12
+      - name: Wait for systemd
+        run: |
+          for _ in {1..60}; do
+            state=$(docker exec witshield-release-smoke systemctl is-system-running 2>/dev/null || true)
+            [[ "$state" == running || "$state" == degraded ]] && exit 0
+            sleep 1
+          done
+          docker exec witshield-release-smoke systemctl --no-pager --full status
+          exit 1
+      - name: Exercise install, enrollment, scan, action, rollback, reinstall and purge
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          docker cp scripts/smoke-release-install.sh witshield-release-smoke:/tmp/smoke-release-install.sh
+          docker exec \
+            --env WITSHIELD_SMOKE_ALLOW_PURGE=1 \
+            witshield-release-smoke \
+            bash /tmp/smoke-release-install.sh "$RELEASE_VERSION"
+      - name: Collect logs
+        if: always()
+        run: |
+          docker exec witshield-release-smoke \
+            journalctl --no-pager -n 300 \
+              -u witshield-controller.service \
+              -u witshield-helper.service \
+              -u witshield-agent.service || true
+          docker rm --force witshield-release-smoke || true
