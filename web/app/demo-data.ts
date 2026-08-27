@@ -1,9 +1,9 @@
 import type { DashboardSnapshot } from './types';
 
 export const demoDashboard: DashboardSnapshot = {
-  score: 86,
-  previousScore: 82,
-  checks: 46,
+  score: 76,
+  previousScore: 72,
+  checks: 14,
   devicesOnline: 2,
   devicesTotal: 2,
   openFindings: 5,
@@ -14,18 +14,18 @@ export const demoDashboard: DashboardSnapshot = {
     {
       id: 'dev_local', name: '生产服务器', hostname: 'ubuntu-prod-01', os: 'Ubuntu 24.04.2 LTS',
       kernel: '6.8.0-64-generic', arch: 'arm64', address: '10.0.0.12', status: 'online',
-      version: 'v0.1.0', lastSeen: '刚刚', lastScan: '今天 09:42', score: 86, findings: 3,
+      version: 'v0.1.0', lastSeen: '刚刚', lastScan: '今天 09:42', score: 59, findings: 3,
     },
     {
       id: 'dev_edge', name: '边缘节点', hostname: 'edge-shanghai-02', os: 'Debian 12.10',
       kernel: '6.1.0-35-amd64', arch: 'x86_64', address: '10.0.0.23', status: 'online',
-      version: 'v0.1.0', lastSeen: '18 秒前', lastScan: '今天 03:00', score: 93, findings: 2,
+      version: 'v0.1.0', lastSeen: '18 秒前', lastScan: '今天 03:00', score: 92, findings: 2,
     },
   ],
   reports: [
     {
       id: 'report_demo_local', deviceId: 'dev_local', startedAt: '今天 09:41', completedAt: '今天 09:42',
-      score: 86, checks: 46, completedChecks: 46, coveragePercent: 100, findingCount: 3, mode: 'native', errors: [],
+      score: 59, checks: 7, completedChecks: 7, coveragePercent: 100, findingCount: 3, mode: 'native', errors: [],
       detailsLoaded: true,
       findings: [
         {
@@ -47,7 +47,7 @@ export const demoDashboard: DashboardSnapshot = {
     },
     {
       id: 'report_demo_edge', deviceId: 'dev_edge', startedAt: '今天 02:59', completedAt: '今天 03:00',
-      score: 93, checks: 44, completedChecks: 44, coveragePercent: 100, findingCount: 2, mode: 'observer', errors: [],
+      score: 92, checks: 7, completedChecks: 7, coveragePercent: 100, findingCount: 2, mode: 'observer', errors: [],
       detailsLoaded: true,
       findings: [
         {
@@ -130,9 +130,9 @@ export const demoDashboard: DashboardSnapshot = {
     },
   ],
   audit: [
-    { id: 'audit_1', type: 'scan', title: '完成每日安全扫描', detail: '检查 46 项，新增 2 个发现。', actor: '计划任务', device: 'ubuntu-prod-01', timestamp: '今天 09:42', result: 'success' },
+    { id: 'audit_1', type: 'scan', title: '完成每日安全扫描', detail: '完成 7 项内置检查，新增 2 个发现。', actor: '计划任务', device: 'ubuntu-prod-01', timestamp: '今天 09:42', result: 'success' },
     { id: 'audit_2', type: 'finding', title: '发现新的监听端口', detail: '0.0.0.0:8080 由 docker-proxy 开放。', actor: '网络暴露扫描器', device: 'ubuntu-prod-01', timestamp: '今天 09:42', result: 'success' },
-    { id: 'audit_3', type: 'scan', title: '完成每日安全扫描', detail: '检查 44 项，没有高风险变化。', actor: '计划任务', device: 'edge-shanghai-02', timestamp: '今天 03:00', result: 'success' },
+    { id: 'audit_3', type: 'scan', title: '完成每日安全扫描', detail: '完成 7 项内置检查，没有高风险变化。', actor: '计划任务', device: 'edge-shanghai-02', timestamp: '今天 03:00', result: 'success' },
     { id: 'audit_4', type: 'action', title: '修复敏感文件权限', detail: '/etc/witshield/credentials 权限已从 0640 调整为 0600。', actor: '管理员批准', device: 'ubuntu-prod-01', timestamp: '昨天 18:21', result: 'success' },
   ],
   securityEvents: [
