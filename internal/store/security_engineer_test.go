@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,29 @@ func TestRuntimeSignalsCreateGenericIncidentsWithoutAutomaticMutation(t *testing
 	items, _ = s.ListIncidents(context.Background(), deviceID, nil, 10)
 	if items[0].SignalCount != 1 {
 		t.Fatalf("replay inflated incident count: %#v", items[0])
+	}
+}
+
+func TestSSHNoiseIsPromotedOnlyAfterDeterministicThreshold(t *testing.T) {
+	s, deviceID, now := openReportCommandTestStore(t)
+	putTestDefensePolicy(t, s, deviceID, now, false, 3, 5*time.Minute)
+	processTestEvent(t, s, deviceID, "evt_below_one", "8.8.8.8", now)
+	processTestEvent(t, s, deviceID, "evt_below_two", "8.8.8.8", now.Add(time.Second))
+	incidents, err := s.ListIncidents(context.Background(), deviceID, nil, 10)
+	if err != nil || len(incidents) != 0 {
+		t.Fatalf("below-threshold authentication noise became an incident: %#v err=%v", incidents, err)
+	}
+	outcome := processTestEvent(t, s, deviceID, "evt_threshold", "8.8.8.8", now.Add(2*time.Second))
+	if !outcome.Decision.Matched {
+		t.Fatal("deterministic SSH threshold did not match")
+	}
+	incidents, err = s.ListIncidents(context.Background(), deviceID, nil, 10)
+	if err != nil || len(incidents) != 1 || incidents[0].SignalCount != 1 {
+		t.Fatalf("threshold match did not create one bounded incident: %#v err=%v", incidents, err)
+	}
+	signals, err := s.ListIncidentSignals(context.Background(), incidents[0].ID, 10)
+	if err != nil || len(signals) != 1 || !strings.Contains(string(signals[0].Payload), `"failureCount":3`) {
+		t.Fatalf("promoted signal lacks correlation evidence: %#v err=%v", signals, err)
 	}
 }
 

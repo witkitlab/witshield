@@ -544,10 +544,10 @@ func (s *Store) AddSecurityEvent(ctx context.Context, e domain.SecurityEvent) (b
 	if err != nil {
 		return false, err
 	}
-	const maxSecurityEventsPerDevice = 2_000
-	if _, err = tx.ExecContext(ctx, `DELETE FROM security_events WHERE device_id=? AND id IN (
-		SELECT id FROM security_events WHERE device_id=? ORDER BY occurred_at DESC,rowid DESC LIMIT -1 OFFSET ?
-	)`, e.DeviceID, e.DeviceID, maxSecurityEventsPerDevice); err != nil {
+	if n == 1 {
+		err = pruneSecurityEventsTx(ctx, tx, e.DeviceID)
+	}
+	if err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {
