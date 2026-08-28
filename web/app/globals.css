@@ -337,6 +337,24 @@ select, input { border: 1px solid #dbe1de; border-radius: 9px; background: white
 .form-grid label > span { font-size: 10px; font-weight: 650; }
 .form-grid label small { color: var(--muted); font-size: 9px; }
 .form-grid .span-two { grid-column: span 2; }
+.ai-privacy-card { overflow: hidden; border: 1px solid #d6e3dd; border-radius: 11px; background: #f8fbf9; }
+.ai-privacy-summary { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; align-items: start; padding: 13px 14px; }
+.ai-privacy-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: #e9f3ee; color: var(--green); }
+.ai-privacy-summary .field-label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 650; }
+.ai-privacy-title { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.ai-privacy-title strong { font-size: 12px; }
+.ai-privacy-title span { border-radius: 999px; background: #e5f1eb; padding: 3px 7px; color: var(--green); font-size: 8px; font-weight: 700; }
+.ai-privacy-summary p { margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.ai-privacy-details { border-top: 1px solid #e0e9e5; }
+.ai-privacy-details summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px 10px 58px; color: #53615c; cursor: pointer; font-size: 9px; font-weight: 650; list-style: none; transition: color .16s ease, background .16s ease; }
+.ai-privacy-details summary::-webkit-details-marker { display: none; }
+.ai-privacy-details summary:hover { background: #f1f7f4; color: var(--green); }
+.ai-privacy-details summary svg { transition: transform .18s ease; }
+.ai-privacy-details[open] summary svg { transform: rotate(90deg); }
+.ai-privacy-detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 2px 14px 14px 58px; }
+.ai-privacy-detail-grid > div { border-left: 2px solid #d6e3dd; padding-left: 9px; }
+.ai-privacy-detail-grid strong { display: block; margin-bottom: 4px; font-size: 9px; }
+.ai-privacy-detail-grid p { margin: 0; color: var(--muted); font-size: 8px; line-height: 1.55; }
 .secret-input { display: flex; align-items: center; gap: 8px; border: 1px solid #dbe1de; border-radius: 9px; padding-left: 10px; color: var(--muted); }
 .secret-input input { flex: 1; border: 0; outline: 0; padding-left: 0; }
 .form-actions { display: flex; align-items: center; gap: 9px; margin-top: 18px; }
@@ -495,6 +513,8 @@ select, input { border: 1px solid #dbe1de; border-radius: 9px; background: white
   .policy-editor-grid .span-two { grid-column: span 1; }
   .form-grid { grid-template-columns: 1fr; }
   .form-grid .span-two { grid-column: span 1; }
+  .ai-privacy-details summary { padding-left: 14px; }
+  .ai-privacy-detail-grid { grid-template-columns: 1fr; padding-left: 14px; }
   .notification-channel-grid { grid-template-columns: 1fr; }
   .smtp-fields { grid-template-columns: 1fr; }
   .smtp-fields .span-two { grid-column: span 1; }

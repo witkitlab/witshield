@@ -751,7 +751,24 @@ function SettingsView({ settings, notifications, schedules, deviceId, onSchedule
           <label><span>模型名称</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="gpt-5.4" /></label>
           <label className="span-two"><span>API Base URL</span><input value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} inputMode="url" placeholder="https://api.openai.com/v1" />{settings.customHeaderKeys.length > 0 && <small>{endpointOriginChanged ? `保存时会清除旧地址绑定的自定义请求头：${settings.customHeaderKeys.join('、')}` : `已安全保存自定义请求头：${settings.customHeaderKeys.join('、')}（值不会返回浏览器）`}</small>}</label>
           <label className="span-two"><span>API Key</span><div className="secret-input"><KeyRound size={15} /><input type="password" value={form.apiKey} required={endpointKeyRequired} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} placeholder={endpointOriginChanged ? '更换地址后需重新输入 API Key' : settings.hasKey ? `${settings.keyHint}（留空保持不变）` : '输入 API Key'} /></div><small>{endpointOriginChanged ? '密钥不会自动带到新的 API 地址；请重新输入以确认信任边界。' : '由本机主密钥加密保存，特权 Helper 无法读取。'}</small></label>
-          <label className="span-two"><span>发送给模型的信息</span><input value="最少信息：仅相关发现与必要证据" readOnly aria-readonly="true" /><small>首版固定采用最少信息模式；服务器文本会作为不可信数据与系统指令隔离。</small></label>
+          <section className="span-two ai-privacy-card" aria-labelledby="ai-privacy-title">
+            <div className="ai-privacy-summary">
+              <span className="ai-privacy-icon"><ShieldCheck size={17} /></span>
+              <div>
+                <span className="field-label">数据发送策略</span>
+                <div className="ai-privacy-title"><strong id="ai-privacy-title">最小化</strong><span>推荐 · 当前固定</span></div>
+                <p>仅向模型发送当前问题相关的发现和必要证据，不上传整台服务器的数据。</p>
+              </div>
+            </div>
+            <details className="ai-privacy-details">
+              <summary>查看发送范围与保护方式<ChevronRight size={14} /></summary>
+              <div className="ai-privacy-detail-grid">
+                <div><strong>会发送</strong><p>相关的开放风险（最多 20 项）、最新安全评分与报告时间；证据会先脱敏并截断。</p></div>
+                <div><strong>不会发送</strong><p>完整日志、任意文件正文、环境变量、密码、私钥、API Key 和未选择的历史报告。</p></div>
+                <div><strong>如何隔离</strong><p>服务器文本会标记为不可信数据，与系统指令分开；模型只能解释和建议，不能直接执行操作。</p></div>
+              </div>
+            </details>
+          </section>
         </div>
         <div className="form-actions"><button type="button" className="secondary-button" onClick={() => void testConnection()} disabled={testing}>{testing ? <LoaderCircle className="spin" size={15} /> : <TestTube2 size={15} />}测试连接</button><button className="primary-button" disabled={saving}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}保存设置</button>{testResult && <span className="test-result">{testResult}</span>}</div>
         {settingsError && <p className="form-error" role="alert">{settingsError}</p>}
