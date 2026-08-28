@@ -19,6 +19,7 @@ import (
 )
 
 const maxSecurityEventsPerDevice = 2_000
+const securityEventRetentionBatch = 128
 const maxActiveSimulationsPerDevice = 1_000
 const maxSecurityEventWindowsPerDevice = 2_000
 const maxDefenseSimulationsPerHour = 100
@@ -138,15 +139,13 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 	}
 	out.Inserted = true
 	signal, correlationKey := signalFromSecurityEvent(event, now)
-	if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
-		return out, err
-	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM security_events WHERE device_id=? AND id IN (
-		SELECT id FROM security_events WHERE device_id=? ORDER BY occurred_at DESC,rowid DESC LIMIT -1 OFFSET ?
-	)`, event.DeviceID, event.DeviceID, maxSecurityEventsPerDevice); err != nil {
+	if err = pruneSecurityEventsTx(ctx, tx, event.DeviceID); err != nil {
 		return out, err
 	}
 	if event.Type != "ssh_auth_failure" || sourceErr != nil || parsedSource.Zone() != "" {
+		if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
+			return out, err
+		}
 		return out, tx.Commit()
 	}
 	policy, err := defensePolicyTx(ctx, tx, event.DeviceID, now)
@@ -169,6 +168,22 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 	out.Decision = defense.Evaluate(policy, event.SourceIP, failureCount, recentAttempts, active > 0, now)
 	if !out.Decision.Matched || out.Decision.ExpiresAt == nil {
 		return out, tx.Commit()
+	}
+	// Individual authentication failures remain in the bounded raw security
+	// event log. Only a deterministic policy match is promoted into the generic
+	// Signal/Incident queue, preventing Internet background noise from creating
+	// thousands of AI-visible cases while retaining the underlying audit trail.
+	var signalPayload map[string]any
+	if json.Unmarshal(signal.Payload, &signalPayload) != nil || signalPayload == nil {
+		signalPayload = make(map[string]any)
+	}
+	signalPayload["failureCount"] = failureCount
+	signalPayload["windowSeconds"] = int64(policy.Window / time.Second)
+	signalPayload["sourceIP"] = event.SourceIP
+	signal.Payload, _ = json.Marshal(signalPayload)
+	signal.Summary = "SSH 登录失败活动达到确定性策略阈值"
+	if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
+		return out, err
 	}
 	if _, targetErr := action.ValidateTemporaryIPBanTarget(event.SourceIP); targetErr != nil && out.Decision.ShouldBan {
 		out.Decision.ShouldBan = false
@@ -261,6 +276,29 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 	return out, nil
 }
 
+// pruneSecurityEventsTx amortizes ordered retention work. Trimming every row
+// turns a noisy authentication stream into quadratic index scans, especially
+// under the race detector. Each device instead accumulates a tiny durable
+// counter and periodically trims to a lower watermark, keeping the committed
+// row count within the same public bound while reducing prune scans by 128x.
+func pruneSecurityEventsTx(ctx context.Context, tx *sql.Tx, deviceID string) error {
+	var sincePrune int
+	if err := tx.QueryRowContext(ctx, `INSERT INTO security_event_retention_state(device_id,since_prune) VALUES(?,1)
+		ON CONFLICT(device_id) DO UPDATE SET since_prune=since_prune+1 RETURNING since_prune`, deviceID).Scan(&sincePrune); err != nil {
+		return err
+	}
+	if sincePrune < securityEventRetentionBatch {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM security_events WHERE device_id=? AND id IN (
+		SELECT id FROM security_events WHERE device_id=? ORDER BY occurred_at DESC,rowid DESC LIMIT -1 OFFSET ?
+	)`, deviceID, deviceID, maxSecurityEventsPerDevice-securityEventRetentionBatch); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE security_event_retention_state SET since_prune=0 WHERE device_id=?`, deviceID)
+	return err
+}
+
 // incrementSecurityEventWindowTx maintains an exact, bounded sliding window per
 // source. Unlike the audit-event retention table, correlation for one noisy
 // source cannot be displaced by unrelated addresses. Signed occurrence times
@@ -268,12 +306,23 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 // neither combine stale failures nor evade a burst around a fixed boundary.
 func incrementSecurityEventWindowTx(ctx context.Context, tx *sql.Tx, deviceID, eventType, sourceIP string, window time.Duration, occurredAt, now time.Time) (int, error) {
 	windowSeconds := int64(window / time.Second)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM security_event_windows WHERE device_id=? AND window_ends_at<>'' AND window_ends_at<=?`, deviceID, timeText(now)); err != nil {
+	expiredResult, err := tx.ExecContext(ctx, `DELETE FROM security_event_windows WHERE device_id=? AND window_ends_at<>'' AND window_ends_at<=?`, deviceID, timeText(now))
+	if err != nil {
 		return 0, err
+	}
+	expired, err := expiredResult.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if expired > 0 {
+		if _, err = tx.ExecContext(ctx, `UPDATE security_event_retention_state SET window_count=MAX(0,window_count-?) WHERE device_id=? AND window_count>=0`, expired, deviceID); err != nil {
+			return 0, err
+		}
 	}
 	var storedWindow int64
 	var encodedTimes string
-	err := tx.QueryRowContext(ctx, `SELECT window_seconds,event_times FROM security_event_windows WHERE device_id=? AND type=? AND source_ip=?`, deviceID, eventType, sourceIP).Scan(&storedWindow, &encodedTimes)
+	err = tx.QueryRowContext(ctx, `SELECT window_seconds,event_times FROM security_event_windows WHERE device_id=? AND type=? AND source_ip=?`, deviceID, eventType, sourceIP).Scan(&storedWindow, &encodedTimes)
+	newSource := errors.Is(err, sql.ErrNoRows)
 	var samples []int64
 	if err == nil && storedWindow == windowSeconds {
 		if err = json.Unmarshal([]byte(encodedTimes), &samples); err != nil {
@@ -308,8 +357,8 @@ func incrementSecurityEventWindowTx(ctx context.Context, tx *sql.Tx, deviceID, e
 		ON CONFLICT(device_id,type,source_ip) DO UPDATE SET window_seconds=excluded.window_seconds,window_started_at=excluded.window_started_at,last_seen_at=excluded.last_seen_at,event_count=excluded.event_count,event_times=excluded.event_times,window_ends_at=excluded.window_ends_at`, deviceID, eventType, sourceIP, windowSeconds, timeText(startedAt), timeText(now), len(kept), string(encoded), timeText(endsAt)); err != nil {
 		return 0, err
 	}
-	var windowCount int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM security_event_windows WHERE device_id=?`, deviceID).Scan(&windowCount); err != nil {
+	windowCount, err := securityEventWindowCountTx(ctx, tx, deviceID, newSource)
+	if err != nil {
 		return 0, err
 	}
 	if windowCount >= maxSecurityEventWindowsPerDevice {
@@ -321,14 +370,43 @@ func incrementSecurityEventWindowTx(ctx context.Context, tx *sql.Tx, deviceID, e
 	// this exclusion, 2,000 near-threshold rows can cause every first event from
 	// a new source to be immediately evicted, silently disabling correlation for
 	// that source forever.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM security_event_windows WHERE device_id=? AND rowid IN (
-		SELECT rowid FROM security_event_windows
-		WHERE device_id=? AND NOT (type=? AND source_ip=?)
-		ORDER BY event_count DESC,last_seen_at DESC,rowid DESC LIMIT -1 OFFSET ?
-	)`, deviceID, deviceID, eventType, sourceIP, maxSecurityEventWindowsPerDevice-1); err != nil {
-		return 0, err
+	if windowCount > maxSecurityEventWindowsPerDevice {
+		pruneResult, pruneErr := tx.ExecContext(ctx, `DELETE FROM security_event_windows WHERE device_id=? AND rowid IN (
+			SELECT rowid FROM security_event_windows
+			WHERE device_id=? AND NOT (type=? AND source_ip=?)
+			ORDER BY event_count DESC,last_seen_at DESC,rowid DESC LIMIT -1 OFFSET ?
+		)`, deviceID, deviceID, eventType, sourceIP, maxSecurityEventWindowsPerDevice-1)
+		if pruneErr != nil {
+			return 0, pruneErr
+		}
+		pruned, rowsErr := pruneResult.RowsAffected()
+		if rowsErr != nil {
+			return 0, rowsErr
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE security_event_retention_state SET window_count=MAX(0,window_count-?) WHERE device_id=?`, pruned, deviceID); err != nil {
+			return 0, err
+		}
 	}
 	return len(kept), nil
+}
+
+func securityEventWindowCountTx(ctx context.Context, tx *sql.Tx, deviceID string, newSource bool) (int, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `UPDATE security_event_retention_state
+		SET window_count=(SELECT count(*) FROM security_event_windows WHERE device_id=?)
+		WHERE device_id=? AND window_count<0 RETURNING window_count`, deviceID, deviceID).Scan(&count)
+	if err == nil {
+		return count, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if newSource {
+		err = tx.QueryRowContext(ctx, `UPDATE security_event_retention_state SET window_count=window_count+1 WHERE device_id=? RETURNING window_count`, deviceID).Scan(&count)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT window_count FROM security_event_retention_state WHERE device_id=?`, deviceID).Scan(&count)
+	}
+	return count, err
 }
 
 func recordCorrelationCapacityDegradedTx(ctx context.Context, tx *sql.Tx, deviceID string, observedWindows int, now time.Time) error {
@@ -353,6 +431,10 @@ func recordCorrelationCapacityDegradedTx(ctx context.Context, tx *sql.Tx, device
 	_, err = tx.ExecContext(ctx, `DELETE FROM security_events WHERE device_id=? AND id<>? AND id IN (
 		SELECT id FROM security_events WHERE device_id=? AND id<>? ORDER BY occurred_at DESC,rowid DESC LIMIT -1 OFFSET ?
 	)`, deviceID, correlationCapacityEventID, deviceID, correlationCapacityEventID, maxSecurityEventsPerDevice-1)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE security_event_retention_state SET since_prune=0 WHERE device_id=?`, deviceID)
 	return err
 }
 

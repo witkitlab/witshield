@@ -197,6 +197,11 @@ CREATE INDEX IF NOT EXISTS security_events_correlation_idx ON security_events(de
 CREATE INDEX IF NOT EXISTS security_events_global_list_idx ON security_events(occurred_at DESC,device_id DESC,id DESC);
 CREATE INDEX IF NOT EXISTS security_events_device_list_idx ON security_events(device_id,occurred_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS security_events_device_type_list_idx ON security_events(device_id,type,occurred_at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS security_event_retention_state (
+  device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+  since_prune INTEGER NOT NULL DEFAULT 0 CHECK(since_prune >= 0),
+  window_count INTEGER NOT NULL DEFAULT -1 CHECK(window_count >= -1)
+);
 CREATE TABLE IF NOT EXISTS security_event_windows (
   device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, type TEXT NOT NULL,
   source_ip TEXT NOT NULL, window_seconds INTEGER NOT NULL, window_started_at TEXT NOT NULL,
@@ -205,6 +210,7 @@ CREATE TABLE IF NOT EXISTS security_event_windows (
   PRIMARY KEY(device_id,type,source_ip)
 );
 CREATE INDEX IF NOT EXISTS security_event_windows_lru_idx ON security_event_windows(device_id,last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS security_event_windows_expiry_idx ON security_event_windows(device_id,window_ends_at);
 CREATE TABLE IF NOT EXISTS temporary_bans (
   id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   action_id TEXT NOT NULL DEFAULT '', source_ip TEXT NOT NULL, reason TEXT NOT NULL,
@@ -418,7 +424,10 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_
 	if err = s.migrateSecurityEngineerV5(ctx); err != nil {
 		return err
 	}
-	return s.migrateResponsePlanActionsV6(ctx)
+	if err = s.migrateResponsePlanActionsV6(ctx); err != nil {
+		return err
+	}
+	return s.migrateSecurityEventRetentionV7(ctx)
 }
 
 // migrateSecurityEngineerV5 introduces the generic signal/incident/policy
@@ -466,6 +475,28 @@ func (s *Store) migrateResponsePlanActionsV6(ctx context.Context) error {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)`, timeText(time.Now().UTC())); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) migrateSecurityEventRetentionV7(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS security_event_retention_state (
+		device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+		since_prune INTEGER NOT NULL DEFAULT 0 CHECK(since_prune >= 0),
+		window_count INTEGER NOT NULL DEFAULT -1 CHECK(window_count >= -1)
+	)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS security_event_windows_expiry_idx ON security_event_windows(device_id,window_ends_at)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(7,?)`, timeText(time.Now().UTC())); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
