@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -159,7 +160,11 @@ func (s *Server) putAISettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, x.Settings)
 }
 func (s *Server) loadAIClient(r *http.Request) (*ai.Client, error) {
-	stored, err := s.store.AISettings(r.Context())
+	return s.loadAIClientContext(r.Context())
+}
+
+func (s *Server) loadAIClientContext(ctx context.Context) (*ai.Client, error) {
+	stored, err := s.store.AISettings(ctx)
 	if err != nil {
 		return nil, err
 	}

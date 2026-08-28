@@ -137,6 +137,10 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 		return out, tx.Commit()
 	}
 	out.Inserted = true
+	signal, correlationKey := signalFromSecurityEvent(event, now)
+	if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
+		return out, err
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM security_events WHERE device_id=? AND id IN (
 		SELECT id FROM security_events WHERE device_id=? ORDER BY occurred_at DESC,rowid DESC LIMIT -1 OFFSET ?
 	)`, event.DeviceID, event.DeviceID, maxSecurityEventsPerDevice); err != nil {

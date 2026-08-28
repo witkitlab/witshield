@@ -5,7 +5,7 @@
 ## 设计目标
 
 1. **本地优先**：单机不依赖 WitKitLab 服务，规则扫描在没有 AI 或外网时仍可运行。
-2. **证据先于模型**：确定性的采集与规则产生 Finding，AI 只做解释、归纳和非执行性建议；当前动作计划由规则映射与用户选择生成。
+2. **证据先于模型**：确定性的采集与规则产生 Finding/Signal，Controller 先把它们关联成 Incident；AI 只用固定只读工具调查并生成结构化建议。
 3. **决策与权限分离**：模型、Web UI、Controller 都不能直接获得一个不受限的 root Shell。
 4. **人机共同控制**：默认逐次确认；自动处置只用于用户预授权、低破坏、可逆的动作。
 5. **失败可恢复**：修改前检查与留存状态，修改后重新验证，失败时进入明确的回滚或人工接管状态。
@@ -16,9 +16,10 @@
 ```text
 ┌──────────────────────── 管理域 ────────────────────────┐
 │  Browser/CLI ──> Controller API ──> SQLite + audit     │
-│                         │                               │
+│                         │          Signal → Incident    │
 │                         ├──> AI provider (optional)     │
-│                         │    explanation/planning only │
+│                         │    read-only investigation   │
+│                         │    + typed response proposal │
 └─────────────────────────┼───────────────────────────────┘
                           │ authenticated HTTPS long-poll + reports
 ┌─────────────────────────▼── 设备域 ─────────────────────┐
@@ -46,17 +47,19 @@
 ### Agent
 
 - 检查特权账号、SSH 配置、敏感文件权限、监听端口、防火墙、待更新软件包与 Docker Socket 权限；
+- 维护关键账号/组、SSH 配置、计划任务、systemd 服务和 Docker daemon 配置的本地摘要基线；第一次只建基线，之后仅上报路径、变化类型和前后摘要，不上传文件正文；
 - 执行确定性规则并给结果生成稳定指纹；
 - 启动时执行一次扫描，之后只执行 Controller 调度器下发的扫描命令，把结果和状态发送到 Controller；Controller 是周期调度的唯一权威；
 - 只把 Controller 请求映射到 Helper 已编译的强类型 Playbook，不接受任意命令、可执行路径或 shell；
 - 保存设备身份、最近任务和恢复所需状态。
 
-### AI 适配层
+### 事件关联与 AI 调查层
 
 - 支持用户指定的 OpenAI/Anthropic 兼容接口；
-- 从 Finding 构造最小化、结构化上下文；
-- 只从当前设备和调用方指定的 Finding 中按固定字段白名单构造上下文，敏感内容按类别过滤；当前 UI 只说明数据最小化边界，不提供逐字段发送预览；
-- 返回解释和非执行性建议，API 明确标记 `canExecute: false`；不生成可直接批准的 `ActionPlan` 或特权命令流；
+- 扫描 Finding 和签名运行时事件先转换成统一 Signal，并按设备、类型和稳定目标关联为 Incident；新证据会重新打开处于监测中的事件；
+- Controller 后台 worker 只处理用户在对应 PolicyGrant 中显式开启的能力；普通协助忽略低风险噪声，增强模式才会调查低风险事件，失败后至少退避 15 分钟；
+- AI 只能读取五组 Controller 侧工具结果：设备态势、事件信号、当前 Finding、近期动作、策略边界。工具没有参数自由度，不访问主机 shell；上下文有字段白名单、截断、脱敏和 128 KiB 总上限；
+- 模型必须返回严格 JSON。响应步骤只能引用已注册动作类型，并在保存及准备执行时两次通过 Controller schema 校验；模型不能创建已批准动作，也不能取得 approval nonce；
 - 接口失败、超时或输出无效时，规则报告保持可用。
 
 ### 结构化执行器
@@ -132,6 +135,25 @@ open → resolved
 
 重新扫描后由稳定指纹合并，不因 AI 文案变化而创建重复 Finding。
 
+### Incident / Investigation / ResponsePlan
+
+```text
+Signal ──关联──> Incident(open) ──PolicyGrant──> investigating
+                         │                         │
+                         │                         ├─ 无可执行建议 → monitoring
+                         │                         ├─ 有响应计划 ─→ awaiting_approval
+                         │                         └─ 失败 ───────→ open（退避后可重试）
+                         │
+                         ├─ 新相关 Signal 到达 monitoring → open
+                         ├─ 管理员忽略 → dismissed
+                         └─ 管理员确认解决 → resolved
+
+ResponsePlan(proposed) → 单步重新校验/生成一次性动作 → approved/executing
+                       → Action 可信回执 → completed/failed
+```
+
+Incident 是长期事件档案，不等于一条告警。调查记录保存触发来源、模型、结论、置信度和实际使用的只读工具；响应计划保存理由、风险、强类型步骤及绑定的 Action ID。旧版 Finding、Action 和 SSH DefensePolicy API 继续保留，迁移只新增投影表并把已有 SSH 策略映射为对应能力授权。
+
 ### Action
 
 ```text
@@ -155,9 +177,11 @@ Agent API 对来源与设备凭据设置有界请求速率，并对报告、事�
 
 SSH 加固是额外的失联保护流程：Helper 在修改前持久化原配置并启动本机耐重启的回滚计时器；只有用户在安全窗口内确认新连接可用、Agent 执行确认命令成功后，动作才成为 `succeeded`。窗口过期时 Controller 的 `cancelled` 表示 Helper 安全回滚已被触发，不等同于 Controller 已收到“回滚成功”回执；应通过设备状态和审计复核。首版没有单独的 `verified` 状态，Helper 执行回执和后续扫描共同用于确认效果。
 
-## 自动防御
+## 分级授权与自动防御
 
-自动防御不是“允许 AI 自由操作”。它是一组预注册 Playbook，逐项包含：
+每台设备按能力分别拥有 PolicyGrant：`observe` 只记录；`assist` 自动只读调查但执行前询问；`auto_low_risk` 允许该能力下已注册的确定性低风险规则自动执行；`enhanced` 额外调查低风险信号。任何模式都不会把 AI 变成任意命令执行器。
+
+自动防御是一组预注册 Playbook，逐项包含：
 
 - 触发信号和最小证据阈值；
 - 目标与保护白名单；

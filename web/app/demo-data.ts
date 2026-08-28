@@ -116,10 +116,31 @@ export const demoDashboard: DashboardSnapshot = {
       detectedAt: '今天 03:00', state: 'open',
     },
   ],
+  incidents: [
+    {
+      id: 'incident_ssh_probe', deviceId: 'dev_local', correlationKey: 'event:ssh_auth_failure:203.0.113.84',
+      category: 'identity_access', severity: 'high', status: 'open', title: '持续的 SSH 凭据探测',
+      summary: '同一公网来源在 5 分钟内产生 12 次经过可信解析的 SSH 登录失败，尚未观察到成功登录。',
+      signalCount: 12, firstSeenAt: '今天 09:31', lastSeenAt: '2 分钟前', createdAt: '今天 09:31', updatedAt: '2 分钟前',
+    },
+    {
+      id: 'incident_port_change', deviceId: 'dev_local', correlationKey: 'finding:demo-port',
+      category: 'network', severity: 'low', status: 'monitoring', title: '新的公网监听端口',
+      summary: '8080 端口由容器工作负载开放；已进入观察状态，等待确认是否属于预期变更。',
+      signalCount: 2, firstSeenAt: '今天 09:31', lastSeenAt: '今天 09:42', lastInvestigatedAt: '今天 09:43', createdAt: '今天 09:31', updatedAt: '今天 09:43',
+    },
+  ],
+  policyGrants: [
+    { deviceId: 'dev_local', capability: 'network.auth_bruteforce', enabled: true, mode: 'assist', allowedActionTypes: ['temporary_ip_ban'], maxActionsPerHour: 10, emergencyStop: false, updatedAt: '今天 08:00' },
+    { deviceId: 'dev_local', capability: 'identity.persistence', enabled: true, mode: 'assist', allowedActionTypes: ['ssh_password_hardening'], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
+    { deviceId: 'dev_local', capability: 'workload.runtime', enabled: true, mode: 'assist', allowedActionTypes: [], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
+    { deviceId: 'dev_local', capability: 'file.integrity', enabled: true, mode: 'assist', allowedActionTypes: ['file_permission_repair'], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
+    { deviceId: 'dev_local', capability: 'vulnerability.remediation', enabled: true, mode: 'assist', allowedActionTypes: ['package_security_upgrade'], maxActionsPerHour: 2, emergencyStop: false, updatedAt: '今天 08:00' },
+  ],
   policies: [
     {
       id: 'policy_ssh_dev_local', deviceId: 'dev_local', name: 'SSH 暴力破解临时封禁',
-      description: '同一来源 5 分钟内失败登录达到 10 次时，临时封禁该 IP。', enabled: false,
+      description: '同一来源 5 分钟内失败登录达到 10 次时，临时封禁该 IP。', enabled: true,
       mode: 'recommend', trigger: '5 分钟内失败 10 次', action: '建议临时封禁来源 IP', ttlMinutes: 15,
       failureThreshold: 10, window: '5m', banDuration: '15m', maxBansPerHour: 10,
       allowlist: ['127.0.0.0/8', '::1/128'], editable: true,

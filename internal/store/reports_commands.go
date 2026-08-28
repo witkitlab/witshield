@@ -167,6 +167,10 @@ func (s *Store) saveReport(ctx context.Context, report domain.Report, notificati
 				return false, err
 			}
 		}
+		signal, correlationKey := signalFromFinding(report, f, now)
+		if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
+			return false, err
+		}
 		seen = append(seen, f.Fingerprint)
 	}
 	// Resolve only the current projection when the responsible check completed.

@@ -112,6 +112,11 @@ func MainVersion(ctx context.Context, args []string, version string) error {
 			slog.Error("notification worker stopped", "error", err)
 		}
 	}()
+	go func() {
+		if err := api.RunSecurityEngineerWorker(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("AI security engineer worker stopped", "error", err)
+		}
+	}()
 	go runMaintenance(ctx, db, slog.Default())
 	primaryHandler := api.Handler()
 	if loopbackListenAddress(*listen) {

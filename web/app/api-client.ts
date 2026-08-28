@@ -9,13 +9,19 @@ import type {
   Device,
   Finding,
   NotificationSettings,
+  IncidentDetail,
+  Investigation,
+  PolicyGrant,
+  ResponsePlan,
   ScanSchedule,
+  SecurityIncident,
   SecurityReport,
   SecurityObservation,
   Severity,
 } from './types';
 
 export const demoMode = process.env.NEXT_PUBLIC_WITSHIELD_DEMO !== 'false';
+const demoInvestigationResults = new Map<string, { investigation: Investigation; responsePlan?: ResponsePlan }>();
 
 export class APIError extends Error {
   status: number;
@@ -227,6 +233,16 @@ interface RawDefensePolicy {
   allowlist: string[];
 }
 
+type RawIncident = Omit<SecurityIncident, 'firstSeenAt' | 'lastSeenAt' | 'lastInvestigatedAt' | 'createdAt' | 'updatedAt'> & {
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastInvestigatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type RawPolicyGrant = Omit<PolicyGrant, 'updatedAt'> & { updatedAt: string };
+
 interface RawSchedule {
   id: string;
   deviceId: string;
@@ -280,11 +296,24 @@ function mapDefense(raw: RawDefensePolicy): DefensePolicy {
   };
 }
 
+function mapIncident(raw: RawIncident): SecurityIncident {
+  return {
+    ...raw,
+    firstSeenAt: dateText(raw.firstSeenAt),
+    lastSeenAt: dateText(raw.lastSeenAt),
+    lastInvestigatedAt: raw.lastInvestigatedAt ? dateText(raw.lastInvestigatedAt) : undefined,
+    createdAt: dateText(raw.createdAt),
+    updatedAt: dateText(raw.updatedAt),
+  };
+}
+
 export interface LiveSnapshot {
   devices: Device[];
   reports: SecurityReport[];
   findings: Finding[];
   policies: DefensePolicy[];
+  incidents: SecurityIncident[];
+  policyGrants: PolicyGrant[];
   audit: AuditEvent[];
   securityEvents: SecurityObservation[];
   actions: ActionRecord[];
@@ -353,6 +382,8 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       reports: structuredClone(demoDashboard.reports),
       findings: structuredClone(demoDashboard.findings),
       policies: structuredClone(demoDashboard.policies),
+      incidents: structuredClone(demoDashboard.incidents),
+      policyGrants: structuredClone(demoDashboard.policyGrants),
       audit: structuredClone(demoDashboard.audit),
       securityEvents: structuredClone(demoDashboard.securityEvents),
       actions: structuredClone(demoDashboard.actions),
@@ -364,7 +395,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     };
   }
   const rawDevices = await requestItems<RawDevice>('/devices');
-  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawNotifications, rawSchedules, policyResults] = await Promise.all([
+  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawNotifications, rawSchedules, rawIncidents, policyResults, grantResults] = await Promise.all([
     requestCurrentFindingsForDevices(rawDevices),
     requestLatestReportsForDevices(rawDevices),
     requestItems<RawAudit>('/audit?limit=200'),
@@ -373,8 +404,12 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     request<RawAISettings>('/ai/settings'),
     request<RawNotificationSettings>('/notifications/settings'),
     requestItems<RawSchedule>('/schedules'),
+    requestItems<RawIncident>('/incidents?limit=200'),
     Promise.all(rawDevices.map((device) =>
       request<RawDefensePolicy>(`/devices/${encodeURIComponent(device.id)}/defense-policy`).catch(() => null),
+    )),
+    Promise.all(rawDevices.map((device) =>
+      requestItems<RawPolicyGrant>(`/devices/${encodeURIComponent(device.id)}/policy-grants`).catch(() => []),
     )),
   ]);
   const reportsByID = new Map(reportHistory.map((report) => [report.id, report]));
@@ -466,6 +501,8 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     })),
     actions: rawActions.map(mapAction),
     policies: policyResults.filter((item): item is RawDefensePolicy => Boolean(item)).map(mapDefense),
+    incidents: rawIncidents.map(mapIncident),
+    policyGrants: grantResults.flat().map((item) => ({ ...item, updatedAt: dateText(item.updatedAt) })),
     ai: {
       protocol: rawAI.protocol ?? 'openai_responses',
       baseUrl: rawAI.baseUrl ?? 'https://api.openai.com/v1',
@@ -771,25 +808,30 @@ function mapAction(raw: RawAction): ActionRecord {
 }
 
 function actionPlan(raw: RawAction, approvalNonce: string): ActionPlan {
-  const preview = raw.preview ?? {};
-  const impact = String(preview.impact ?? '执行只影响计划中列出的配置。');
-  const rollback = String(preview.rollback ?? preview.safety ?? '失败时停止并报告，不执行额外变更。');
-  const isSSH = raw.type === 'ssh_password_hardening';
-  return {
-    id: raw.id,
-    approvalNonce,
-    title: isSSH ? '安全关闭 SSH 密码登录' : '安装指定安全更新',
-    risk: isSSH ? 'medium' : 'low',
-    requiresApproval: true,
-    expiresAt: '本次页面会话有效',
-    checks: isSSH
-      ? ['执行前验证当前 SSH 配置', '变更后要求你确认当前连接仍可用', '未在期限内确认则自动恢复原配置']
-      : ['执行前验证包管理器状态与已安装架构', '执行时解析目标版本；APT 如需触碰未列出的包会在 dpkg 前停止', '记录实际版本变化用于验证与回滚'],
-    steps: [{
-      id: `${raw.id}_step`,
-      title: String(preview.summary ?? (isSSH ? '修改 SSH 登录策略' : '升级安全软件包')),
-      kind: isSSH ? 'config_patch' : 'package_upgrade',
-      preview: Array.isArray(preview.changes) ? preview.changes.join(' ') : isSSH ? 'PasswordAuthentication yes → no' : raw.type,
+	const preview = raw.preview ?? {};
+	const impact = String(preview.impact ?? '执行只影响计划中列出的配置。');
+	const rollback = String(preview.rollback ?? preview.safety ?? '失败时停止并报告，不执行额外变更。');
+	const isSSH = raw.type === 'ssh_password_hardening';
+	const isPackage = raw.type === 'package_security_upgrade';
+	const isBan = raw.type === 'temporary_ip_ban';
+	const title = isSSH ? '安全关闭 SSH 密码登录' : isPackage ? '安装指定安全更新' : isBan ? '临时限制异常来源' : '修复关键文件权限';
+	return {
+		id: raw.id,
+		approvalNonce,
+		title,
+		risk: isBan ? 'low' : isSSH || raw.type === 'file_permission_repair' ? 'medium' : 'high',
+		requiresApproval: true,
+		expiresAt: '本次页面会话有效',
+		checks: isSSH
+			? ['执行前验证当前 SSH 配置', '变更后要求你确认当前连接仍可用', '未在期限内确认则自动恢复原配置']
+			: isPackage
+				? ['执行前验证包管理器状态与已安装架构', '执行时解析目标版本；APT 如需触碰未列出的包会在 dpkg 前停止', '记录实际版本变化用于验证与回滚']
+				: ['执行前由受限 Helper 再次验证目标与参数', '只运行注册的强类型 Playbook，不执行模型生成的命令', '执行后验证结果并保存可审计的回滚状态'],
+		steps: [{
+			id: `${raw.id}_step`,
+			title: String(preview.summary ?? title),
+			kind: isBan ? 'temporary_block' : isPackage ? 'package_upgrade' : 'config_patch',
+			preview: Array.isArray(preview.changes) ? preview.changes.join(' ') : isSSH ? 'PasswordAuthentication yes → no' : raw.type,
       impact,
       rollback,
     }],
@@ -852,6 +894,95 @@ export async function confirmAction(actionId: string): Promise<void> {
   await request(`/actions/${encodeURIComponent(actionId)}/confirm`, { method: 'POST', body: JSON.stringify({}) });
 }
 
+export async function getIncident(incidentId: string): Promise<IncidentDetail> {
+  if (demoMode) {
+    const incident = demoDashboard.incidents.find((item) => item.id === incidentId);
+    if (!incident) throw new APIError('没有找到这个安全事件', 404, 'incident_not_found');
+    const result = demoInvestigationResults.get(incidentId);
+    return { incident: structuredClone(incident), signals: [], investigations: result ? [structuredClone(result.investigation)] : [], responsePlans: result?.responsePlan ? [structuredClone(result.responsePlan)] : [], timeline: [] };
+  }
+  const raw = await request<IncidentDetail>(`/incidents/${encodeURIComponent(incidentId)}`);
+  return { ...raw, incident: mapIncident(raw.incident as unknown as RawIncident) };
+}
+
+export async function investigateIncident(incidentId: string): Promise<{ investigation: Investigation; responsePlan?: ResponsePlan }> {
+  if (demoMode) {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const result: { investigation: Investigation; responsePlan?: ResponsePlan } = {
+      investigation: {
+        id: `inv_${incidentId}`, incidentId, status: 'completed', trigger: 'administrator', confidence: 86,
+        hypothesis: '异常登录活动来自持续的凭据探测。',
+        conclusion: '确定性认证日志显示同一公网来源在短时间内重复失败。尚未发现成功登录证据，建议持续观察并临时限制该来源。',
+        model: demoDashboard.ai.model,
+        toolCalls: [
+          { tool: 'incident_signals', summary: '读取 12 条已归一化事件信号', startedAt: '刚刚', endedAt: '刚刚' },
+          { tool: 'current_findings', summary: '核对当前确定性风险', startedAt: '刚刚', endedAt: '刚刚' },
+        ],
+      },
+      responsePlan: {
+        id: `rsp_${incidentId}`, incidentId, title: '临时限制异常登录来源', rationale: '来源达到确定性阈值，动作可逆且带有效期。',
+        risk: 'low', status: 'proposed', requiresApproval: true,
+        steps: [{ id: 'step_demo_ban', actionType: 'temporary_ip_ban', title: '临时封禁来源 IP', rationale: '降低持续凭据探测噪声。', parameters: { address: '203.0.113.84', currentAdminIp: '198.51.100.10', ttlSeconds: 900, reason: 'WitShield incident response plan' }, risk: 'low', requiresApproval: true }],
+      },
+    };
+    demoInvestigationResults.set(incidentId, structuredClone(result));
+    const incident = demoDashboard.incidents.find((item) => item.id === incidentId);
+    if (incident) {
+      incident.status = result.responsePlan ? 'awaiting_approval' : 'monitoring';
+      incident.lastInvestigatedAt = '刚刚';
+      incident.updatedAt = '刚刚';
+      incident.summary = result.investigation.conclusion ?? '调查已完成，请查看结论。';
+    }
+    return result;
+  }
+  const result = await request<{ investigation: Investigation; responsePlan?: ResponsePlan }>(`/incidents/${encodeURIComponent(incidentId)}/investigate`, { method: 'POST', body: JSON.stringify({}) });
+  return result;
+}
+
+export async function prepareResponsePlanStep(planId: string, stepId: string): Promise<ActionPlan> {
+	if (demoMode) {
+		await new Promise((resolve) => setTimeout(resolve, 350));
+		return {
+			id: `act_${stepId}`, approvalNonce: `approve_${stepId}`, title: '执行响应计划', risk: 'low',
+			requiresApproval: true, expiresAt: '本次页面会话有效',
+			checks: ['Controller 重新验证强类型参数', '受限 Helper 执行并验证结果', '保留审计与回滚状态'],
+			steps: [{ id: stepId, title: '执行已审查步骤', kind: 'config_patch', preview: '仅执行当前响应步骤', impact: '影响范围以预览为准', rollback: '失败时按 Playbook 回滚' }],
+		};
+	}
+	const result = await request<{ action: RawAction; approvalNonce: string }>(`/response-plans/${encodeURIComponent(planId)}/steps/${encodeURIComponent(stepId)}/prepare`, { method: 'POST', body: JSON.stringify({}) });
+	return actionPlan(result.action, result.approvalNonce);
+}
+
+export async function updateIncidentStatus(incidentId: string, status: 'open' | 'resolved' | 'dismissed', summary?: string): Promise<SecurityIncident> {
+  if (demoMode) {
+    const existing = demoDashboard.incidents.find((item) => item.id === incidentId);
+    if (!existing) throw new APIError('没有找到这个安全事件', 404, 'incident_not_found');
+    existing.status = status;
+    existing.updatedAt = '刚刚';
+    return structuredClone(existing);
+  }
+  return mapIncident(await request<RawIncident>(`/incidents/${encodeURIComponent(incidentId)}`, { method: 'PATCH', body: JSON.stringify({ status, summary }) }));
+}
+
+export async function savePolicyGrant(grant: PolicyGrant): Promise<PolicyGrant> {
+  if (demoMode) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const updated = { ...structuredClone(grant), updatedAt: '刚刚' };
+    const index = demoDashboard.policyGrants.findIndex((item) => item.deviceId === grant.deviceId && item.capability === grant.capability);
+    if (index >= 0) demoDashboard.policyGrants[index] = updated;
+    else demoDashboard.policyGrants.push(updated);
+    return updated;
+  }
+  const raw = await request<RawPolicyGrant>(`/devices/${encodeURIComponent(grant.deviceId)}/policy-grants/${encodeURIComponent(grant.capability)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      enabled: grant.enabled, mode: grant.mode, allowedActionTypes: grant.allowedActionTypes,
+      maxActionsPerHour: grant.maxActionsPerHour, emergencyStop: grant.emergencyStop,
+    }),
+  });
+  return { ...raw, updatedAt: dateText(raw.updatedAt) };
+}
+
 function rawPolicy(deviceId: string, policy: DefensePolicy): RawDefensePolicy {
   return {
     deviceId,
@@ -869,7 +1000,11 @@ function rawPolicy(deviceId: string, policy: DefensePolicy): RawDefensePolicy {
 export async function saveDefensePolicy(deviceId: string, policy: DefensePolicy): Promise<DefensePolicy> {
   if (demoMode) {
     await new Promise((resolve) => setTimeout(resolve, 400));
-    return mapDefense(rawPolicy(deviceId, policy));
+    const updated = mapDefense(rawPolicy(deviceId, policy));
+    const index = demoDashboard.policies.findIndex((item) => item.id === updated.id);
+    if (index >= 0) demoDashboard.policies[index] = structuredClone(updated);
+    else demoDashboard.policies.push(structuredClone(updated));
+    return updated;
   }
   const result = await request<RawDefensePolicy>(`/devices/${encodeURIComponent(deviceId)}/defense-policy`, { method: 'PUT', body: JSON.stringify(rawPolicy(deviceId, policy)) });
   return mapDefense(result);
@@ -878,6 +1013,7 @@ export async function saveDefensePolicy(deviceId: string, policy: DefensePolicy)
 export async function setEmergencyStop(deviceId: string, active: boolean): Promise<void> {
   if (demoMode) {
     await new Promise((resolve) => setTimeout(resolve, 350));
+    demoDashboard.policies = demoDashboard.policies.map((policy) => policy.deviceId === deviceId ? { ...policy, emergencyStop: active } : policy);
     return;
   }
   await request(`/devices/${encodeURIComponent(deviceId)}/emergency-stop`, { method: 'POST', body: JSON.stringify({ active }) });

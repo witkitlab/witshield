@@ -158,6 +158,7 @@ describe('live API client contracts', () => {
       if (url.includes('/audit')) return json({ items: [] });
       if (url.includes('/security-events')) return json({ items: [{ id: 'evt_1', deviceId: 'dev_1', type: 'ssh_auth_failure_untrusted', sourceIp: '203.0.113.88', occurredAt: '2026-08-26T00:00:01Z', payload: {} }] });
       if (url.includes('/actions')) return json({ items: [] });
+			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.endsWith('/schedules')) return json({ items: [] });
@@ -180,6 +181,7 @@ describe('live API client contracts', () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith('/devices')) return json({ items: [{ id: 'dev_new', name: 'new server', hostname: 'fresh-host', os: 'Linux', arch: 'amd64', agentVersion: 'dev', status: 'online' }] });
       if (url.includes('/findings') || url.includes('/reports') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
+			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_new', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
@@ -210,6 +212,7 @@ describe('live API client contracts', () => {
         id: 'rpt_unknown', deviceId: 'dev_unknown', completedAt: '2026-08-26T00:00:00Z', score: 100, summary: {},
       }] });
       if (url.includes('/findings') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
+			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_unknown', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
@@ -241,6 +244,7 @@ describe('live API client contracts', () => {
         summary: { checks: 7, completedChecks: 7, coveragePercent: 100, findingCount: -2, checkErrors: 'oops', mode: { unsafe: true } },
       }] });
       if (url.includes('/findings') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
+			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_malformed', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
@@ -274,6 +278,7 @@ describe('live API client contracts', () => {
         summary: { checks: 6, completedChecks: 6, coveragePercent: 100, findingCount: 4, mode: 'observer' },
       }] });
       if (url.includes('/findings') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
+			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
