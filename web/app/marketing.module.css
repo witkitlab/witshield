@@ -38,13 +38,13 @@
 
 .hero {
   max-width: 1500px;
-  min-height: 530px;
+  min-height: 500px;
   margin: 0 auto;
-  padding: 88px 38px 66px;
+  padding: 72px 38px 54px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
   gap: 72px;
-  align-items: end;
+  align-items: center;
 }
 .heroCopy { max-width: 990px; }
 .eyebrow { margin: 0 0 26px; color: var(--site-blue); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
