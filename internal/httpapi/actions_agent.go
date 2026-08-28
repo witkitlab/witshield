@@ -584,9 +584,13 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 
 func validSecurityEventType(eventType string) bool {
 	switch eventType {
-	case "ssh_auth_failure", "ssh_auth_failure_untrusted", "ssh_auth_log_line_oversized_untrusted",
-		"identity_state_changed", "file_integrity_changed", "schedule_definition_changed",
-		"service_definition_changed", "container_configuration_changed":
+	case "ssh_auth_failure", "ssh_auth_success", "ssh_auth_failure_untrusted", "ssh_auth_log_line_oversized_untrusted",
+		"identity_state_changed", "access_trust_changed", "file_integrity_changed", "schedule_definition_changed",
+		"service_definition_changed", "startup_definition_changed", "library_injection_changed", "kernel_policy_changed",
+		"container_configuration_changed", "network_listener_opened", "network_listener_closed",
+		"network_sensor_capacity_degraded", "network_sensor_capacity_restored",
+		"suspicious_privileged_process_started", "deleted_executable_process_running",
+		"process_sensor_capacity_degraded", "process_sensor_capacity_restored":
 		return true
 	default:
 		return false

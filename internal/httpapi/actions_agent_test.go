@@ -7,6 +7,43 @@ import (
 	"github.com/witkitlab/witshield/internal/action"
 )
 
+func TestSecurityEventAdmissionCoversEveryAgentSensor(t *testing.T) {
+	// Keep this list grouped by the Agent source that emits it. A new source or
+	// event type must be admitted explicitly; otherwise one rejected item would
+	// remain at the head of the durable Agent FIFO and block later evidence.
+	eventTypes := map[string][]string{
+		"ssh": {
+			"ssh_auth_failure", "ssh_auth_success", "ssh_auth_failure_untrusted",
+			"ssh_auth_log_line_oversized_untrusted",
+		},
+		"host_baseline": {
+			"identity_state_changed", "access_trust_changed", "file_integrity_changed",
+			"schedule_definition_changed", "service_definition_changed", "startup_definition_changed",
+			"library_injection_changed", "kernel_policy_changed", "container_configuration_changed",
+		},
+		"network": {
+			"network_listener_opened", "network_listener_closed",
+			"network_sensor_capacity_degraded", "network_sensor_capacity_restored",
+		},
+		"process": {
+			"suspicious_privileged_process_started", "deleted_executable_process_running",
+			"process_sensor_capacity_degraded", "process_sensor_capacity_restored",
+		},
+	}
+	for source, types := range eventTypes {
+		for _, eventType := range types {
+			t.Run(source+"/"+eventType, func(t *testing.T) {
+				if !validSecurityEventType(eventType) {
+					t.Fatalf("Agent event type %q is not admitted by the Controller", eventType)
+				}
+			})
+		}
+	}
+	if validSecurityEventType("arbitrary_agent_selected_event") {
+		t.Fatal("unknown event types must remain denied by default")
+	}
+}
+
 func TestFilePermissionValidationUsesHelperAllowlist(t *testing.T) {
 	tests := []struct {
 		name    string
