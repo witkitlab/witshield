@@ -35,6 +35,7 @@ import {
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { BrandMark } from './brand-mark';
 import {
   approveAction,
   bootstrapAdmin,
@@ -180,7 +181,7 @@ export function WitShieldApp() {
     <main className="app-shell">
       <aside className="sidebar">
         <button className="brand brand-button" onClick={() => setSection('overview')}>
-          <span className="brand-mark" aria-hidden="true"><ShieldCheck size={18} strokeWidth={2.2} /></span>
+          <span className="brand-mark"><BrandMark /></span>
           <span><strong>妙计巡御</strong><small>WitShield AI</small></span>
         </button>
 
@@ -865,8 +866,8 @@ function AuthScreen({ mode, onReady }: { mode: 'setup' | 'login'; onReady: () =>
     catch (cause) { setError(cause instanceof Error ? cause.message : '操作失败'); }
     finally { setBusy(false); }
   }
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>妙计巡御</strong><small>WitShield AI</small></div></div><p className="eyebrow">AI Agent 服务器管家</p><h1>{mode === 'setup' ? '创建唯一管理员' : '欢迎回来'}</h1><p className="auth-intro">{mode === 'setup' ? '控制台首版采用单管理员模式。完成初始化后即可连接第一台服务器。' : '登录你的自建巡御控制台。'}</p><form onSubmit={submit}><label><span>管理员名称</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} /></label>{mode === 'setup' && <><label><span>再次输入密码</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label><label><span>初始化令牌（如安装程序要求）</span><input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} /></label></>}{error && <p className="form-error">{error}</p>}<button className="primary-button auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LockKeyhole size={16} />}{mode === 'setup' ? '完成安全初始化' : '登录控制台'}</button></form><small className="auth-footnote">凭据只保存在你的服务器；巡御没有公共账号中心。</small></section></main>;
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="brand-mark"><BrandMark /></span><div><strong>妙计巡御</strong><small>WitShield AI</small></div></div><p className="eyebrow">AI Agent 服务器管家</p><h1>{mode === 'setup' ? '创建唯一管理员' : '欢迎回来'}</h1><p className="auth-intro">{mode === 'setup' ? '控制台首版采用单管理员模式。完成初始化后即可连接第一台服务器。' : '登录你的自建巡御控制台。'}</p><form onSubmit={submit}><label><span>管理员名称</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} /></label>{mode === 'setup' && <><label><span>再次输入密码</span><input type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" /></label><label><span>初始化令牌（如安装程序要求）</span><input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} /></label></>}{error && <p className="form-error">{error}</p>}<button className="primary-button auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LockKeyhole size={16} />}{mode === 'setup' ? '完成安全初始化' : '登录控制台'}</button></form><small className="auth-footnote">凭据只保存在你的服务器；巡御没有公共账号中心。</small></section></main>;
 }
 
-function LoadingScreen() { return <main className="loading-screen"><span className="brand-mark"><ShieldCheck size={21} /></span><LoaderCircle className="spin" size={22} /><p>正在连接巡御 Agent…</p></main>; }
+function LoadingScreen() { return <main className="loading-screen"><span className="brand-mark"><BrandMark /></span><LoaderCircle className="spin" size={22} /><p>正在连接巡御 Agent…</p></main>; }
 function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => void }) { return <main className="loading-screen"><span className="error-mark"><X size={21} /></span><h1>暂时无法连接巡御</h1><p>{message}</p><button className="primary-button" onClick={onRetry}><RefreshCw size={15} />重新连接</button></main>; }
