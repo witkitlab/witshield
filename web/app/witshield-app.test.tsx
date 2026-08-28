@@ -206,18 +206,28 @@ describe('WitShieldApp', () => {
   });
 
   it('updates schedules and supports a reversible emergency stop', async () => {
-    render(<WitShieldApp />);
-    await screen.findByText('服务器安全概览');
+    const originalPolicies = structuredClone(demoDashboard.policies);
+    try {
+      render(<WitShieldApp />);
+      await screen.findByText('服务器安全概览');
 
-    fireEvent.click(screen.getByRole('button', { name: /^设置$/ }));
-    const daily = await screen.findByRole('button', { name: '关闭每日安全扫描' });
-    fireEvent.click(daily);
-    expect(await screen.findByRole('button', { name: '开启每日安全扫描' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /^设置$/ }));
+      const daily = await screen.findByRole('button', { name: '关闭每日安全扫描' });
+      fireEvent.click(daily);
+      expect(await screen.findByRole('button', { name: '开启每日安全扫描' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /^防御策略$/ }));
-    fireEvent.click(await screen.findByRole('button', { name: '紧急停止' }));
-    expect(await screen.findByText('自动防御已紧急停止')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '恢复自动防御' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /^AI 安全工程师$/ }));
+      fireEvent.click(await screen.findByText('登录攻击的确定性触发规则'));
+      fireEvent.click(await screen.findByRole('button', { name: '配置自动防御' }));
+      fireEvent.change(screen.getByLabelText('响应模式'), { target: { value: 'auto_contain' } });
+      fireEvent.change(screen.getByLabelText(/管理员保护地址/), { target: { value: '127.0.0.0/8\n203.0.113.8' } });
+      fireEvent.click(screen.getByRole('button', { name: '保存防御策略' }));
+      fireEvent.click(await screen.findByRole('button', { name: '紧急停止' }));
+      expect(await screen.findByText('SSH 自动遏制已紧急停止')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '恢复自动防御' })).toBeInTheDocument();
+    } finally {
+      demoDashboard.policies.splice(0, demoDashboard.policies.length, ...originalPolicies);
+    }
   });
 
   it('keeps untrusted security observations separate from automatic defense', async () => {
@@ -265,17 +275,23 @@ describe('WitShieldApp', () => {
   });
 
   it('requires an administrator allowlist before enabling automatic containment', async () => {
-    render(<WitShieldApp />);
-    await screen.findByText('服务器安全概览');
+    const originalPolicies = structuredClone(demoDashboard.policies);
+    try {
+      render(<WitShieldApp />);
+      await screen.findByText('服务器安全概览');
 
-    fireEvent.click(screen.getByRole('button', { name: /^防御策略$/ }));
-    fireEvent.click(await screen.findByRole('button', { name: '配置' }));
-    fireEvent.change(screen.getByLabelText('响应模式'), { target: { value: 'auto_contain' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存防御策略' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('管理员 IP 或 CIDR');
+      fireEvent.click(screen.getByRole('button', { name: /^AI 安全工程师$/ }));
+      fireEvent.click(await screen.findByText('登录攻击的确定性触发规则'));
+      fireEvent.click(await screen.findByRole('button', { name: '配置' }));
+      fireEvent.change(screen.getByLabelText('响应模式'), { target: { value: 'auto_contain' } });
+      fireEvent.click(screen.getByRole('button', { name: '保存防御策略' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('管理员 IP 或 CIDR');
 
-    fireEvent.change(screen.getByLabelText(/管理员保护地址/), { target: { value: '127.0.0.0/8\n203.0.113.8' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存防御策略' }));
-    expect(await screen.findByText('自动遏制')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText(/管理员保护地址/), { target: { value: '127.0.0.0/8\n203.0.113.8' } });
+      fireEvent.click(screen.getByRole('button', { name: '保存防御策略' }));
+      expect(await screen.findByText('自动遏制')).toBeInTheDocument();
+    } finally {
+      demoDashboard.policies.splice(0, demoDashboard.policies.length, ...originalPolicies);
+    }
   });
 });

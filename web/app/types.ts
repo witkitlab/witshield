@@ -119,6 +119,104 @@ export interface DefensePolicy {
   editable?: boolean;
 }
 
+export type IncidentStatus = 'open' | 'investigating' | 'awaiting_approval' | 'responding' | 'monitoring' | 'resolved' | 'dismissed';
+
+export interface SecurityIncident {
+  id: string;
+  deviceId: string;
+  correlationKey: string;
+  category: string;
+  severity: Severity;
+  status: IncidentStatus;
+  title: string;
+  summary: string;
+  signalCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastInvestigatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SecuritySignal {
+  id: string;
+  deviceId: string;
+  type: string;
+  category: string;
+  severity: Severity;
+  trust: 'verified' | 'unverified' | string;
+  subject?: string;
+  summary: string;
+  source: string;
+  sourceRef?: string;
+  occurredAt: string;
+  ingestedAt: string;
+}
+
+export interface InvestigationToolCall {
+  tool: string;
+  summary: string;
+  startedAt: string;
+  endedAt: string;
+}
+
+export interface Investigation {
+  id: string;
+  incidentId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  trigger: string;
+  hypothesis?: string;
+  conclusion?: string;
+  confidence: number;
+  model?: string;
+  toolCalls?: InvestigationToolCall[];
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResponseStep {
+  id: string;
+  actionType: string;
+  title: string;
+  rationale: string;
+  parameters: Record<string, unknown>;
+  risk: 'low' | 'medium' | 'high';
+  requiresApproval: boolean;
+  actionId?: string;
+}
+
+export interface ResponsePlan {
+  id: string;
+  incidentId: string;
+  investigationId?: string;
+  title: string;
+  rationale: string;
+  risk: 'low' | 'medium' | 'high';
+  status: 'proposed' | 'approved' | 'executing' | 'completed' | 'failed' | 'cancelled';
+  requiresApproval: boolean;
+  steps: ResponseStep[];
+}
+
+export interface PolicyGrant {
+  deviceId: string;
+  capability: string;
+  enabled: boolean;
+  mode: 'observe' | 'assist' | 'auto_low_risk' | 'enhanced';
+  allowedActionTypes: string[];
+  maxActionsPerHour: number;
+  emergencyStop: boolean;
+  updatedAt: string;
+}
+
+export interface IncidentDetail {
+  incident: SecurityIncident;
+  signals: SecuritySignal[];
+  investigations: Investigation[];
+  responsePlans: ResponsePlan[];
+  timeline: Array<{ id: number; actor: string; type: string; summary: string; createdAt: string }>;
+}
+
 export interface ScanSchedule {
   id: string;
   deviceId: string;
@@ -166,6 +264,8 @@ export interface DashboardSnapshot {
   reports: SecurityReport[];
   findings: Finding[];
   policies: DefensePolicy[];
+  incidents: SecurityIncident[];
+  policyGrants: PolicyGrant[];
   audit: AuditEvent[];
   securityEvents: SecurityObservation[];
   actions: ActionRecord[];

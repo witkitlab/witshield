@@ -277,3 +277,157 @@ type TemporaryBan struct {
 	Simulated bool      `json:"simulated"`
 	Status    string    `json:"status"`
 }
+
+// Signal is a normalized, immutable observation from a scanner, runtime
+// sensor, integration, or administrator. Payload is retained as untrusted data;
+// it is never interpreted as an instruction for AI or the privileged helper.
+type Signal struct {
+	ID         string          `json:"id"`
+	DeviceID   string          `json:"deviceId"`
+	Type       string          `json:"type"`
+	Category   string          `json:"category"`
+	Severity   Severity        `json:"severity"`
+	Trust      string          `json:"trust"`
+	Subject    string          `json:"subject,omitempty"`
+	Summary    string          `json:"summary"`
+	Source     string          `json:"source"`
+	SourceRef  string          `json:"sourceRef,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+	OccurredAt time.Time       `json:"occurredAt"`
+	IngestedAt time.Time       `json:"ingestedAt"`
+}
+
+type IncidentStatus string
+
+const (
+	IncidentOpen             IncidentStatus = "open"
+	IncidentInvestigating    IncidentStatus = "investigating"
+	IncidentAwaitingApproval IncidentStatus = "awaiting_approval"
+	IncidentResponding       IncidentStatus = "responding"
+	IncidentMonitoring       IncidentStatus = "monitoring"
+	IncidentResolved         IncidentStatus = "resolved"
+	IncidentDismissed        IncidentStatus = "dismissed"
+)
+
+// Incident is the durable case record that joins signals, AI investigations,
+// response plans, actions, and human decisions into one auditable timeline.
+type Incident struct {
+	ID                 string         `json:"id"`
+	DeviceID           string         `json:"deviceId"`
+	CorrelationKey     string         `json:"correlationKey"`
+	Category           string         `json:"category"`
+	Severity           Severity       `json:"severity"`
+	Status             IncidentStatus `json:"status"`
+	Title              string         `json:"title"`
+	Summary            string         `json:"summary"`
+	SignalCount        int            `json:"signalCount"`
+	FirstSeenAt        time.Time      `json:"firstSeenAt"`
+	LastSeenAt         time.Time      `json:"lastSeenAt"`
+	LastInvestigatedAt *time.Time     `json:"lastInvestigatedAt,omitempty"`
+	CreatedAt          time.Time      `json:"createdAt"`
+	UpdatedAt          time.Time      `json:"updatedAt"`
+}
+
+type InvestigationStatus string
+
+const (
+	InvestigationQueued    InvestigationStatus = "queued"
+	InvestigationRunning   InvestigationStatus = "running"
+	InvestigationCompleted InvestigationStatus = "completed"
+	InvestigationFailed    InvestigationStatus = "failed"
+)
+
+type InvestigationToolCall struct {
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Summary   string          `json:"summary"`
+	StartedAt time.Time       `json:"startedAt"`
+	EndedAt   time.Time       `json:"endedAt"`
+}
+
+type Investigation struct {
+	ID          string                  `json:"id"`
+	IncidentID  string                  `json:"incidentId"`
+	Status      InvestigationStatus     `json:"status"`
+	Trigger     string                  `json:"trigger"`
+	Hypothesis  string                  `json:"hypothesis,omitempty"`
+	Conclusion  string                  `json:"conclusion,omitempty"`
+	Confidence  int                     `json:"confidence"`
+	Model       string                  `json:"model,omitempty"`
+	ToolCalls   []InvestigationToolCall `json:"toolCalls,omitempty"`
+	Error       string                  `json:"error,omitempty"`
+	StartedAt   *time.Time              `json:"startedAt,omitempty"`
+	CompletedAt *time.Time              `json:"completedAt,omitempty"`
+	CreatedAt   time.Time               `json:"createdAt"`
+	UpdatedAt   time.Time               `json:"updatedAt"`
+}
+
+type ResponsePlanStatus string
+
+const (
+	ResponsePlanProposed  ResponsePlanStatus = "proposed"
+	ResponsePlanApproved  ResponsePlanStatus = "approved"
+	ResponsePlanExecuting ResponsePlanStatus = "executing"
+	ResponsePlanCompleted ResponsePlanStatus = "completed"
+	ResponsePlanFailed    ResponsePlanStatus = "failed"
+	ResponsePlanCancelled ResponsePlanStatus = "cancelled"
+)
+
+type ResponseStep struct {
+	ID               string          `json:"id"`
+	ActionType       string          `json:"actionType"`
+	Title            string          `json:"title"`
+	Rationale        string          `json:"rationale"`
+	Parameters       json.RawMessage `json:"parameters"`
+	Risk             string          `json:"risk"`
+	RequiresApproval bool            `json:"requiresApproval"`
+	ActionID         string          `json:"actionId,omitempty"`
+}
+
+type ResponsePlan struct {
+	ID               string             `json:"id"`
+	IncidentID       string             `json:"incidentId"`
+	InvestigationID  string             `json:"investigationId,omitempty"`
+	Title            string             `json:"title"`
+	Rationale        string             `json:"rationale"`
+	Risk             string             `json:"risk"`
+	Status           ResponsePlanStatus `json:"status"`
+	RequiresApproval bool               `json:"requiresApproval"`
+	Steps            []ResponseStep     `json:"steps"`
+	CreatedAt        time.Time          `json:"createdAt"`
+	UpdatedAt        time.Time          `json:"updatedAt"`
+}
+
+type AutonomyMode string
+
+const (
+	AutonomyObserve     AutonomyMode = "observe"
+	AutonomyAssist      AutonomyMode = "assist"
+	AutonomyAutoLowRisk AutonomyMode = "auto_low_risk"
+	AutonomyEnhanced    AutonomyMode = "enhanced"
+)
+
+// PolicyGrant is a capability grant, not a blanket AI permission. A model can
+// recommend only registered action types; this record decides whether the
+// Controller may investigate proactively and which deterministic, registered
+// actions belong to the capability. AI-proposed plans still require approval.
+type PolicyGrant struct {
+	DeviceID           string       `json:"deviceId"`
+	Capability         string       `json:"capability"`
+	Enabled            bool         `json:"enabled"`
+	Mode               AutonomyMode `json:"mode"`
+	AllowedActionTypes []string     `json:"allowedActionTypes"`
+	MaxActionsPerHour  int          `json:"maxActionsPerHour"`
+	EmergencyStop      bool         `json:"emergencyStop"`
+	UpdatedAt          time.Time    `json:"updatedAt"`
+}
+
+type IncidentTimelineEvent struct {
+	ID         int64           `json:"id"`
+	IncidentID string          `json:"incidentId"`
+	Actor      string          `json:"actor"`
+	Type       string          `json:"type"`
+	Summary    string          `json:"summary"`
+	Details    json.RawMessage `json:"details,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
+}

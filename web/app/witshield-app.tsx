@@ -47,7 +47,9 @@ import {
   demoMode,
   getServerStatus,
   getReport,
+  getIncident,
   getReportsForDevice,
+  investigateIncident,
   loadSnapshot,
   login,
   logout,
@@ -55,21 +57,24 @@ import {
   rollbackAction,
   saveAISettings,
   saveDefensePolicy,
+  savePolicyGrant,
+	prepareResponsePlanStep,
   saveNotificationSettings,
   setEmergencyStop,
   testAISettings,
   testNotifications,
   updateSchedule,
+  updateIncidentStatus,
 } from './api-client';
 import { demoDashboard } from './demo-data';
-import type { ActionPlan, AISettings, DashboardSnapshot, DefensePolicy, Finding, NotificationSettings, ScanSchedule, Section, SecurityReport, Severity } from './types';
+import type { ActionPlan, AISettings, DashboardSnapshot, DefensePolicy, Finding, IncidentDetail, NotificationSettings, PolicyGrant, ScanSchedule, Section, SecurityIncident, SecurityReport, Severity } from './types';
 
 const navigation: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'overview', label: '总览', icon: LayoutDashboard },
   { id: 'findings', label: '风险', icon: TriangleAlert },
   { id: 'reports', label: '报告', icon: FileText },
   { id: 'devices', label: '设备', icon: Server },
-  { id: 'policies', label: '防御策略', icon: Radar },
+  { id: 'policies', label: 'AI 安全工程师', icon: Sparkles },
   { id: 'audit', label: '执行记录', icon: ScrollText },
   { id: 'settings', label: '设置', icon: Settings },
 ];
@@ -215,7 +220,7 @@ export function WitShieldApp() {
           <div className="top-actions">
             <button className="icon-button" aria-label="查看需要关注的记录" onClick={() => setSection('audit')}><Bell size={17} />{dashboard.criticalFindings > 0 && <span className="notification-dot" />}</button>
             {section !== 'settings' && <button className="secondary-button" onClick={() => setSection('reports')}>查看报告</button>}
-            <button className="primary-button" onClick={handleScan} disabled={scanning || !selectedDevice}>
+            <button className="primary-button" aria-label={scanning ? '正在扫描' : '立即扫描'} onClick={handleScan} disabled={scanning || !selectedDevice}>
               {scanning ? <LoaderCircle className="spin" size={15} /> : <ScanSearch size={15} />}
               {scanning ? '扫描中' : '立即扫描'}
             </button>
@@ -232,13 +237,7 @@ export function WitShieldApp() {
           <DevicesView dashboard={dashboard} selectedDeviceId={selectedDeviceId} onSelect={setSelectedDeviceId} onEnroll={handleEnrollment} />
         )}
         {section === 'policies' && (
-          <PoliciesView policies={dashboard.policies} deviceId={selectedDevice?.id ?? ''} onUpdate={(policy) => {
-            setDashboard((current) => ({ ...current, policies: current.policies.map((item) => item.id === policy.id ? policy : item) }));
-            notify('防御策略已保存');
-          }} onEmergency={(active) => {
-            setDashboard((current) => ({ ...current, policies: current.policies.map((item) => item.deviceId === selectedDeviceId ? { ...item, emergencyStop: active } : item) }));
-            notify(active ? '已停止自动防御并取消所有尚未开始的动作' : '自动防御已恢复');
-          }} />
+			<SecurityEngineerView key={selectedDevice?.id ?? 'none'} dashboard={dashboard} deviceId={selectedDevice?.id ?? ''} onRefresh={refresh} notify={notify} />
         )}
         {section === 'audit' && <AuditView dashboard={dashboard} onChanged={async (message) => { notify(message); await refresh(); }} />}
         {section === 'settings' && <SettingsView settings={dashboard.ai} notifications={dashboard.notifications} schedules={dashboard.schedules} deviceId={selectedDevice?.id ?? ''} onScheduleUpdate={(schedule) => setDashboard((current) => ({ ...current, schedules: [...current.schedules.filter((item) => item.id !== schedule.id), schedule] }))} onSaved={(ai) => { setDashboard((current) => ({ ...current, ai })); notify('AI 设置已安全保存'); }} onNotificationsSaved={(notifications) => { setDashboard((current) => ({ ...current, notifications })); notify('通知渠道已安全保存'); }} onLogout={async () => { await logout(); setBootState('login'); }} />}
@@ -255,7 +254,7 @@ export function WitShieldApp() {
 }
 
 function sectionTitle(section: Section) {
-  return ({ overview: '服务器安全概览', findings: '风险与变化', reports: '扫描报告', devices: '受保护的设备', policies: '防御策略', audit: '执行与审计记录', settings: '巡御设置' } as const)[section];
+  return ({ overview: '服务器安全概览', findings: '风险与变化', reports: '扫描报告', devices: '受保护的设备', policies: 'AI 安全工程师', audit: '执行与审计记录', settings: '巡御设置' } as const)[section];
 }
 
 function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
@@ -504,6 +503,170 @@ function DevicesView({ dashboard, selectedDeviceId, onSelect, onEnroll }: { dash
   );
 }
 
+const capabilityCopy: Record<string, { title: string; description: string; icon: typeof Radar }> = {
+  'network.auth_bruteforce': { title: '登录与网络攻击', description: '关联认证失败和来源行为，必要时执行带时限的网络遏制。', icon: Radar },
+  'identity.persistence': { title: '账号与持久化', description: '关注特权账号、SSH Key、sudoers、计划任务和异常登录变化。', icon: KeyRound },
+  'workload.runtime': { title: '进程、服务与容器', description: '调查异常进程、systemd 服务、容器行为及非预期工作负载。', icon: Activity },
+  'file.integrity': { title: '文件与配置完整性', description: '关联敏感文件、权限和关键配置的异常变化。', icon: FileText },
+  'vulnerability.remediation': { title: '漏洞与补丁处置', description: '持续发现漏洞和待更新组件，生成可验证的修复计划。', icon: ShieldCheck },
+};
+
+const autonomyCopy: Record<PolicyGrant['mode'], { label: string; detail: string }> = {
+  observe: { label: '仅观察', detail: '记录信号，不调用 AI 主动调查' },
+  assist: { label: 'AI 协助', detail: '主动调查并提出方案，执行前询问你' },
+  auto_low_risk: { label: '自动低风险处置', detail: '主动调查；只有确定性规则预授权的可逆动作会自动执行' },
+  enhanced: { label: '增强自动化', detail: '也调查低风险信号；AI 计划和高风险动作仍需批准' },
+};
+
+const incidentStatusCopy: Record<SecurityIncident['status'], string> = {
+  open: '待调查', investigating: '调查中', awaiting_approval: '等待批准', responding: '处置中', monitoring: '持续观察', resolved: '已解决', dismissed: '已忽略',
+};
+
+function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
+  dashboard: DashboardSnapshot;
+  deviceId: string;
+  onRefresh: () => Promise<void>;
+  notify: (message: string) => void;
+}) {
+  const [selectedIncidentId, setSelectedIncidentId] = useState('');
+  const [detail, setDetail] = useState<IncidentDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [investigating, setInvestigating] = useState<string | null>(null);
+  const [savingGrant, setSavingGrant] = useState<string | null>(null);
+	const [prepared, setPrepared] = useState<{ stepId: string; plan: ActionPlan } | null>(null);
+	const [approving, setApproving] = useState(false);
+  const incidents = dashboard.incidents.filter((item) => item.deviceId === deviceId);
+  const grants = dashboard.policyGrants.filter((item) => item.deviceId === deviceId);
+  const policies = dashboard.policies.filter((item) => item.deviceId === deviceId);
+  const activeIncidents = incidents.filter((item) => item.status !== 'resolved' && item.status !== 'dismissed');
+  const automaticGrants = grants.filter((item) => item.enabled && (item.mode === 'auto_low_risk' || item.mode === 'enhanced') && !item.emergencyStop);
+  const assistedGrants = grants.filter((item) => item.enabled && item.mode === 'assist');
+  const presence = automaticGrants.length ? '自动防御已在授权边界内运行' : assistedGrants.length ? 'AI 安全工程师正在协助值守' : '确定性传感器正在观察';
+
+  async function openIncident(id: string) {
+    setSelectedIncidentId(id);
+    setDetailLoading(true);
+    try { setDetail(await getIncident(id)); }
+    catch (cause) { notify(cause instanceof Error ? cause.message : '读取事件详情失败'); }
+    finally { setDetailLoading(false); }
+  }
+
+  async function runInvestigation(id: string) {
+    setInvestigating(id);
+    try {
+      await investigateIncident(id);
+      notify('AI 安全工程师已完成本轮调查');
+      await onRefresh();
+      await openIncident(id);
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'AI 调查失败，事件仍保持打开');
+      await onRefresh();
+    } finally { setInvestigating(null); }
+  }
+
+  async function changeGrant(grant: PolicyGrant, patch: Partial<PolicyGrant>) {
+    setSavingGrant(grant.capability);
+    try {
+      await savePolicyGrant({ ...grant, ...patch });
+      notify('值守授权已保存');
+      await onRefresh();
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : '保存授权失败');
+    } finally { setSavingGrant(null); }
+  }
+
+  async function closeIncident(status: 'resolved' | 'dismissed') {
+    if (!selectedIncidentId) return;
+    try {
+      await updateIncidentStatus(selectedIncidentId, status);
+      notify(status === 'resolved' ? '事件已标记为解决' : '事件已忽略');
+      setSelectedIncidentId(''); setDetail(null);
+      await onRefresh();
+    } catch (cause) { notify(cause instanceof Error ? cause.message : '更新事件失败'); }
+  }
+
+	async function prepareStep(planId: string, stepId: string) {
+		try {
+			const plan = await prepareResponsePlanStep(planId, stepId);
+			setPrepared({ stepId, plan });
+		} catch (cause) {
+			notify(cause instanceof Error ? cause.message : '准备响应动作失败');
+		}
+	}
+
+	async function approvePrepared() {
+		if (!prepared) return;
+		setApproving(true);
+		try {
+			await approveAction(prepared.plan.id, prepared.plan.approvalNonce);
+			notify('响应动作已批准，Agent 将执行、验证并保留回滚状态');
+			setPrepared(null);
+			await onRefresh();
+			if (selectedIncidentId) await openIncident(selectedIncidentId);
+		} catch (cause) {
+			notify(cause instanceof Error ? cause.message : '批准响应动作失败');
+		} finally {
+			setApproving(false);
+		}
+	}
+
+  return (
+    <div className="security-engineer-page">
+      <section className="engineer-hero">
+        <div className="engineer-presence"><span className="engineer-avatar"><ShieldCheck size={28} /></span><div><p className="eyebrow">常驻 AI 安全工程师</p><h2>{presence}</h2><p>本地 Agent 持续收集确定性信号；AI 只在事件或巡检任务触发时使用受控的只读工具调查，所有执行仍经过能力授权和强类型 Playbook。</p></div></div>
+        <div className="engineer-metrics"><div><strong>{activeIncidents.length}</strong><span>进行中的事件</span></div><div><strong>{assistedGrants.length + automaticGrants.length}</strong><span>已启用能力</span></div><div><strong>{automaticGrants.length}</strong><span>允许自动处置</span></div></div>
+      </section>
+
+      <div className="engineer-layout">
+        <section className="incident-workbench">
+          <div className="engineer-section-heading"><div><p className="eyebrow">调查工作台</p><h2>安全事件</h2><p>相关信号会归并到一个事件中，避免把每条日志都当作独立告警。</p></div><span>{activeIncidents.length ? `${activeIncidents.length} 项需要关注` : '当前没有待调查事件'}</span></div>
+          <div className="incident-list">
+            {incidents.length === 0 && <div className="engineer-empty"><Sparkles size={22} /><h3>正在持续值守</h3><p>新的扫描发现和运行时信号会自动进入这里；没有事件不代表停止监测。</p></div>}
+            {incidents.map((incident) => <article className={selectedIncidentId === incident.id ? 'incident-card selected' : 'incident-card'} key={incident.id}>
+              <button className="incident-card-main" onClick={() => void openIncident(incident.id)}>
+                <span className={`severity ${incident.severity}`}>{severityName[incident.severity]}</span>
+                <span className="incident-copy"><span><strong>{incident.title}</strong><em className={`incident-status ${incident.status}`}>{incidentStatusCopy[incident.status]}</em></span><p>{incident.summary}</p><small>{incident.signalCount} 条相关信号 · 最近 {incident.lastSeenAt}</small></span>
+                <ChevronRight size={16} />
+              </button>
+              {(incident.status === 'open' || incident.status === 'monitoring') && <button className="investigate-button" onClick={() => void runInvestigation(incident.id)} disabled={investigating === incident.id || !dashboard.ai.model}>{investigating === incident.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{investigating === incident.id ? '调查中' : dashboard.ai.model ? 'AI 调查' : '先配置 AI'}</button>}
+            </article>)}
+          </div>
+
+          {selectedIncidentId && <section className="incident-detail" aria-live="polite">
+            {detailLoading && !detail ? <p className="incident-loading"><LoaderCircle className="spin" size={15} />正在读取调查记录…</p> : detail && <>
+              <header><div><p className="eyebrow">事件档案</p><h3>{detail.incident.title}</h3></div><button className="icon-button" onClick={() => { setSelectedIncidentId(''); setDetail(null); }} aria-label="关闭事件详情"><X size={16} /></button></header>
+              <p className="incident-conclusion">{detail.investigations[0]?.conclusion ?? detail.incident.summary}</p>
+              {detail.investigations[0] && <div className="investigation-summary"><div><strong>{detail.investigations[0].confidence}%</strong><span>调查置信度</span></div><div><strong>{detail.investigations[0].toolCalls?.length ?? 0}</strong><span>只读工具调用</span></div><div><strong>{detail.signals.length}</strong><span>保留证据</span></div></div>}
+              {detail.investigations[0]?.toolCalls?.length ? <div className="tool-trace"><h4>本轮调查使用的信息</h4>{detail.investigations[0].toolCalls.map((call) => <div key={`${call.tool}-${call.startedAt}`}><Check size={13} /><span><strong>{call.tool.replaceAll('_', ' ')}</strong><small>{call.summary}</small></span></div>)}</div> : null}
+              {detail.responsePlans[0] && <div className="response-plan-card"><span className={`plan-risk ${detail.responsePlans[0].risk}`}>{detail.responsePlans[0].risk === 'low' ? '低风险' : detail.responsePlans[0].risk === 'medium' ? '中风险' : '高风险'}</span><div><h4>{detail.responsePlans[0].title}</h4><p>{detail.responsePlans[0].rationale}</p>{detail.responsePlans[0].steps.map((step) => <div className="response-step" key={step.id}><ShieldCheck size={15} /><span><strong>{step.title}</strong><small>{step.rationale}</small></span>{step.actionId ? <em>已进入执行记录</em> : <button className="text-button" onClick={() => void prepareStep(detail.responsePlans[0].id, step.id)}>审查并执行</button>}</div>)}</div></div>}
+				{prepared && <div className="prepared-action"><div><p className="eyebrow">一次性动作批准</p><h4>{prepared.plan.title}</h4><p>{prepared.plan.steps[0]?.impact}</p><small>批准凭据 10 分钟后失效；执行前 Agent 和 Helper 会再次验证同一组参数。</small></div><div><button className="secondary-button" onClick={() => setPrepared(null)}>取消</button><button className="primary-button" onClick={() => void approvePrepared()} disabled={approving}>{approving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}批准这一步</button></div></div>}
+              <footer><button className="secondary-button" onClick={() => void closeIncident('dismissed')}>忽略事件</button><button className="primary-button" onClick={() => void closeIncident('resolved')}>标记为已解决</button></footer>
+            </>}
+          </section>}
+        </section>
+
+        <aside className="capability-panel">
+          <div className="engineer-section-heading compact"><div><p className="eyebrow">权限边界</p><h2>值守能力</h2><p>每类能力独立授权，不存在一个无限权限的总开关。</p></div></div>
+          <div className="capability-list">{grants.map((grant) => {
+            const meta = capabilityCopy[grant.capability] ?? { title: grant.capability, description: '受控安全能力', icon: ShieldCheck };
+            const Icon = meta.icon;
+            return <article className={grant.enabled ? 'capability-card enabled' : 'capability-card'} key={grant.capability}>
+              <header><span><Icon size={17} /></span><div><strong>{meta.title}</strong><p>{meta.description}</p></div><button className={grant.enabled ? 'switch on' : 'switch'} onClick={() => void changeGrant(grant, { enabled: !grant.enabled, mode: !grant.enabled && grant.mode === 'observe' ? 'assist' : grant.mode })} disabled={savingGrant === grant.capability} aria-label={grant.enabled ? `关闭${meta.title}` : `开启${meta.title}`}><span /></button></header>
+              <label><span>响应方式</span><select value={grant.mode} disabled={!grant.enabled || savingGrant === grant.capability} onChange={(event) => void changeGrant(grant, { mode: event.target.value as PolicyGrant['mode'] })}><option value="observe">仅观察</option><option value="assist">AI 协助</option><option value="auto_low_risk">自动低风险处置</option>{grant.capability !== 'network.auth_bruteforce' && <option value="enhanced">增强自动化</option>}</select></label>
+              <small>{autonomyCopy[grant.mode].detail}</small>
+            </article>;
+          })}</div>
+        </aside>
+      </div>
+
+      <details className="engineer-advanced">
+        <summary><span><Radar size={16} />登录攻击的确定性触发规则</span><small>配置阈值、封禁时长与管理员保护地址</small><ChevronRight size={15} /></summary>
+        <PoliciesView policies={policies} deviceId={deviceId} onUpdate={async () => { notify('确定性策略已保存'); await onRefresh(); }} onEmergency={async (active) => { notify(active ? '已停止尚未开始的自动动作' : '自动防御已恢复'); await onRefresh(); }} />
+      </details>
+    </div>
+  );
+}
+
 function PoliciesView({ policies, deviceId, onUpdate, onEmergency }: { policies: DefensePolicy[]; deviceId: string; onUpdate: (policy: DefensePolicy) => void; onEmergency: (active: boolean) => void }) {
   const [saving, setSaving] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
@@ -544,11 +707,19 @@ function PoliciesView({ policies, deviceId, onUpdate, onEmergency }: { policies:
       setPolicyError('开启自动封禁前，必须填写至少一个非回环的管理员 IP 或 CIDR，防止将自己锁在服务器外。');
       return;
     }
-    if (await update({ ...editing, allowlist })) setEditing(null);
+		if (await update({ ...editing, enabled: editing.mode === 'auto_contain' ? true : editing.enabled, allowlist })) setEditing(null);
   }
+	function bannerAction() {
+		if (emergencyActive || autoContainActive) {
+			void emergency();
+			return;
+		}
+		const firstEditable = devicePolicies.find((policy) => policy.editable !== false);
+		if (firstEditable) edit(firstEditable);
+	}
   return (
     <div className="page-surface">
-      <div className="defense-banner"><ShieldAlert size={21} /><div><strong>{emergencyActive ? '自动防御已紧急停止' : autoContainActive ? '自动防御正按预授权策略运行' : '自动防御默认关闭'}</strong><p>{emergencyActive ? '不会创建新动作，所有尚未开始的自动动作已取消；已经执行的限时封禁仍会按原定 TTL 自动解除。' : '只有确定性规则可以触发预授权、可逆且带有效期的动作。AI 不能自行扩大权限。'}</p></div><button className="danger-outline" onClick={() => void emergency()} disabled={!deviceId || saving === 'emergency'}>{saving === 'emergency' && <LoaderCircle className="spin" size={14} />}{emergencyActive ? '恢复自动防御' : '紧急停止'}</button></div>
+		<div className="defense-banner"><ShieldAlert size={21} /><div><strong>{emergencyActive ? 'SSH 自动遏制已紧急停止' : autoContainActive ? 'SSH 自动遏制正按预授权规则运行' : 'SSH 登录攻击目前只记录和建议'}</strong><p>{emergencyActive ? '不会创建新动作，所有尚未开始的自动动作已取消；已经执行的限时封禁仍会按原定 TTL 自动解除。' : '只有确定性认证日志规则可以触发限时封禁；AI 调查不能自行扩大这个权限。'}</p></div><button className={emergencyActive || autoContainActive ? 'danger-outline' : 'secondary-button'} onClick={bannerAction} disabled={!deviceId || saving === 'emergency'}>{saving === 'emergency' && <LoaderCircle className="spin" size={14} />}{emergencyActive ? '恢复自动防御' : autoContainActive ? '紧急停止' : '配置自动防御'}</button></div>
       {policyError && <p className="form-error" role="alert">{policyError}</p>}
       <div className="policy-list">{devicePolicies.length === 0 && <div className="empty-state"><Server size={20} /><p>连接设备后即可配置防御策略。</p></div>}{devicePolicies.map((policy) => (
         <article className="policy-card" key={policy.id}>

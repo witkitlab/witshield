@@ -25,7 +25,7 @@ const copy = {
     nav: { product: '产品', workflow: '工作方式', deploy: '部署', docs: '文档' },
     eyebrow: '开源 · 自托管 · 管理员掌控',
     title: '让每台服务器，\n都有一位懂边界的\n智能守卫。',
-    lead: '妙计巡御持续检查风险、解释影响，在你批准后完成修复，并在明确授权的边界内响应攻击。',
+    lead: '妙计巡御像一位常驻服务器的 AI 安全工程师：持续收集信号、主动调查事件，在你批准或明确预授权后执行可验证的处置。',
     install: '一行命令安装',
     github: '查看 GitHub',
     heroDemoLabel: '跨端控制台',
@@ -38,10 +38,10 @@ const copy = {
     openDemo: '打开完整演示',
     workflowEyebrow: '从发现到闭环',
     workflowTitle: '不是再发一封告警，\n而是把问题处理完。',
-    workflowLead: '规则负责事实，AI 负责解释，策略与管理员共同决定动作能否发生。每一步都有记录，每一次变更都要验证。',
+    workflowLead: '确定性传感器记录事实，AI 安全工程师主动关联事件并调查，策略与管理员共同决定动作能否发生。每一步都有记录，每一次变更都要验证。',
     workflowSteps: [
-      { number: '01', title: '持续巡检', body: '按天或按周检查账号、SSH、敏感权限、端口、防火墙、软件更新与容器风险。' },
-      { number: '02', title: '解释影响', body: '把可复现的证据交给你自己的 AI 服务，说明影响范围、优先级和处理思路。' },
+      { number: '01', title: '持续感知', body: '定时巡检与主机基线共同观察身份、持久化、文件完整性、运行时、容器和漏洞信号。' },
+      { number: '02', title: '主动调查', body: '事件进入队列后，AI 只读调用白名单工具，区分已知事实与推断，形成结论与结构化响应计划。' },
       { number: '03', title: '预览并批准', body: '先展示将要执行的结构化计划、影响和回滚路径，再由管理员决定是否继续。' },
       { number: '04', title: '执行与验证', body: '受限执行器完成变更，重新扫描验证结果；失败时按预设路径停止或回滚。' },
     ],
@@ -288,7 +288,7 @@ export function MarketingHome() {
         </div>
       </section>
 
-      <aside className={styles.statusNote}><span>v0.1</span><p>{text.currentStatus}</p></aside>
+      <aside className={styles.statusNote}><span>v0.2</span><p>{text.currentStatus}</p></aside>
 
       <footer className={styles.footer}>
         <a className={styles.logo} href="#top"><span className={styles.logoMark}><ShieldCheck /></span><span><strong>妙计巡御</strong><small>WitShield AI</small></span></a>

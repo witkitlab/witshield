@@ -212,6 +212,69 @@ CREATE TABLE IF NOT EXISTS temporary_bans (
   status TEXT NOT NULL DEFAULT 'active'
 );
 CREATE INDEX IF NOT EXISTS temporary_bans_active_idx ON temporary_bans(device_id, source_ip, expires_at);
+CREATE TABLE IF NOT EXISTS signals (
+  id TEXT NOT NULL, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL, trust TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL, source TEXT NOT NULL,
+  source_ref TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '{}',
+  occurred_at TEXT NOT NULL, ingested_at TEXT NOT NULL,
+  PRIMARY KEY(device_id,id)
+);
+CREATE INDEX IF NOT EXISTS signals_device_time_idx ON signals(device_id,occurred_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS signals_device_category_idx ON signals(device_id,category,occurred_at DESC);
+CREATE TABLE IF NOT EXISTS incidents (
+  id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  correlation_key TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL,
+  status TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL,
+  signal_count INTEGER NOT NULL DEFAULT 0 CHECK(signal_count >= 0),
+  first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_investigated_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS incidents_device_status_idx ON incidents(device_id,status,severity,last_seen_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS incidents_active_correlation_idx ON incidents(device_id,correlation_key)
+  WHERE status IN ('open','investigating','awaiting_approval','responding','monitoring');
+CREATE TABLE IF NOT EXISTS incident_signals (
+  incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL, signal_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(incident_id,device_id,signal_id),
+  FOREIGN KEY(device_id,signal_id) REFERENCES signals(device_id,id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS incident_signals_signal_idx ON incident_signals(device_id,signal_id);
+CREATE TABLE IF NOT EXISTS investigations (
+  id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  status TEXT NOT NULL, trigger TEXT NOT NULL, hypothesis TEXT NOT NULL DEFAULT '',
+  conclusion TEXT NOT NULL DEFAULT '', confidence INTEGER NOT NULL DEFAULT 0 CHECK(confidence BETWEEN 0 AND 100),
+  model TEXT NOT NULL DEFAULT '', tool_calls TEXT NOT NULL DEFAULT '[]', error TEXT NOT NULL DEFAULT '',
+  started_at TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS investigations_incident_idx ON investigations(incident_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS response_plans (
+  id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  investigation_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, rationale TEXT NOT NULL,
+  risk TEXT NOT NULL, status TEXT NOT NULL, requires_approval INTEGER NOT NULL,
+  steps TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS response_plans_incident_idx ON response_plans(incident_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS response_plan_actions (
+  plan_id TEXT NOT NULL REFERENCES response_plans(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL, action_id TEXT NOT NULL UNIQUE REFERENCES actions(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(plan_id,step_id)
+);
+CREATE TABLE IF NOT EXISTS policy_grants (
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, capability TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'observe',
+  allowed_action_types TEXT NOT NULL DEFAULT '[]', max_actions_per_hour INTEGER NOT NULL DEFAULT 10,
+  emergency_stop INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+  PRIMARY KEY(device_id,capability)
+);
+CREATE TABLE IF NOT EXISTS incident_timeline (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  actor TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
+  details TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS incident_timeline_incident_idx ON incident_timeline(incident_id,created_at,id);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_TIMESTAMP);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
@@ -349,7 +412,62 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_
 	if err = s.migrateCurrentFindings(ctx); err != nil {
 		return err
 	}
-	return s.migrateCurrentFindingCapacityV4(ctx)
+	if err = s.migrateCurrentFindingCapacityV4(ctx); err != nil {
+		return err
+	}
+	if err = s.migrateSecurityEngineerV5(ctx); err != nil {
+		return err
+	}
+	return s.migrateResponsePlanActionsV6(ctx)
+}
+
+// migrateSecurityEngineerV5 introduces the generic signal/incident/policy
+// domain without changing the legacy SSH defense API. The SSH policy is copied
+// into the first capability grant so existing installations preserve their
+// effective posture while new code moves to capability-scoped authorization.
+func (s *Store) migrateSecurityEngineerV5(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var applied int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version=5`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied != 0 {
+		return tx.Commit()
+	}
+	now := timeText(time.Now().UTC())
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO policy_grants(
+		device_id,capability,enabled,mode,allowed_action_types,max_actions_per_hour,emergency_stop,updated_at
+	) SELECT device_id,'network.auth_bruteforce',enabled,
+		CASE WHEN auto_ban=1 THEN 'auto_low_risk' WHEN enabled=1 THEN 'assist' ELSE 'observe' END,
+		'["temporary_ip_ban"]',max_bans_per_hour,emergency_stop,updated_at FROM defense_policies`); err != nil {
+		return fmt.Errorf("migrate SSH defense capability: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(5,?)`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) migrateResponsePlanActionsV6(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var applied int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version=6`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied == 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)`, timeText(time.Now().UTC())); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // migrateCurrentFindings builds the independent current-risk projection for

@@ -707,6 +707,9 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		}
 		outcome.Notification = &notificationEvent
 	}
+	if err = syncResponsePlanForActionTx(ctx, tx, meta.ActionID, now); err != nil {
+		return outcome, err
+	}
 	err = tx.Commit()
 	outcome.NewlyCompleted = err == nil
 	return outcome, err

@@ -583,7 +583,14 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func validSecurityEventType(eventType string) bool {
-	return eventType == "ssh_auth_failure" || eventType == "ssh_auth_failure_untrusted" || eventType == "ssh_auth_log_line_oversized_untrusted"
+	switch eventType {
+	case "ssh_auth_failure", "ssh_auth_failure_untrusted", "ssh_auth_log_line_oversized_untrusted",
+		"identity_state_changed", "file_integrity_changed", "schedule_definition_changed",
+		"service_definition_changed", "container_configuration_changed":
+		return true
+	default:
+		return false
+	}
 }
 
 func validAgentIdentifier(value string) bool { return agentIdentifier.MatchString(value) }

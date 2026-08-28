@@ -8,6 +8,8 @@ Key properties:
 
 - local-first single-server mode and a self-hosted, single-admin multi-device controller;
 - scheduled security posture checks with auditable evidence;
+- continuous change signals for accounts, privileged configuration, schedules, systemd services, and container configuration;
+- durable Signal → Incident → Investigation → ResponsePlan correlation and lifecycle;
 - optional, user-supplied OpenAI- or Anthropic-compatible API URL, key, and model;
 - approval, verification, rollback, and audit around remediation;
 - narrowly scoped, reversible, time-limited automatic containment;
@@ -25,6 +27,8 @@ Privileged action results are bound to the exact command and payload by the devi
 The base Docker observer mounts only `/etc/passwd` and the host IPv4 TCP table. Optional single-file overlays add SSH and IPv6 visibility only when those files exist; missing IPv6 data preserves visible IPv4 evidence while marking TCP coverage incomplete.
 
 The project is in early development. Automatic action is off by default. See the [Chinese README](README.md), [architecture](docs/architecture.md), [threat model](docs/threat-model.md), and [operations guide](docs/operations.md).
+
+When a per-device capability is explicitly enabled, a background security-engineer worker can investigate eligible incidents with five fixed, Controller-side, read-only queries. It cannot call the Agent, Helper, or a shell. Model output must be strict JSON; proposed typed actions are validated again and still require a fresh one-time approval. Only separately registered deterministic low-risk rules are eligible for pre-authorized automatic execution. See the [resident security engineer design](docs/security-engineer.md).
 
 ## Install on Ubuntu/Debian
 

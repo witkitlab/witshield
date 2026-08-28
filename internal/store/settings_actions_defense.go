@@ -229,6 +229,9 @@ func (s *Store) ApproveActionAndEnqueue(ctx context.Context, id, nonceHash, admi
 	if _, err = tx.ExecContext(ctx, `INSERT INTO action_audit(action_id,actor,event,details,created_at) VALUES(?,?,?,?,?)`, id, adminID, "approved_and_queued", `{}`, timeText(now)); err != nil {
 		return domain.Action{}, err
 	}
+	if err = markIncidentRespondingForActionTx(ctx, tx, id, adminID, now); err != nil {
+		return domain.Action{}, err
+	}
 	if err = tx.Commit(); err != nil {
 		return domain.Action{}, err
 	}
@@ -466,6 +469,19 @@ func (s *Store) PutDefensePolicyAndCancelQueued(ctx context.Context, x domain.De
 	defer tx.Rollback()
 	allow, _ := json.Marshal(x.Allowlist)
 	if _, err = tx.ExecContext(ctx, `INSERT INTO defense_policies(device_id,enabled,emergency_stop,auto_ban,failure_threshold,window_seconds,ban_duration_seconds,max_bans_per_hour,allowlist,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET enabled=excluded.enabled,emergency_stop=excluded.emergency_stop,auto_ban=excluded.auto_ban,failure_threshold=excluded.failure_threshold,window_seconds=excluded.window_seconds,ban_duration_seconds=excluded.ban_duration_seconds,max_bans_per_hour=excluded.max_bans_per_hour,allowlist=excluded.allowlist,updated_at=excluded.updated_at`, x.DeviceID, x.Enabled, x.EmergencyStop, x.AutoBan, x.FailureThreshold, int64(x.Window/time.Second), int64(x.BanDuration/time.Second), x.MaxBansPerHour, string(allow), timeText(x.UpdatedAt)); err != nil {
+		return 0, err
+	}
+	mode := domain.AutonomyObserve
+	if x.Enabled {
+		mode = domain.AutonomyAssist
+	}
+	if x.Enabled && x.AutoBan {
+		mode = domain.AutonomyAutoLowRisk
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO policy_grants(device_id,capability,enabled,mode,allowed_action_types,max_actions_per_hour,emergency_stop,updated_at)
+		VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(device_id,capability) DO UPDATE SET enabled=excluded.enabled,mode=excluded.mode,
+		allowed_action_types=excluded.allowed_action_types,max_actions_per_hour=excluded.max_actions_per_hour,emergency_stop=excluded.emergency_stop,updated_at=excluded.updated_at`,
+		x.DeviceID, "network.auth_bruteforce", x.Enabled, string(mode), `["temporary_ip_ban"]`, x.MaxBansPerHour, x.EmergencyStop, timeText(x.UpdatedAt)); err != nil {
 		return 0, err
 	}
 	if !x.EmergencyStop {

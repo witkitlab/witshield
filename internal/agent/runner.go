@@ -38,17 +38,18 @@ type Config struct {
 	Logger                                                             *slog.Logger
 }
 type Runner struct {
-	cfg     Config
-	state   State
-	client  *Client
-	queue   *Queue
-	scanner *scanner.Scanner
-	helper  *HelperClient
-	log     *slog.Logger
-	meta    map[string]string
-	scanMu  sync.Mutex
-	watcher *authLogWatcher
-	journal *journalWatcher
+	cfg      Config
+	state    State
+	client   *Client
+	queue    *Queue
+	scanner  *scanner.Scanner
+	helper   *HelperClient
+	log      *slog.Logger
+	meta     map[string]string
+	scanMu   sync.Mutex
+	watcher  *authLogWatcher
+	journal  *journalWatcher
+	baseline *baselineWatcher
 }
 
 func New(ctx context.Context, cfg Config) (*Runner, error) {
@@ -178,7 +179,8 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 			journal = &journalWatcher{executable: cfg.JournalctlPath, statePath: filepath.Join(cfg.DataDir, "journal.cursor"), runner: execJournalRunner{}}
 		}
 	}
-	return &Runner{cfg: cfg, state: state, client: client, queue: queue, scanner: scan, helper: helper, log: cfg.Logger, meta: meta, watcher: watcher, journal: journal}, nil
+	baseline := &baselineWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "security-baseline.json"), now: time.Now}
+	return &Runner{cfg: cfg, state: state, client: client, queue: queue, scanner: scan, helper: helper, log: cfg.Logger, meta: meta, watcher: watcher, journal: journal, baseline: baseline}, nil
 }
 func (r *Runner) Run(ctx context.Context) error {
 	_ = r.queue.Flush(ctx, r.client)
@@ -188,6 +190,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	go r.periodic(ctx, 30*time.Second, r.heartbeat)
 	go r.periodic(ctx, 15*time.Second, r.flush)
 	go r.periodic(ctx, 10*time.Second, r.pollSecurityEvents)
+	go r.periodic(ctx, time.Minute, r.pollHostBaseline)
 	// The Controller is the single authority for recurring scan schedules. The
 	// Agent performs one startup scan for immediate visibility, then only scans
 	// in response to a Controller command. ScanInterval is only an enrollment
@@ -221,6 +224,23 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (r *Runner) pollHostBaseline(ctx context.Context) error {
+	if r.baseline == nil {
+		return nil
+	}
+	events, err := r.baseline.Poll(ctx)
+	if err != nil {
+		return err
+	}
+	if err = r.queueSecurityEvents(events); err != nil {
+		return err
+	}
+	if err = r.baseline.Commit(); err != nil {
+		return err
+	}
+	return r.queue.Flush(ctx, r.client)
 }
 func (r *Runner) periodic(ctx context.Context, every time.Duration, fn func(context.Context) error) {
 	ticker := time.NewTicker(every)
