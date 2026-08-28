@@ -16,6 +16,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { BrandMark } from './brand-mark';
 import styles from './marketing.module.css';
 
 type Language = 'zh' | 'en';
@@ -156,7 +157,7 @@ export function MarketingHome() {
     <main className={styles.site}>
       <header className={styles.header}>
         <a className={styles.logo} href="#top" aria-label={language === 'zh' ? '妙计巡御首页' : 'WitShield AI home'}>
-          <span className={styles.logoMark}><ShieldCheck size={17} strokeWidth={2.2} /></span>
+          <span className={styles.logoMark}><BrandMark /></span>
           <span><strong>妙计巡御</strong><small>WitShield AI</small></span>
         </a>
         <nav className={styles.nav} aria-label={language === 'zh' ? '官网导航' : 'Site navigation'}>
@@ -285,7 +286,7 @@ export function MarketingHome() {
       <aside className={styles.statusNote}><span>v0.1</span><p>{text.currentStatus}</p></aside>
 
       <footer className={styles.footer}>
-        <a className={styles.logo} href="#top"><span className={styles.logoMark}><ShieldCheck size={17} /></span><span><strong>妙计巡御</strong><small>WitShield AI</small></span></a>
+        <a className={styles.logo} href="#top"><span className={styles.logoMark}><BrandMark /></span><span><strong>妙计巡御</strong><small>WitShield AI</small></span></a>
         <p>{text.footerLine}</p>
         <div><a href="https://github.com/witkitlab/witshield">GitHub</a><a href="https://github.com/witkitlab/witshield/blob/main/SECURITY.md">Security</a><span>Apache 2.0</span></div>
       </footer>

@@ -24,7 +24,8 @@
 }
 
 .logo { display: inline-flex; align-items: center; gap: 11px; width: max-content; color: inherit; text-decoration: none; }
-.logoMark { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: white; background: var(--site-ink); }
+.logoMark { width: 34px; height: 34px; border: 1px solid #d1dad6; border-radius: 10px; display: grid; place-items: center; color: #1d4b3e; background: #e6ece8; box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%); }
+.logoMark svg { width: 19px; height: 19px; }
 .logo strong, .logo small { display: block; }
 .logo strong { font-size: 15px; letter-spacing: -.02em; }
 .logo small { margin-top: 1px; color: var(--site-muted); font-size: 9px; letter-spacing: .06em; }
