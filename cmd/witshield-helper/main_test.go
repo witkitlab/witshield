@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/witkitlab/witshield/internal/action"
+	"github.com/witkitlab/witshield/internal/observation"
 )
 
 type helperTestPlaybook struct{}
@@ -164,6 +165,52 @@ func TestHelperProtocolReturnsRollbackPayloadSeparatelyFromAudit(t *testing.T) {
 	auditJSON, _ := json.Marshal(response.AuditReceipt)
 	if strings.Contains(string(auditJSON), "sensitive-rollback-material") || strings.Contains(string(auditJSON), "snapshot") {
 		t.Fatalf("rollback material leaked into audit receipt: %s", auditJSON)
+	}
+}
+
+func TestHelperProtocolServesFixedReadOnlyProcessObservation(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "witshield-helper-observation-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	socketPath := filepath.Join(root, "helper.sock")
+	listener, err := listenUnix(socketPath, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	token := []byte(strings.Repeat("e", 64))
+	called := 0
+	helper := &server{token: token, observeProcesses: func(context.Context) (observation.ProcessSnapshot, error) {
+		called++
+		return observation.ProcessSnapshot{Processes: []observation.Process{{Identity: strings.Repeat("f", 64), EventType: "deleted_executable_process_running", Reason: "deleted", Name: "daemon", Executable: "/usr/bin/daemon (deleted)", PID: 42, PPID: 1, UID: 0}}, Observed: 1}, nil
+	}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		connection, acceptErr := listener.AcceptUnix()
+		if acceptErr == nil {
+			helper.handle(context.Background(), connection)
+		}
+	}()
+	client, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := json.Marshal(map[string]any{"token": string(token), "kind": observation.ProcessQueryKind})
+	if _, err = client.Write(append(request, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(client).ReadBytes('\n')
+	client.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	var response helperResponse
+	if err = json.Unmarshal(line, &response); err != nil || !response.OK || len(response.Processes) != 1 || response.ProcessObserved != 1 || called != 1 {
+		t.Fatalf("response=%s called=%d err=%v", line, called, err)
 	}
 }
 

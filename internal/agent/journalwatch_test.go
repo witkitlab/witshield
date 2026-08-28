@@ -59,6 +59,27 @@ func TestJournalParserDropsHistoricalDefenseEvents(t *testing.T) {
 	}
 }
 
+func TestJournalParserRecordsSuccessfulSSHAsInvestigationOnlyEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	data := []byte(fmt.Sprintf(`{"MESSAGE":"Accepted publickey for deploy from 203.0.113.44 port 5512 ssh2","__CURSOR":"accepted","__REALTIME_TIMESTAMP":"%d"}`+"\n-- cursor: accepted\n", now.UnixMicro()))
+	events, cursor, err := parseJournalOutput(data, true, now)
+	if err != nil || cursor != "accepted" || len(events) != 1 || events[0].Type != "ssh_auth_success" || events[0].SourceIP != "203.0.113.44" {
+		t.Fatalf("events=%#v cursor=%q err=%v", events, cursor, err)
+	}
+	if !strings.Contains(string(events[0].Payload), `"automaticActionEligible":false`) || !strings.Contains(string(events[0].Payload), `"principal":"deploy"`) {
+		t.Fatalf("successful login payload is incomplete: %s", events[0].Payload)
+	}
+}
+
+func TestJournalParserRecognizesKeyboardInteractiveSSHSuccess(t *testing.T) {
+	now := time.Now().UTC()
+	data := []byte(fmt.Sprintf(`{"MESSAGE":"Accepted keyboard-interactive/pam for ops$ from 2001:db8::44 port 5512 ssh2","__CURSOR":"accepted-pam","__REALTIME_TIMESTAMP":"%d"}`+"\n-- cursor: accepted-pam\n", now.UnixMicro()))
+	events, _, err := parseJournalOutput(data, true, now)
+	if err != nil || len(events) != 1 || events[0].Type != "ssh_auth_success" || events[0].SourceIP != "2001:db8::44" || !strings.Contains(string(events[0].Payload), `"method":"keyboard-interactive/pam"`) {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
 func TestJournalCursorFileIsPrivate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cursor")
 	w := journalWatcher{statePath: path}

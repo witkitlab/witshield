@@ -535,6 +535,8 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
   const [savingGrant, setSavingGrant] = useState<string | null>(null);
 	const [prepared, setPrepared] = useState<{ stepId: string; plan: ActionPlan } | null>(null);
 	const [approving, setApproving] = useState(false);
+	const [incidentScope, setIncidentScope] = useState<'active' | 'all' | 'closed'>('active');
+	const [severityFilter, setSeverityFilter] = useState<'all' | Severity>('all');
   const incidents = dashboard.incidents.filter((item) => item.deviceId === deviceId);
   const grants = dashboard.policyGrants.filter((item) => item.deviceId === deviceId);
   const policies = dashboard.policies.filter((item) => item.deviceId === deviceId);
@@ -542,9 +544,19 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
   const automaticGrants = grants.filter((item) => item.enabled && (item.mode === 'auto_low_risk' || item.mode === 'enhanced') && !item.emergencyStop);
   const assistedGrants = grants.filter((item) => item.enabled && item.mode === 'assist');
   const presence = automaticGrants.length ? '自动防御已在授权边界内运行' : assistedGrants.length ? 'AI 安全工程师正在协助值守' : '确定性传感器正在观察';
+	const filteredIncidents = incidents.filter((incident) => {
+		const closed = incident.status === 'resolved' || incident.status === 'dismissed';
+		if (incidentScope === 'active' && closed) return false;
+		if (incidentScope === 'closed' && !closed) return false;
+		return severityFilter === 'all' || incident.severity === severityFilter;
+	});
+	const selectedDevice = dashboard.devices.find((device) => device.id === deviceId);
+	const latestInvestigation = detail?.investigations[0];
 
   async function openIncident(id: string) {
     setSelectedIncidentId(id);
+	setDetail(null);
+	setPrepared(null);
     setDetailLoading(true);
     try { setDetail(await getIncident(id)); }
     catch (cause) { notify(cause instanceof Error ? cause.message : '读取事件详情失败'); }
@@ -580,7 +592,7 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
     try {
       await updateIncidentStatus(selectedIncidentId, status);
       notify(status === 'resolved' ? '事件已标记为解决' : '事件已忽略');
-      setSelectedIncidentId(''); setDetail(null);
+      setSelectedIncidentId(''); setDetail(null); setPrepared(null);
       await onRefresh();
     } catch (cause) { notify(cause instanceof Error ? cause.message : '更新事件失败'); }
   }
@@ -617,32 +629,54 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
         <div className="engineer-metrics"><div><strong>{activeIncidents.length}</strong><span>进行中的事件</span></div><div><strong>{assistedGrants.length + automaticGrants.length}</strong><span>已启用能力</span></div><div><strong>{automaticGrants.length}</strong><span>允许自动处置</span></div></div>
       </section>
 
+		<section className="sensor-ribbon" aria-label="安全感知范围">
+			<div><span className="sensor-capability" /><strong>配置完整性</strong><small>20 类关键路径</small></div>
+			<div><span className="sensor-capability" /><strong>认证活动</strong><small>SSH 可信事件流</small></div>
+			<div><span className="sensor-capability" /><strong>网络暴露</strong><small>TCP 监听变化</small></div>
+			<div><span className="sensor-capability" /><strong>运行时进程</strong><small>2 类高价值状态</small></div>
+			<div><span className={selectedDevice?.status === 'online' ? 'sensor-live' : 'sensor-idle'} /><strong>确定性巡检</strong><small>{selectedDevice?.status === 'online' ? '设备在线' : '等待设备连接'}</small></div>
+		</section>
+
       <div className="engineer-layout">
         <section className="incident-workbench">
-          <div className="engineer-section-heading"><div><p className="eyebrow">调查工作台</p><h2>安全事件</h2><p>相关信号会归并到一个事件中，避免把每条日志都当作独立告警。</p></div><span>{activeIncidents.length ? `${activeIncidents.length} 项需要关注` : '当前没有待调查事件'}</span></div>
-          <div className="incident-list">
-            {incidents.length === 0 && <div className="engineer-empty"><Sparkles size={22} /><h3>正在持续值守</h3><p>新的扫描发现和运行时信号会自动进入这里；没有事件不代表停止监测。</p></div>}
-            {incidents.map((incident) => <article className={selectedIncidentId === incident.id ? 'incident-card selected' : 'incident-card'} key={incident.id}>
-              <button className="incident-card-main" onClick={() => void openIncident(incident.id)}>
-                <span className={`severity ${incident.severity}`}>{severityName[incident.severity]}</span>
-                <span className="incident-copy"><span><strong>{incident.title}</strong><em className={`incident-status ${incident.status}`}>{incidentStatusCopy[incident.status]}</em></span><p>{incident.summary}</p><small>{incident.signalCount} 条相关信号 · 最近 {incident.lastSeenAt}</small></span>
-                <ChevronRight size={16} />
-              </button>
-              {(incident.status === 'open' || incident.status === 'monitoring') && <button className="investigate-button" onClick={() => void runInvestigation(incident.id)} disabled={investigating === incident.id || !dashboard.ai.model}>{investigating === incident.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{investigating === incident.id ? '调查中' : dashboard.ai.model ? 'AI 调查' : '先配置 AI'}</button>}
-            </article>)}
-          </div>
+			<div className="engineer-section-heading"><div><p className="eyebrow">调查工作台</p><h2>安全事件</h2><p>一个事件档案串联信号、AI 调查、响应计划、管理员决策和执行回执。</p></div><span>{activeIncidents.length ? `${activeIncidents.length} 项需要关注` : '当前没有待调查事件'}</span></div>
+			<div className="incident-toolbar" aria-label="筛选安全事件">
+				<div className="segmented-control">{(['active', 'all', 'closed'] as const).map((scope) => <button className={incidentScope === scope ? 'active' : ''} key={scope} onClick={() => { setIncidentScope(scope); setSelectedIncidentId(''); setDetail(null); setPrepared(null); }}>{scope === 'active' ? '进行中' : scope === 'all' ? '全部' : '已关闭'}</button>)}</div>
+				<select aria-label="按风险等级筛选" value={severityFilter} onChange={(event) => { setSeverityFilter(event.target.value as 'all' | Severity); setSelectedIncidentId(''); setDetail(null); setPrepared(null); }}><option value="all">全部风险</option><option value="critical">严重</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option><option value="info">提示</option></select>
+			</div>
+			<div className="incident-case-layout">
+				<div className="incident-queue">
+					{filteredIncidents.length === 0 && <div className="engineer-empty"><Sparkles size={22} /><h3>正在持续值守</h3><p>当前筛选范围没有事件；传感器和确定性巡检仍在运行。</p></div>}
+					{filteredIncidents.map((incident) => <article className={selectedIncidentId === incident.id ? 'incident-card selected' : 'incident-card'} key={incident.id}>
+						<button className="incident-card-main" onClick={() => void openIncident(incident.id)}>
+							<span className={`severity ${incident.severity}`}>{severityName[incident.severity]}</span>
+							<span className="incident-copy"><span><strong>{incident.title}</strong><em className={`incident-status ${incident.status}`}>{incidentStatusCopy[incident.status]}</em></span><p>{incident.summary}</p><small>{incident.signalCount} 条信号 · {incident.lastSeenAt}</small></span>
+							<ChevronRight size={16} />
+						</button>
+						{(incident.status === 'open' || incident.status === 'monitoring') && <button className="investigate-button" onClick={() => void runInvestigation(incident.id)} disabled={investigating === incident.id || !dashboard.ai.model}>{investigating === incident.id ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{investigating === incident.id ? '调查中' : dashboard.ai.model ? 'AI 调查' : '先配置 AI'}</button>}
+					</article>)}
+				</div>
 
-          {selectedIncidentId && <section className="incident-detail" aria-live="polite">
-            {detailLoading && !detail ? <p className="incident-loading"><LoaderCircle className="spin" size={15} />正在读取调查记录…</p> : detail && <>
-              <header><div><p className="eyebrow">事件档案</p><h3>{detail.incident.title}</h3></div><button className="icon-button" onClick={() => { setSelectedIncidentId(''); setDetail(null); }} aria-label="关闭事件详情"><X size={16} /></button></header>
-              <p className="incident-conclusion">{detail.investigations[0]?.conclusion ?? detail.incident.summary}</p>
-              {detail.investigations[0] && <div className="investigation-summary"><div><strong>{detail.investigations[0].confidence}%</strong><span>调查置信度</span></div><div><strong>{detail.investigations[0].toolCalls?.length ?? 0}</strong><span>只读工具调用</span></div><div><strong>{detail.signals.length}</strong><span>保留证据</span></div></div>}
-              {detail.investigations[0]?.toolCalls?.length ? <div className="tool-trace"><h4>本轮调查使用的信息</h4>{detail.investigations[0].toolCalls.map((call) => <div key={`${call.tool}-${call.startedAt}`}><Check size={13} /><span><strong>{call.tool.replaceAll('_', ' ')}</strong><small>{call.summary}</small></span></div>)}</div> : null}
-              {detail.responsePlans[0] && <div className="response-plan-card"><span className={`plan-risk ${detail.responsePlans[0].risk}`}>{detail.responsePlans[0].risk === 'low' ? '低风险' : detail.responsePlans[0].risk === 'medium' ? '中风险' : '高风险'}</span><div><h4>{detail.responsePlans[0].title}</h4><p>{detail.responsePlans[0].rationale}</p>{detail.responsePlans[0].steps.map((step) => <div className="response-step" key={step.id}><ShieldCheck size={15} /><span><strong>{step.title}</strong><small>{step.rationale}</small></span>{step.actionId ? <em>已进入执行记录</em> : <button className="text-button" onClick={() => void prepareStep(detail.responsePlans[0].id, step.id)}>审查并执行</button>}</div>)}</div></div>}
-				{prepared && <div className="prepared-action"><div><p className="eyebrow">一次性动作批准</p><h4>{prepared.plan.title}</h4><p>{prepared.plan.steps[0]?.impact}</p><small>批准凭据 10 分钟后失效；执行前 Agent 和 Helper 会再次验证同一组参数。</small></div><div><button className="secondary-button" onClick={() => setPrepared(null)}>取消</button><button className="primary-button" onClick={() => void approvePrepared()} disabled={approving}>{approving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}批准这一步</button></div></div>}
-              <footer><button className="secondary-button" onClick={() => void closeIncident('dismissed')}>忽略事件</button><button className="primary-button" onClick={() => void closeIncident('resolved')}>标记为已解决</button></footer>
-            </>}
-          </section>}
+				<section className={selectedIncidentId ? 'incident-detail active' : 'incident-detail'} aria-live="polite">
+					{!selectedIncidentId && <div className="case-placeholder"><ShieldCheck size={26} /><h3>选择一个事件开始调查</h3><p>这里会按时间顺序展示事实证据、AI 判断、不确定性、响应计划和真实执行结果。</p></div>}
+					{detailLoading && !detail ? <p className="incident-loading"><LoaderCircle className="spin" size={15} />正在读取调查记录…</p> : detail && <>
+						<header className="case-header"><div><span className={`severity ${detail.incident.severity}`}>{severityName[detail.incident.severity]}</span><p className="eyebrow">{detail.incident.category.replaceAll('_', ' ')}</p><h3>{detail.incident.title}</h3><small>{detail.incident.signalCount} 条信号 · 首次 {detail.incident.firstSeenAt} · 最近 {detail.incident.lastSeenAt}</small></div><button className="icon-button" onClick={() => { setSelectedIncidentId(''); setDetail(null); }} aria-label="关闭事件详情"><X size={16} /></button></header>
+						<section className="case-conclusion"><div><Sparkles size={16} /><span><strong>{latestInvestigation ? 'AI 调查结论' : '等待调查'}</strong><small>{latestInvestigation?.hypothesis ?? '当前仅展示确定性事件摘要'}</small></span><em>{latestInvestigation ? `${latestInvestigation.confidence}% 置信度` : incidentStatusCopy[detail.incident.status]}</em></div><p>{latestInvestigation?.conclusion ?? detail.incident.summary}</p></section>
+						{latestInvestigation && <div className="investigation-summary"><div><strong>{latestInvestigation.observations?.length ?? 0}</strong><span>已确认事实</span></div><div><strong>{latestInvestigation.uncertainties?.length ?? 0}</strong><span>关键未知</span></div><div><strong>{latestInvestigation.toolCalls?.length ?? 0}</strong><span>只读工具</span></div><div><strong>{detail.signals.length}</strong><span>保留信号</span></div></div>}
+						{latestInvestigation && <div className="case-evidence-grid">
+							<section><header><CheckCircle2 size={15} /><strong>已确认事实</strong></header><ul>{(latestInvestigation.observations?.length ? latestInvestigation.observations : ['本轮没有输出可直接确认的新事实。']).map((item) => <li key={item}>{item}</li>)}</ul></section>
+							<section><header><TriangleAlert size={15} /><strong>仍需确认</strong></header><ul>{(latestInvestigation.uncertainties?.length ? latestInvestigation.uncertainties : ['当前没有额外标记的关键未知。']).map((item) => <li key={item}>{item}</li>)}</ul></section>
+							<section><header><ScanSearch size={15} /><strong>下一步只读检查</strong></header><ul>{(latestInvestigation.nextChecks?.length ? latestInvestigation.nextChecks : ['继续监测新的相关信号。']).map((item) => <li key={item}>{item}</li>)}</ul></section>
+						</div>}
+						{detail.signals.length > 0 && <section className="case-section"><header><div><p className="eyebrow">Evidence</p><h4>事件证据</h4></div><span>{detail.signals.length} 条</span></header><div className="signal-list">{detail.signals.slice(0, 12).map((signal) => <article key={signal.id}><span className={`signal-dot ${signal.severity}`} /><div><strong>{signal.summary}</strong><p>{signal.type.replaceAll('_', ' ')}{signal.subject ? ` · ${signal.subject}` : ''}</p><small>{signal.source.replaceAll('_', ' ')} · {signal.occurredAt}</small></div><em className={signal.trust === 'verified' ? 'verified' : ''}>{signal.trust === 'verified' ? '已验证' : '未验证'}</em></article>)}</div></section>}
+						{latestInvestigation?.toolCalls?.length ? <section className="case-section"><header><div><p className="eyebrow">Read-only trace</p><h4>调查工具记录</h4></div></header><div className="tool-trace">{latestInvestigation.toolCalls.map((call) => <div key={`${call.tool}-${call.startedAt}`}><Check size={13} /><span><strong>{call.tool.replaceAll('_', ' ')}</strong><small>{call.summary}</small></span></div>)}</div></section> : null}
+						{detail.responsePlans[0] && <div className="response-plan-card"><span className={`plan-risk ${detail.responsePlans[0].risk}`}>{detail.responsePlans[0].risk === 'low' ? '低风险' : detail.responsePlans[0].risk === 'medium' ? '中风险' : '高风险'}</span><div><h4>{detail.responsePlans[0].title}</h4><p>{detail.responsePlans[0].rationale}</p>{detail.responsePlans[0].steps.map((step) => <div className="response-step" key={step.id}><ShieldCheck size={15} /><span><strong>{step.title}</strong><small>{step.rationale}</small></span>{step.actionId ? <em>已进入执行记录</em> : <button className="text-button" onClick={() => void prepareStep(detail.responsePlans[0].id, step.id)}>审查并执行</button>}</div>)}</div></div>}
+						{prepared && <div className="prepared-action"><div><p className="eyebrow">一次性动作批准</p><h4>{prepared.plan.title}</h4><p>{prepared.plan.steps[0]?.impact}</p><small>批准凭据 10 分钟后失效；执行前 Agent 和 Helper 会再次验证同一组参数。</small></div><div><button className="secondary-button" onClick={() => setPrepared(null)}>取消</button><button className="primary-button" onClick={() => void approvePrepared()} disabled={approving}>{approving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}批准这一步</button></div></div>}
+						{detail.timeline.length > 0 && <section className="case-section"><header><div><p className="eyebrow">Case history</p><h4>事件时间线</h4></div></header><div className="case-timeline">{detail.timeline.slice(-12).map((event) => <div key={event.id}><span /><p><strong>{event.summary}</strong><small>{event.actor} · {event.createdAt}</small></p></div>)}</div></section>}
+						{detail.incident.status !== 'resolved' && detail.incident.status !== 'dismissed' && <footer><button className="secondary-button" onClick={() => void closeIncident('dismissed')}>忽略事件</button><button className="primary-button" onClick={() => void closeIncident('resolved')}>标记为已解决</button></footer>}
+					</>}
+				</section>
+			</div>
         </section>
 
         <aside className="capability-panel">

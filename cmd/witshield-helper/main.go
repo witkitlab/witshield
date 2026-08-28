@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/witkitlab/witshield/internal/action"
+	"github.com/witkitlab/witshield/internal/observation"
 )
 
 const (
@@ -55,6 +56,7 @@ func (values *stringFlags) Set(value string) error {
 
 type helperRequest struct {
 	Token           string           `json:"token,omitempty"`
+	Kind            string           `json:"kind,omitempty"`
 	AttemptID       string           `json:"attemptId"`
 	ActionID        string           `json:"actionId"`
 	Type            action.Type      `json:"type"`
@@ -65,20 +67,24 @@ type helperRequest struct {
 }
 
 type helperResponse struct {
-	OK              bool            `json:"ok"`
-	Result          *action.Result  `json:"result,omitempty"`
-	RollbackPayload json.RawMessage `json:"rollbackPayload,omitempty"`
-	AuditReceipt    *action.Receipt `json:"auditReceipt,omitempty"`
-	Error           string          `json:"error,omitempty"`
+	OK               bool                  `json:"ok"`
+	Result           *action.Result        `json:"result,omitempty"`
+	RollbackPayload  json.RawMessage       `json:"rollbackPayload,omitempty"`
+	AuditReceipt     *action.Receipt       `json:"auditReceipt,omitempty"`
+	Error            string                `json:"error,omitempty"`
+	Processes        []observation.Process `json:"processes,omitempty"`
+	ProcessObserved  int                   `json:"processObserved,omitempty"`
+	ProcessTruncated bool                  `json:"processTruncated,omitempty"`
 }
 
 type server struct {
-	engine   *action.Engine
-	receipts *receiptCache
-	token    []byte
-	slots    chan struct{}
-	wg       sync.WaitGroup
-	actionMu sync.Mutex
+	engine           *action.Engine
+	receipts         *receiptCache
+	token            []byte
+	slots            chan struct{}
+	wg               sync.WaitGroup
+	actionMu         sync.Mutex
+	observeProcesses func(context.Context) (observation.ProcessSnapshot, error)
 }
 
 func main() {
@@ -148,7 +154,9 @@ func main() {
 		_ = listener.Close()
 	}()
 	log.Printf("witshield-helper listening on %s with %d typed playbooks", *socketPath, len(engine.Types()))
-	if err := (&server{engine: engine, receipts: receipts, token: token}).serve(ctx, listener); err != nil && !errors.Is(err, net.ErrClosed) {
+	if err := (&server{engine: engine, receipts: receipts, token: token, observeProcesses: func(ctx context.Context) (observation.ProcessSnapshot, error) {
+		return observation.SuspiciousProcesses(ctx, "/")
+	}}).serve(ctx, listener); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Fatalf("helper server failed: %v", err)
 	}
 }
@@ -520,6 +528,10 @@ func (s *server) handle(serverContext context.Context, connection *net.UnixConn)
 		return
 	}
 	request.Token = ""
+	if request.Kind != "" {
+		s.handleObservation(serverContext, connection, request)
+		return
+	}
 	if !attemptIDPattern.MatchString(request.AttemptID) {
 		s.writeResponse(connection, helperResponse{Error: "invalid attempt identity"})
 		return
@@ -590,6 +602,26 @@ func (s *server) handle(serverContext context.Context, connection *net.UnixConn)
 	if err := s.writeResponse(connection, response); err != nil {
 		log.Printf("failed to return durable helper receipt for action %q: %v", request.ActionID, err)
 	}
+}
+
+func (s *server) handleObservation(serverContext context.Context, connection *net.UnixConn, request helperRequest) {
+	if request.Kind != observation.ProcessQueryKind || request.AttemptID != "" || request.ActionID != "" || request.Type != "" || request.Operation != "" ||
+		len(request.Parameters) != 0 || len(request.State) != 0 || len(request.RollbackPayload) != 0 || s.observeProcesses == nil {
+		s.writeResponse(connection, helperResponse{Error: "invalid observation request"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(serverContext, 10*time.Second)
+	defer cancel()
+	snapshot, err := s.observeProcesses(ctx)
+	if err != nil {
+		s.writeResponse(connection, helperResponse{Error: "process observation failed"})
+		return
+	}
+	if len(snapshot.Processes) > 256 || snapshot.Observed < len(snapshot.Processes) {
+		s.writeResponse(connection, helperResponse{Error: "process observation exceeded safe capacity"})
+		return
+	}
+	s.writeResponse(connection, helperResponse{OK: true, Processes: snapshot.Processes, ProcessObserved: snapshot.Observed, ProcessTruncated: snapshot.Truncated})
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {

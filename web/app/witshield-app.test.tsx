@@ -205,6 +205,33 @@ describe('WitShieldApp', () => {
     expect(await screen.findByText(/当前是交互演示/)).toBeInTheDocument();
   });
 
+  it('presents sensor scope separately from live status and opens a structured incident case', async () => {
+    const incident = structuredClone(demoDashboard.incidents[0]);
+    vi.spyOn(apiClient, 'getIncident').mockResolvedValueOnce({
+      incident,
+      signals: [],
+      investigations: [{
+        id: 'inv_case_test', incidentId: incident.id, status: 'completed', trigger: 'test',
+        hypothesis: '持续的凭据探测', observations: ['同一来源出现 12 次可信失败记录。'],
+        uncertainties: ['尚未确认是否为定向攻击。'], nextChecks: ['继续核对后续成功登录信号。'],
+        conclusion: '存在持续认证探测，但没有成功登录证据。', confidence: 82, model: 'test-model', toolCalls: [],
+      }],
+      responsePlans: [],
+      timeline: [],
+    });
+    render(<WitShieldApp />);
+    await screen.findByText('服务器安全概览');
+
+    fireEvent.click(screen.getByRole('button', { name: /^AI 安全工程师$/ }));
+    const scope = await screen.findByLabelText('安全感知范围');
+    expect(scope.querySelectorAll(':scope > div')).toHaveLength(5);
+    fireEvent.click(screen.getByRole('button', { name: /持续的 SSH 凭据探测/ }));
+
+    expect(await screen.findByText('同一来源出现 12 次可信失败记录。')).toBeInTheDocument();
+    expect(screen.getByText('尚未确认是否为定向攻击。')).toBeInTheDocument();
+    expect(screen.getByText('继续核对后续成功登录信号。')).toBeInTheDocument();
+  });
+
   it('updates schedules and supports a reversible emergency stop', async () => {
     const originalPolicies = structuredClone(demoDashboard.policies);
     try {

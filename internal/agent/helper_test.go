@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/witkitlab/witshield/internal/action"
+	"github.com/witkitlab/witshield/internal/observation"
 )
 
 func TestLoadHelperTokenModes(t *testing.T) {
@@ -77,5 +78,54 @@ func TestHelperClientMarksLostResponseAfterRequestAsIndeterminate(t *testing.T) 
 	}
 	if err = <-serverErr; err != nil {
 		t.Fatalf("fake helper did not receive the complete request: %v", err)
+	}
+}
+
+func TestHelperClientReadsOnlyBoundedProcessObservation(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "witshield-helper-observation-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "helper.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverErr := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverErr <- acceptErr
+			return
+		}
+		defer connection.Close()
+		line, readErr := bufio.NewReader(connection).ReadBytes('\n')
+		if readErr != nil {
+			serverErr <- readErr
+			return
+		}
+		var request map[string]any
+		if decodeErr := json.Unmarshal(line, &request); decodeErr != nil || request["kind"] != observation.ProcessQueryKind || len(request) != 2 {
+			serverErr <- errors.New("client sent fields outside the fixed observation request")
+			return
+		}
+		response := map[string]any{"ok": true, "processObserved": 1, "processes": []observation.Process{{
+			Identity: strings.Repeat("b", 64), EventType: "suspicious_privileged_process_started", Reason: "test",
+			Name: "worker", Executable: "/tmp/worker", PID: 123, PPID: 1, UID: 0,
+		}}}
+		encoded, _ := json.Marshal(response)
+		_, writeErr := connection.Write(append(encoded, '\n'))
+		serverErr <- writeErr
+	}()
+
+	client := HelperClient{Socket: socket, Token: strings.Repeat("a", 64)}
+	snapshot, err := client.ObserveSuspiciousProcesses(context.Background())
+	if err != nil || len(snapshot.Processes) != 1 || snapshot.Processes[0].Executable != "/tmp/worker" {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+	if err = <-serverErr; err != nil {
+		t.Fatal(err)
 	}
 }

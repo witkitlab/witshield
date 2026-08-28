@@ -40,15 +40,30 @@ func signalFromSecurityEvent(event domain.SecurityEvent, now time.Time) (domain.
 	category, severity, trust, title := "system", domain.SeverityLow, "verified", "服务器安全事件"
 	subject := strings.TrimSpace(event.SourceIP)
 	var metadata struct {
-		Path string `json:"path"`
+		Path       string `json:"path"`
+		Address    string `json:"address"`
+		Port       int    `json:"port"`
+		Executable string `json:"executable"`
+		Name       string `json:"name"`
 	}
 	_ = json.Unmarshal(event.Payload, &metadata)
 	if subject == "" {
 		subject = strings.TrimSpace(metadata.Path)
 	}
+	if subject == "" && metadata.Port > 0 {
+		subject = fmt.Sprintf("%s:%d", strings.TrimSpace(metadata.Address), metadata.Port)
+	}
+	if subject == "" {
+		subject = strings.TrimSpace(metadata.Executable)
+	}
+	if subject == "" {
+		subject = strings.TrimSpace(metadata.Name)
+	}
 	switch event.Type {
 	case "ssh_auth_failure":
 		category, severity, title = "identity_access", domain.SeverityMedium, "SSH 登录失败活动"
+	case "ssh_auth_success":
+		category, severity, title = "identity_access", domain.SeverityInfo, "SSH 登录成功"
 	case "ssh_auth_failure_untrusted":
 		category, severity, trust, title = "identity_access", domain.SeverityLow, "unverified", "未验证的 SSH 登录线索"
 	case "ssh_auth_log_line_oversized_untrusted":
@@ -57,12 +72,36 @@ func signalFromSecurityEvent(event domain.SecurityEvent, now time.Time) (domain.
 		category, severity, title = "sensor_health", domain.SeverityHigh, "安全事件关联容量保护已触发"
 	case "identity_state_changed":
 		category, severity, title = "identity_persistence", domain.SeverityHigh, "账号或权限边界发生变化"
+	case "access_trust_changed":
+		category, severity, title = "identity_persistence", domain.SeverityHigh, "登录信任配置发生变化"
 	case "file_integrity_changed":
 		category, severity, title = "file_integrity", domain.SeverityHigh, "关键安全配置发生变化"
 	case "schedule_definition_changed":
 		category, severity, title = "persistence", domain.SeverityHigh, "计划任务定义发生变化"
 	case "service_definition_changed":
 		category, severity, title = "workload_runtime", domain.SeverityMedium, "系统服务定义发生变化"
+	case "startup_definition_changed":
+		category, severity, title = "persistence", domain.SeverityHigh, "启动持久化配置发生变化"
+	case "library_injection_changed":
+		category, severity, title = "persistence", domain.SeverityCritical, "动态链接器预加载配置发生变化"
+	case "kernel_policy_changed":
+		category, severity, title = "system_hardening", domain.SeverityHigh, "内核安全策略配置发生变化"
+	case "network_listener_opened":
+		category, severity, title = "network", domain.SeverityMedium, "新的对外 TCP 监听端口出现"
+	case "network_listener_closed":
+		category, severity, title = "network", domain.SeverityInfo, "对外 TCP 监听端口已关闭"
+	case "network_sensor_capacity_degraded":
+		category, severity, title = "sensor_health", domain.SeverityHigh, "网络感知容量保护已触发"
+	case "network_sensor_capacity_restored":
+		category, severity, title = "sensor_health", domain.SeverityInfo, "网络感知容量已恢复"
+	case "suspicious_privileged_process_started":
+		category, severity, title = "workload_runtime", domain.SeverityCritical, "特权进程从临时可写目录启动"
+	case "deleted_executable_process_running":
+		category, severity, title = "workload_runtime", domain.SeverityMedium, "进程仍在运行已删除的可执行文件"
+	case "process_sensor_capacity_degraded":
+		category, severity, title = "sensor_health", domain.SeverityHigh, "进程感知容量保护已触发"
+	case "process_sensor_capacity_restored":
+		category, severity, title = "sensor_health", domain.SeverityInfo, "进程感知容量已恢复"
 	case "container_configuration_changed":
 		category, severity, title = "container_runtime", domain.SeverityMedium, "容器运行时配置发生变化"
 	default:
@@ -79,12 +118,19 @@ func signalFromSecurityEvent(event domain.SecurityEvent, now time.Time) (domain.
 	if subject == "" {
 		subject = event.Type
 	}
+	correlationType := event.Type
+	if event.Type == "ssh_auth_success" {
+		// Successful authentication is supporting evidence for the same source's
+		// thresholded failure case, not a standalone incident for every normal
+		// administrator login.
+		correlationType = "ssh_auth_failure"
+	}
 	return domain.Signal{
 		ID: "event:" + event.ID, DeviceID: event.DeviceID, Type: event.Type,
 		Category: category, Severity: severity, Trust: trust, Subject: subject,
 		Summary: title, Source: "runtime_sensor", SourceRef: event.ID,
 		Payload: event.Payload, OccurredAt: event.OccurredAt.UTC(), IngestedAt: now.UTC(),
-	}, "event:" + event.Type + ":" + subject
+	}, "event:" + correlationType + ":" + subject
 }
 
 func signalFromFinding(report domain.Report, finding domain.Finding, now time.Time) (domain.Signal, string) {
@@ -482,12 +528,24 @@ func (s *Store) CreateInvestigation(ctx context.Context, incidentID, trigger, mo
 }
 
 func (s *Store) CompleteInvestigation(ctx context.Context, item domain.Investigation, plan *domain.ResponsePlan, now time.Time) error {
-	if item.Status != domain.InvestigationCompleted || item.Confidence < 0 || item.Confidence > 100 || len(item.ToolCalls) > 32 {
+	if item.Status != domain.InvestigationCompleted || item.Confidence < 0 || item.Confidence > 100 || len(item.ToolCalls) > 32 || len(item.Observations) > 12 || len(item.Uncertainties) > 12 || len(item.NextChecks) > 12 {
 		return errors.New("completed investigation is invalid")
 	}
 	toolCalls, err := json.Marshal(item.ToolCalls)
 	if err != nil || len(toolCalls) > 256*1024 {
 		return errors.New("investigation tool record is invalid")
+	}
+	observations, err := boundedStringListJSON(item.Observations, 1000)
+	if err != nil {
+		return errors.New("investigation observations are invalid")
+	}
+	uncertainties, err := boundedStringListJSON(item.Uncertainties, 1000)
+	if err != nil {
+		return errors.New("investigation uncertainties are invalid")
+	}
+	nextChecks, err := boundedStringListJSON(item.NextChecks, 1000)
+	if err != nil {
+		return errors.New("investigation next checks are invalid")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -495,8 +553,8 @@ func (s *Store) CompleteInvestigation(ctx context.Context, item domain.Investiga
 	}
 	defer tx.Rollback()
 	completed := now.UTC()
-	result, err := tx.ExecContext(ctx, `UPDATE investigations SET status=?,hypothesis=?,conclusion=?,confidence=?,tool_calls=?,error='',completed_at=?,updated_at=? WHERE id=? AND incident_id=? AND status=?`,
-		string(item.Status), item.Hypothesis, item.Conclusion, item.Confidence, string(toolCalls), timeText(completed), timeText(completed), item.ID, item.IncidentID, string(domain.InvestigationRunning))
+	result, err := tx.ExecContext(ctx, `UPDATE investigations SET status=?,hypothesis=?,observations=?,uncertainties=?,next_checks=?,conclusion=?,confidence=?,tool_calls=?,error='',completed_at=?,updated_at=? WHERE id=? AND incident_id=? AND status=?`,
+		string(item.Status), item.Hypothesis, string(observations), string(uncertainties), string(nextChecks), item.Conclusion, item.Confidence, string(toolCalls), timeText(completed), timeText(completed), item.ID, item.IncidentID, string(domain.InvestigationRunning))
 	if err != nil {
 		return err
 	}
@@ -528,6 +586,15 @@ func (s *Store) CompleteInvestigation(ctx context.Context, item domain.Investiga
 		return err
 	}
 	return tx.Commit()
+}
+
+func boundedStringListJSON(values []string, maxItemBytes int) ([]byte, error) {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" || len(value) > maxItemBytes {
+			return nil, errors.New("bounded string list contains an invalid item")
+		}
+	}
+	return json.Marshal(values)
 }
 
 func (s *Store) FailInvestigation(ctx context.Context, item domain.Investigation, failure string, now time.Time) error {
@@ -605,7 +672,7 @@ func (s *Store) ListInvestigations(ctx context.Context, incidentID string, limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,incident_id,status,trigger,hypothesis,conclusion,confidence,model,tool_calls,error,started_at,completed_at,created_at,updated_at FROM investigations WHERE incident_id=? ORDER BY created_at DESC LIMIT ?`, incidentID, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,incident_id,status,trigger,hypothesis,observations,uncertainties,next_checks,conclusion,confidence,model,tool_calls,error,started_at,completed_at,created_at,updated_at FROM investigations WHERE incident_id=? ORDER BY created_at DESC LIMIT ?`, incidentID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -613,10 +680,20 @@ func (s *Store) ListInvestigations(ctx context.Context, incidentID string, limit
 	var out []domain.Investigation
 	for rows.Next() {
 		var item domain.Investigation
-		var calls, started, completed sql.NullString
+		var observations, uncertainties, nextChecks, calls, started, completed sql.NullString
 		var created, updated string
-		if err = rows.Scan(&item.ID, &item.IncidentID, &item.Status, &item.Trigger, &item.Hypothesis, &item.Conclusion, &item.Confidence, &item.Model, &calls, &item.Error, &started, &completed, &created, &updated); err != nil {
+		if err = rows.Scan(&item.ID, &item.IncidentID, &item.Status, &item.Trigger, &item.Hypothesis, &observations, &uncertainties, &nextChecks, &item.Conclusion, &item.Confidence, &item.Model, &calls, &item.Error, &started, &completed, &created, &updated); err != nil {
 			return nil, err
+		}
+		for _, pair := range []struct {
+			raw    sql.NullString
+			target *[]string
+		}{{observations, &item.Observations}, {uncertainties, &item.Uncertainties}, {nextChecks, &item.NextChecks}} {
+			if pair.raw.Valid && pair.raw.String != "" {
+				if err = json.Unmarshal([]byte(pair.raw.String), pair.target); err != nil {
+					return nil, err
+				}
+			}
 		}
 		if calls.Valid && calls.String != "" {
 			if err = json.Unmarshal([]byte(calls.String), &item.ToolCalls); err != nil {
