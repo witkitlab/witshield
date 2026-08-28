@@ -38,12 +38,12 @@
 
 .hero {
   max-width: 1500px;
-  min-height: 500px;
+  min-height: 660px;
   margin: 0 auto;
-  padding: 72px 38px 54px;
+  padding: 58px 38px 62px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
-  gap: 72px;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 390px);
+  gap: 64px;
   align-items: center;
 }
 .heroCopy { max-width: 990px; }
@@ -56,10 +56,23 @@
 .primaryCta { color: white; background: var(--site-ink); }
 .primaryCta svg:last-child { margin-left: 8px; }
 .secondaryCta { color: var(--site-ink); background: transparent; }
-.heroStats { margin: 0; border-top: 1px solid var(--site-line); }
-.heroStats div { min-height: 82px; border-bottom: 1px solid var(--site-line); display: grid; grid-template-columns: 92px 1fr; align-items: center; }
-.heroStats dt { font-size: 24px; font-weight: 620; letter-spacing: -.04em; }
-.heroStats dd { margin: 0; color: var(--site-muted); font-size: 11px; line-height: 1.45; }
+.heroProduct { width: 100%; max-width: 390px; justify-self: end; }
+.heroProductHeading { margin: 0 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.heroProductHeading > span { display: inline-flex; align-items: center; gap: 8px; color: #354047; font-size: 11px; font-weight: 680; }
+.heroProductHeading small { color: #7a8387; font-size: 9px; }
+.phoneStage { position: relative; min-height: 650px; }
+.phoneFrame { position: relative; width: 320px; height: 620px; margin: 8px auto 18px; border: 1px solid #3a4146; border-radius: 42px; padding: 9px; background: #171b1f; box-shadow: 36px 42px 90px rgb(27 35 39 / 19%), 0 3px 9px rgb(27 35 39 / 16%); transform: perspective(1200px) rotateY(-9deg) rotateZ(3.5deg); transform-origin: 50% 54%; transition: transform .35s cubic-bezier(.2, .75, .25, 1), box-shadow .35s ease; }
+.phoneFrame:hover, .phoneFrame:focus-within { box-shadow: 24px 34px 74px rgb(27 35 39 / 16%), 0 3px 9px rgb(27 35 39 / 14%); transform: perspective(1200px) rotateY(-4deg) rotateZ(1.5deg) translateY(-4px); }
+.phoneFrame::after { content: ''; position: absolute; top: 96px; right: -3px; width: 3px; height: 76px; border-radius: 0 3px 3px 0; background: #30363a; }
+.phoneScreen { height: 100%; overflow: hidden; border-radius: 28px; background: #f7f9f7; }
+.phoneStatus { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; color: #f4f6f5; background: #171b1f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; }
+.phoneStatus i { width: 38px; height: 8px; border-radius: 999px; background: #31373b; }
+.phoneScreen iframe { width: 100%; height: calc(100% - 24px); border: 0; background: #f7f9f7; }
+.heroSignal { position: absolute; z-index: 2; min-height: 31px; border: 1px solid #d5dcda; border-radius: 999px; display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; color: #46514f; background: rgb(249 250 248 / 92%); box-shadow: 0 12px 32px rgb(27 35 39 / 10%); backdrop-filter: blur(12px); font-size: 9px; font-weight: 650; white-space: nowrap; }
+.heroSignalOnline { top: 78px; left: -18px; }
+.heroSignalApproval { right: -12px; bottom: 102px; color: #5e4930; border-color: #e0d3bc; background: rgb(255 251 242 / 94%); }
+.heroSignalApproval svg { color: #9b6b2f; }
+.heroDemoLink { width: max-content; margin: 13px 8px 0 auto; display: flex; align-items: center; gap: 6px; color: var(--site-ink); text-decoration: none; font-size: 10px; }
 
 .productSection { max-width: 1500px; margin: 0 auto; padding: 0 38px 90px; }
 .demoHeading { min-height: 62px; border-top: 1px solid var(--site-line); display: flex; justify-content: space-between; align-items: center; color: #3e464a; font-size: 12px; }
@@ -140,9 +153,7 @@
   .header { grid-template-columns: 1fr auto; }
   .nav { display: none; }
   .hero { min-height: auto; padding-top: 68px; grid-template-columns: 1fr; gap: 56px; }
-  .heroStats { max-width: 620px; display: grid; grid-template-columns: repeat(3, 1fr); }
-  .heroStats div { padding: 18px 14px; display: block; }
-  .heroStats dd { margin-top: 7px; }
+  .heroProduct { max-width: 430px; justify-self: center; }
   .demoViewport { height: 650px; }
   .workflow { grid-template-columns: 1fr; gap: 64px; }
   .sectionIntro { max-width: 760px; }
@@ -161,8 +172,11 @@
   .hero { padding: 56px 18px 48px; }
   .hero h1 { font-size: clamp(34px, 10.5vw, 48px); }
   .lead { margin-top: 26px; font-size: 16px; }
-  .heroStats { grid-template-columns: 1fr; }
-  .heroStats div { min-height: 66px; display: grid; }
+  .heroProduct { max-width: 380px; }
+  .heroProductHeading { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .phoneStage { min-height: 616px; }
+  .phoneFrame { width: min(300px, calc(100vw - 70px)); height: 590px; border-radius: 38px; transform: perspective(1200px) rotateY(-6deg) rotateZ(2.5deg); }
+  .heroSignal { display: none; }
   .productSection { padding: 0 0 60px; }
   .demoHeading { margin: 0 18px; }
   .demoHeading small { display: none; }
