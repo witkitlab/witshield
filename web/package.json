@@ -9,6 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "build:embedded": "WITSHIELD_STATIC_EXPORT=1 NEXT_PUBLIC_WITSHIELD_DEMO=false next build",
+    "build:pages": "WITSHIELD_STATIC_EXPORT=1 NEXT_PUBLIC_WITSHIELD_DEMO=true next build",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --max-warnings 0",
     "typecheck": "next typegen && tsc --noEmit",

@@ -2,7 +2,7 @@
 
 > **妙计巡御（WitShield AI）**：主动巡检风险，在你授权后修复，并在攻击发生时按策略自动响应。
 
-[English](README.en.md) · [架构](docs/architecture.md) · [安全模型](docs/threat-model.md) · [配置参考](docs/configuration.md)
+[产品官网](https://witshield.witkitlab.com) · [English](README.en.md) · [架构](docs/architecture.md) · [安全模型](docs/threat-model.md) · [配置参考](docs/configuration.md)
 
 > [!IMPORTANT]
 > 项目目前处于早期开发阶段。自动处置默认关闭；在生产服务器启用修复前，请先阅读[安全模型](docs/threat-model.md)，并验证备份和回滚路径。

@@ -2,6 +2,8 @@
 
 **WitShield AI (妙计巡御)** is an open-source, agentic security guard for Linux servers. It continuously inspects a server, explains evidence-backed findings, proposes structured remediation, and acts only within explicit approval and policy boundaries.
 
+[Product website](https://witshield.witkitlab.com) · [Chinese README](README.md) · [Architecture](docs/architecture.md) · [Security model](docs/threat-model.md)
+
 Key properties:
 
 - local-first single-server mode and a self-hosted, single-admin multi-device controller;
