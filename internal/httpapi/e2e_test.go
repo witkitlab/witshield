@@ -1223,6 +1223,36 @@ func TestAdminSecurityEventsExposeUnverifiedObservationsWithPagination(t *testin
 	}
 }
 
+func TestEveryAgentSensorEventPassesSignedAdmission(t *testing.T) {
+	x := newTestAPI(t)
+	x.bootstrapAdmin(t)
+	deviceID, token := x.enroll(t)
+	eventTypes := []string{
+		"ssh_auth_failure", "ssh_auth_success", "ssh_auth_failure_untrusted", "ssh_auth_log_line_oversized_untrusted",
+		"identity_state_changed", "access_trust_changed", "file_integrity_changed", "schedule_definition_changed",
+		"service_definition_changed", "startup_definition_changed", "library_injection_changed", "kernel_policy_changed",
+		"container_configuration_changed", "network_listener_opened", "network_listener_closed",
+		"network_sensor_capacity_degraded", "network_sensor_capacity_restored",
+		"suspicious_privileged_process_started", "deleted_executable_process_running",
+		"process_sensor_capacity_degraded", "process_sensor_capacity_restored",
+	}
+	now := time.Now().UTC()
+	events := make([]map[string]any, 0, len(eventTypes))
+	for index, eventType := range eventTypes {
+		events = append(events, map[string]any{
+			"id":         fmt.Sprintf("evt-admission-%02d", index),
+			"type":       eventType,
+			"occurredAt": now.Add(time.Duration(index) * time.Millisecond),
+			"payload":    map[string]any{"automaticActionEligible": false},
+		})
+	}
+	payload := signedEventBatch(t, x, deviceID, map[string]any{"events": events})
+	status, body := request(t, http.DefaultClient, http.MethodPost, x.server.URL+"/agent/v1/events", payload, map[string]string{"Authorization": "Bearer " + token})
+	if status != http.StatusAccepted || !strings.Contains(string(body), fmt.Sprintf(`"accepted":%d`, len(events))) {
+		t.Fatalf("one or more Agent sensor event types were rejected=%d %s", status, body)
+	}
+}
+
 func TestSignedAgentPayloadLargerThanLegacyOneMiBLimitIsAccepted(t *testing.T) {
 	x := newTestAPI(t)
 	x.bootstrapAdmin(t)
