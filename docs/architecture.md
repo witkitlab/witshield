@@ -29,7 +29,8 @@
 │                       policy/approval                      │
 │                              ▼                             │
 │     unprivileged Agent ──Unix socket──> root Helper         │
-│                                  typed action executor      │
+│                          fixed read-only process sensor     │
+│                          + typed action executor            │
 │          precheck → snapshot → apply → verify → rollback   │
 │                              │                             │
 │                         local audit                        │
@@ -47,7 +48,8 @@
 ### Agent
 
 - 检查特权账号、SSH 配置、敏感文件权限、监听端口、防火墙、待更新软件包与 Docker Socket 权限；
-- 维护关键账号/组、SSH 配置、计划任务、systemd 服务和 Docker daemon 配置的本地摘要基线；第一次只建基线，之后仅上报路径、变化类型和前后摘要，不上传文件正文；
+- 维护账号/组、登录信任、SSH/PAM、计划任务、启动持久化、动态链接器、内核策略、systemd 和 Docker daemon 配置的本地摘要基线；不上传文件正文；
+- 以最小化网络监听基线发现新暴露端口；原生模式通过 Helper 的固定只读接口从 procfs 识别特权临时路径进程与已删除可执行文件，不给 Agent 额外系统权限，也不采集命令行、环境变量或进程输出；
 - 执行确定性规则并给结果生成稳定指纹；
 - 启动时执行一次扫描，之后只执行 Controller 调度器下发的扫描命令，把结果和状态发送到 Controller；Controller 是周期调度的唯一权威；
 - 只把 Controller 请求映射到 Helper 已编译的强类型 Playbook，不接受任意命令、可执行路径或 shell；
@@ -58,7 +60,7 @@
 - 支持用户指定的 OpenAI/Anthropic 兼容接口；
 - 扫描 Finding 和签名运行时事件先转换成统一 Signal，并按设备、类型和稳定目标关联为 Incident；新证据会重新打开处于监测中的事件；
 - Controller 后台 worker 只处理用户在对应 PolicyGrant 中显式开启的能力；普通协助忽略低风险噪声，增强模式才会调查低风险事件，失败后至少退避 15 分钟；
-- AI 只能读取五组 Controller 侧工具结果：设备态势、事件信号、当前 Finding、近期动作、策略边界。工具没有参数自由度，不访问主机 shell；上下文有字段白名单、截断、脱敏和 128 KiB 总上限；
+- AI 只能读取八组 Controller 侧工具结果：设备态势、事件信号、当前 Finding、近期动作、策略边界、最近巡检态势、事件时间线和同类事件。工具没有参数自由度，不访问主机 shell；每种信号使用独立证据白名单，上下文有字段截断和 128 KiB 总上限；
 - 模型必须返回严格 JSON。响应步骤只能引用已注册动作类型，并在保存及准备执行时两次通过 Controller schema 校验；模型不能创建已批准动作，也不能取得 approval nonce；
 - 接口失败、超时或输出无效时，规则报告保持可用。
 
@@ -76,7 +78,7 @@
 
 原生 Agent 以 `witshield-agent` 普通用户运行，可按安装时存在的系统组获得只读日志权限。独立的 `witshield-helper` 以 root 运行，但只监听本机 Unix Socket，校验 peer credential 和 256-bit 本机 token，并仅接受编译进二进制的强类型 Playbook。Controller 使用独立用户且不在 Helper 访问组，因此 Controller RCE 不能直接调用 Helper。
 
-Helper 仍是高价值边界：它不连接 AI/Controller，也不接受任意 shell、可执行路径或远程插件；`apt` Playbook 需要下载包时，其固定子进程可能访问系统软件源。软件包变更会在 APT 持有前端锁后读取 version 3 计划，按 `包名:架构` 锁定完整事务，只允许管理员显式授权且已经安装的包做严格单调升级；任何未列出的依赖变化、新增/删除包、同版本重装、架构或 Multi-Arch 切换以及陈旧回滚都会在 `dpkg` 前拒绝。APT 的自动/手动安装标记保持不变。每次调用的 actor、动作、参数摘要与结果都应生成审计回执。
+Helper 仍是高价值边界：它不连接 AI/Controller，也不接受任意 shell、可执行路径或远程插件。唯一的只读观察请求没有参数自由度，只返回两类有上限的可疑进程元数据；它与会产生副作用的 Action 协议分开。`apt` Playbook 需要下载包时，其固定子进程可能访问系统软件源。软件包变更会在 APT 持有前端锁后读取 version 3 计划，按 `包名:架构` 锁定完整事务，只允许管理员显式授权且已经安装的包做严格单调升级；任何未列出的依赖变化、新增/删除包、同版本重装、架构或 Multi-Arch 切换以及陈旧回滚都会在 `dpkg` 前拒绝。APT 的自动/手动安装标记保持不变。每次动作调用的 actor、类型、参数摘要与结果都应生成审计回执。
 
 ## 部署拓扑
 

@@ -912,11 +912,16 @@ export async function investigateIncident(incidentId: string): Promise<{ investi
       investigation: {
         id: `inv_${incidentId}`, incidentId, status: 'completed', trigger: 'administrator', confidence: 86,
         hypothesis: '异常登录活动来自持续的凭据探测。',
+        observations: ['同一公网来源在 5 分钟内产生 12 次可信 SSH 登录失败。', '当前事件中没有成功登录信号。'],
+        uncertainties: ['尚不能判断来源是自动扫描还是定向凭据攻击。'],
+        nextChecks: ['持续核对该来源后续登录结果与服务器账号变化。'],
         conclusion: '确定性认证日志显示同一公网来源在短时间内重复失败。尚未发现成功登录证据，建议持续观察并临时限制该来源。',
         model: demoDashboard.ai.model,
         toolCalls: [
           { tool: 'incident_signals', summary: '读取 12 条已归一化事件信号', startedAt: '刚刚', endedAt: '刚刚' },
           { tool: 'current_findings', summary: '核对当前确定性风险', startedAt: '刚刚', endedAt: '刚刚' },
+          { tool: 'latest_posture_report', summary: '核对最近巡检覆盖率与主机安全分', startedAt: '刚刚', endedAt: '刚刚' },
+          { tool: 'incident_timeline', summary: '核对事件生命周期与管理员操作', startedAt: '刚刚', endedAt: '刚刚' },
         ],
       },
       responsePlan: {

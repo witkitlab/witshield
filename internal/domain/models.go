@@ -346,20 +346,23 @@ type InvestigationToolCall struct {
 }
 
 type Investigation struct {
-	ID          string                  `json:"id"`
-	IncidentID  string                  `json:"incidentId"`
-	Status      InvestigationStatus     `json:"status"`
-	Trigger     string                  `json:"trigger"`
-	Hypothesis  string                  `json:"hypothesis,omitempty"`
-	Conclusion  string                  `json:"conclusion,omitempty"`
-	Confidence  int                     `json:"confidence"`
-	Model       string                  `json:"model,omitempty"`
-	ToolCalls   []InvestigationToolCall `json:"toolCalls,omitempty"`
-	Error       string                  `json:"error,omitempty"`
-	StartedAt   *time.Time              `json:"startedAt,omitempty"`
-	CompletedAt *time.Time              `json:"completedAt,omitempty"`
-	CreatedAt   time.Time               `json:"createdAt"`
-	UpdatedAt   time.Time               `json:"updatedAt"`
+	ID            string                  `json:"id"`
+	IncidentID    string                  `json:"incidentId"`
+	Status        InvestigationStatus     `json:"status"`
+	Trigger       string                  `json:"trigger"`
+	Hypothesis    string                  `json:"hypothesis,omitempty"`
+	Observations  []string                `json:"observations,omitempty"`
+	Uncertainties []string                `json:"uncertainties,omitempty"`
+	NextChecks    []string                `json:"nextChecks,omitempty"`
+	Conclusion    string                  `json:"conclusion,omitempty"`
+	Confidence    int                     `json:"confidence"`
+	Model         string                  `json:"model,omitempty"`
+	ToolCalls     []InvestigationToolCall `json:"toolCalls,omitempty"`
+	Error         string                  `json:"error,omitempty"`
+	StartedAt     *time.Time              `json:"startedAt,omitempty"`
+	CompletedAt   *time.Time              `json:"completedAt,omitempty"`
+	CreatedAt     time.Time               `json:"createdAt"`
+	UpdatedAt     time.Time               `json:"updatedAt"`
 }
 
 type ResponsePlanStatus string

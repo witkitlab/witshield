@@ -250,6 +250,7 @@ CREATE INDEX IF NOT EXISTS incident_signals_signal_idx ON incident_signals(devic
 CREATE TABLE IF NOT EXISTS investigations (
   id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
   status TEXT NOT NULL, trigger TEXT NOT NULL, hypothesis TEXT NOT NULL DEFAULT '',
+	observations TEXT NOT NULL DEFAULT '[]', uncertainties TEXT NOT NULL DEFAULT '[]', next_checks TEXT NOT NULL DEFAULT '[]',
   conclusion TEXT NOT NULL DEFAULT '', confidence INTEGER NOT NULL DEFAULT 0 CHECK(confidence BETWEEN 0 AND 100),
   model TEXT NOT NULL DEFAULT '', tool_calls TEXT NOT NULL DEFAULT '[]', error TEXT NOT NULL DEFAULT '',
   started_at TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -427,7 +428,27 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_
 	if err = s.migrateResponsePlanActionsV6(ctx); err != nil {
 		return err
 	}
-	return s.migrateSecurityEventRetentionV7(ctx)
+	if err = s.migrateSecurityEventRetentionV7(ctx); err != nil {
+		return err
+	}
+	return s.migrateInvestigationEvidenceV8(ctx)
+}
+
+func (s *Store) migrateInvestigationEvidenceV8(ctx context.Context) error {
+	columns := []string{"observations", "uncertainties", "next_checks"}
+	for _, column := range columns {
+		exists, err := s.tableHasColumn(ctx, "investigations", column)
+		if err != nil {
+			return fmt.Errorf("inspect investigation evidence schema: %w", err)
+		}
+		if !exists {
+			if _, err = s.db.ExecContext(ctx, `ALTER TABLE investigations ADD COLUMN `+column+` TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return fmt.Errorf("add investigation evidence column %s: %w", column, err)
+			}
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,?)`, timeText(time.Now().UTC()))
+	return err
 }
 
 // migrateSecurityEngineerV5 introduces the generic signal/incident/policy
@@ -731,7 +752,7 @@ func (s *Store) migrateControllerSchedules(ctx context.Context) error {
 }
 
 func (s *Store) tableHasColumn(ctx context.Context, table, column string) (bool, error) {
-	if table != "actions" && table != "device_commands" && table != "notification_outbox" && table != "devices" && table != "reports" && table != "security_event_windows" {
+	if table != "actions" && table != "device_commands" && table != "notification_outbox" && table != "devices" && table != "reports" && table != "security_event_windows" && table != "investigations" {
 		return false, errors.New("unsupported schema inspection table")
 	}
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)

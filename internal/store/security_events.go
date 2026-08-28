@@ -142,6 +142,23 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 	if err = pruneSecurityEventsTx(ctx, tx, event.DeviceID); err != nil {
 		return out, err
 	}
+	if event.Type == "ssh_auth_success" {
+		// Normal successful logins stay in the bounded raw audit trail. If a
+		// thresholded case for the same source is already active, attach the
+		// success as high-value evidence without opening a new noise incident.
+		if sourceErr == nil && parsedSource.Zone() == "" {
+			var active int
+			if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM incidents WHERE device_id=? AND correlation_key=? AND status IN ('open','investigating','awaiting_approval','responding','monitoring')`, event.DeviceID, correlationKey).Scan(&active); err != nil {
+				return out, err
+			}
+			if active > 0 {
+				if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
+					return out, err
+				}
+			}
+		}
+		return out, tx.Commit()
+	}
 	if event.Type != "ssh_auth_failure" || sourceErr != nil || parsedSource.Zone() != "" {
 		if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
 			return out, err
@@ -183,6 +200,9 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 	signal.Payload, _ = json.Marshal(signalPayload)
 	signal.Summary = "SSH 登录失败活动达到确定性策略阈值"
 	if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
+		return out, err
+	}
+	if err = s.attachRecentSSHSuccessTx(ctx, tx, event.DeviceID, event.SourceIP, correlationKey, now.Add(-policy.Window), now); err != nil {
 		return out, err
 	}
 	if _, targetErr := action.ValidateTemporaryIPBanTarget(event.SourceIP); targetErr != nil && out.Decision.ShouldBan {
@@ -274,6 +294,24 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 		return SecurityEventProcessOutcome{}, err
 	}
 	return out, nil
+}
+
+func (s *Store) attachRecentSSHSuccessTx(ctx context.Context, tx *sql.Tx, deviceID, sourceIP, correlationKey string, since, now time.Time) error {
+	var id, occurred, payload string
+	err := tx.QueryRowContext(ctx, `SELECT id,occurred_at,payload FROM security_events WHERE device_id=? AND type='ssh_auth_success' AND source_ip=? AND occurred_at>=? ORDER BY occurred_at DESC,id DESC LIMIT 1`, deviceID, sourceIP, timeText(since)).Scan(&id, &occurred, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	when, err := parseTime(occurred)
+	if err != nil {
+		return err
+	}
+	signal, _ := signalFromSecurityEvent(domain.SecurityEvent{ID: id, DeviceID: deviceID, Type: "ssh_auth_success", SourceIP: sourceIP, OccurredAt: when, Payload: json.RawMessage(payload)}, now)
+	_, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey)
+	return err
 }
 
 // pruneSecurityEventsTx amortizes ordered retention work. Trimming every row

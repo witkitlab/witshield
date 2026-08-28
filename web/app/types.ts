@@ -166,6 +166,9 @@ export interface Investigation {
   status: 'queued' | 'running' | 'completed' | 'failed';
   trigger: string;
   hypothesis?: string;
+  observations?: string[];
+  uncertainties?: string[];
+  nextChecks?: string[];
   conclusion?: string;
   confidence: number;
   model?: string;

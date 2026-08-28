@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,30 @@ func TestFirewallProbeSuccessStillReportsInactiveState(t *testing.T) {
 	findings, err := checkFirewall(context.Background(), host)
 	if err != nil || len(findings) != 1 || findings[0].Severity != domain.SeverityHigh {
 		t.Fatalf("completed inactive firewall check changed behavior: findings=%#v err=%v", findings, err)
+	}
+}
+
+func TestKernelHardeningPreservesFindingsWhenCoverageIsPartial(t *testing.T) {
+	host := fakeHost{files: map[string][]byte{
+		"/proc/sys/kernel/randomize_va_space": []byte("0\n"),
+		"/proc/sys/fs/protected_hardlinks":    []byte("1\n"),
+		"/proc/sys/fs/protected_symlinks":     []byte("1\n"),
+		"/proc/sys/net/ipv4/tcp_syncookies":   []byte("1\n"),
+		"/proc/sys/kernel/dmesg_restrict":     []byte("1\n"),
+	}}
+	findings, err := checkKernelHardening(context.Background(), host)
+	if err == nil || len(findings) != 1 || findings[0].Category != "kernel" || findings[0].Severity != domain.SeverityMedium || !strings.Contains(err.Error(), "kptr_restrict") {
+		t.Fatalf("findings=%#v err=%v", findings, err)
+	}
+}
+
+func TestKernelHardeningCompleteSecureState(t *testing.T) {
+	files := make(map[string][]byte, len(kernelControls))
+	for _, control := range kernelControls {
+		files[control.path] = []byte(strconv.Itoa(control.minimum))
+	}
+	findings, err := checkKernelHardening(context.Background(), fakeHost{files: files})
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("findings=%#v err=%v", findings, err)
 	}
 }

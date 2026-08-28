@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,8 @@ type journalRunner interface {
 }
 
 type execJournalRunner struct{}
+
+var acceptedSSH = regexp.MustCompile(`(?i)accepted (password|publickey|keyboard-interactive(?:/pam)?|hostbased) for ([A-Za-z0-9._$-]{1,64}) from ([0-9a-f:.]+)`)
 
 func (execJournalRunner) Run(ctx context.Context, executable string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -127,8 +130,9 @@ func parseJournalOutput(data []byte, includeEvents bool, now time.Time) ([]domai
 		if !includeEvents {
 			continue
 		}
-		match := failedSSH.FindStringSubmatch(record.Message)
-		if len(match) != 2 || record.Cursor == "" {
+		failure := failedSSH.FindStringSubmatch(record.Message)
+		accepted := acceptedSSH.FindStringSubmatch(record.Message)
+		if (len(failure) != 2 && len(accepted) != 4) || record.Cursor == "" {
 			continue
 		}
 		occurredAt := now
@@ -140,13 +144,21 @@ func parseJournalOutput(data []byte, includeEvents bool, now time.Time) ([]domai
 		if occurredAt.Before(now.Add(-7*24*time.Hour)) || occurredAt.After(now.Add(5*time.Minute)) {
 			continue
 		}
-		sum := sha256.Sum256([]byte(record.Cursor + "\x00" + record.Message))
+		eventType, sourceIP := "ssh_auth_failure", ""
+		payload := json.RawMessage(`{"source":"journald","trust":"verified","automaticActionEligible":true}`)
+		if len(failure) == 2 {
+			sourceIP = strings.TrimSpace(failure[1])
+		} else {
+			eventType, sourceIP = "ssh_auth_success", strings.TrimSpace(accepted[3])
+			payload, _ = json.Marshal(map[string]any{"source": "journald", "trust": "verified", "automaticActionEligible": false, "method": strings.ToLower(accepted[1]), "principal": accepted[2]})
+		}
+		sum := sha256.Sum256([]byte(record.Cursor + "\x00" + eventType + "\x00" + record.Message))
 		events = append(events, domain.SecurityEvent{
 			ID:         "evt_" + hex.EncodeToString(sum[:12]),
-			Type:       "ssh_auth_failure",
-			SourceIP:   strings.TrimSpace(match[1]),
+			Type:       eventType,
+			SourceIP:   sourceIP,
 			OccurredAt: occurredAt,
-			Payload:    json.RawMessage(`{"source":"journald"}`),
+			Payload:    payload,
 		})
 	}
 	if err := scanner.Err(); err != nil {

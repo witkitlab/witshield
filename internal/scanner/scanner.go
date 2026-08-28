@@ -175,7 +175,8 @@ func NewWithHost(host Host, observer bool, checks ...Check) *Scanner {
 func Builtins() []Check {
 	return []Check{
 		CheckFunc{"ssh_configuration", checkSSH}, CheckFunc{"privileged_accounts", checkPasswd}, CheckFunc{"shadow_permissions", checkShadow},
-		CheckFunc{"listening_ports", checkPorts}, CheckFunc{"firewall", checkFirewall}, CheckFunc{"security_updates", checkUpdates}, CheckFunc{"docker_socket", checkDockerSocket},
+		CheckFunc{"listening_ports", checkPorts}, CheckFunc{"firewall", checkFirewall}, CheckFunc{"kernel_hardening", checkKernelHardening},
+		CheckFunc{"security_updates", checkUpdates}, CheckFunc{"docker_socket", checkDockerSocket},
 	}
 }
 
@@ -458,6 +459,51 @@ func checkDockerSocket(_ context.Context, h Host) ([]domain.Finding, error) {
 		return []domain.Finding{finding(domain.SeverityCritical, "containers", "Docker socket is accessible to all users", "Docker API access is effectively root-equivalent on the host.", fmt.Sprintf("mode %04o", info.Mode().Perm()), "Remove world permissions and restrict Docker group membership.")}, nil
 	}
 	return nil, nil
+}
+
+type kernelControl struct {
+	path        string
+	minimum     int
+	severity    domain.Severity
+	title       string
+	description string
+	remediation string
+}
+
+var kernelControls = []kernelControl{
+	{path: "/proc/sys/kernel/randomize_va_space", minimum: 2, severity: domain.SeverityMedium, title: "Full address-space randomization is disabled", description: "Reduced ASLR makes memory-corruption exploitation more predictable.", remediation: "Set kernel.randomize_va_space=2 through a managed sysctl configuration after compatibility testing."},
+	{path: "/proc/sys/fs/protected_hardlinks", minimum: 1, severity: domain.SeverityMedium, title: "Protected hard links are disabled", description: "Unprivileged users can create hard links in cases that weaken file ownership boundaries.", remediation: "Set fs.protected_hardlinks=1 through a managed sysctl configuration."},
+	{path: "/proc/sys/fs/protected_symlinks", minimum: 1, severity: domain.SeverityMedium, title: "Protected symbolic links are disabled", description: "World-writable directories have weaker protection against symlink-following attacks.", remediation: "Set fs.protected_symlinks=1 through a managed sysctl configuration."},
+	{path: "/proc/sys/net/ipv4/tcp_syncookies", minimum: 1, severity: domain.SeverityLow, title: "TCP SYN cookies are disabled", description: "The kernel cannot use SYN cookies as a fallback during a SYN backlog attack.", remediation: "Set net.ipv4.tcp_syncookies=1 unless a documented network requirement prevents it."},
+	{path: "/proc/sys/kernel/dmesg_restrict", minimum: 1, severity: domain.SeverityLow, title: "Kernel logs are readable by unprivileged users", description: "Kernel diagnostics can expose addresses and system details useful to a local attacker.", remediation: "Set kernel.dmesg_restrict=1 after confirming operational tooling does not depend on unrestricted dmesg access."},
+	{path: "/proc/sys/kernel/kptr_restrict", minimum: 1, severity: domain.SeverityLow, title: "Kernel pointer exposure is not restricted", description: "Kernel pointer disclosure can make local exploitation more reliable.", remediation: "Set kernel.kptr_restrict=1 or 2 according to the host's debugging requirements."},
+}
+
+func checkKernelHardening(_ context.Context, h Host) ([]domain.Finding, error) {
+	var findings []domain.Finding
+	var unavailable []string
+	for _, control := range kernelControls {
+		data, err := h.ReadFile(control.path)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			unavailable = append(unavailable, control.path)
+			continue
+		}
+		if err != nil {
+			return findings, err
+		}
+		value, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			unavailable = append(unavailable, control.path+" (invalid value)")
+			continue
+		}
+		if value < control.minimum {
+			findings = append(findings, finding(control.severity, "kernel", control.title, control.description, fmt.Sprintf("%s=%d", strings.TrimPrefix(control.path, "/proc/sys/"), value), control.remediation))
+		}
+	}
+	if len(unavailable) > 0 {
+		return findings, fmt.Errorf("kernel hardening coverage is incomplete; unavailable: %s", strings.Join(unavailable, ", "))
+	}
+	return findings, nil
 }
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {

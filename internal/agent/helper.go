@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/witkitlab/witshield/internal/action"
+	"github.com/witkitlab/witshield/internal/observation"
 )
 
 type HelperClient struct{ Socket, Token string }
@@ -115,4 +116,82 @@ func (c *HelperClient) Run(ctx context.Context, attemptID, actionID string, typ 
 		return out, ErrHelperExecutionIndeterminate
 	}
 	return out, nil
+}
+
+// ObserveSuspiciousProcesses calls the Helper's single fixed, read-only
+// observation. It is intentionally separate from Run: it cannot select an
+// executable, path, command or action type and it has no mutation semantics.
+func (c *HelperClient) ObserveSuspiciousProcesses(ctx context.Context) (observation.ProcessSnapshot, error) {
+	if c.Socket == "" || c.Token == "" {
+		return observation.ProcessSnapshot{}, errors.New("privileged helper is not configured")
+	}
+	payload, err := json.Marshal(struct {
+		Token string `json:"token"`
+		Kind  string `json:"kind"`
+	}{Token: c.Token, Kind: observation.ProcessQueryKind})
+	if err != nil {
+		return observation.ProcessSnapshot{}, err
+	}
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", c.Socket)
+	if err != nil {
+		return observation.ProcessSnapshot{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	if _, err = conn.Write(append(payload, '\n')); err != nil {
+		return observation.ProcessSnapshot{}, err
+	}
+	line, err := bufio.NewReaderSize(conn, 1<<20).ReadSlice('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && len(line) > 0) {
+		return observation.ProcessSnapshot{}, err
+	}
+	if len(line) > 1<<20 {
+		return observation.ProcessSnapshot{}, errors.New("helper observation response is too large")
+	}
+	var response struct {
+		OK               bool                  `json:"ok"`
+		Processes        []observation.Process `json:"processes,omitempty"`
+		ProcessObserved  int                   `json:"processObserved,omitempty"`
+		ProcessTruncated bool                  `json:"processTruncated,omitempty"`
+		Error            string                `json:"error,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&response); err != nil {
+		return observation.ProcessSnapshot{}, errors.New("invalid helper observation response")
+	}
+	if err = decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return observation.ProcessSnapshot{}, errors.New("helper observation response has trailing data")
+	}
+	if !response.OK {
+		if strings.TrimSpace(response.Error) == "" {
+			return observation.ProcessSnapshot{}, errors.New("helper observation failed")
+		}
+		return observation.ProcessSnapshot{}, errors.New(truncateHelperError(response.Error))
+	}
+	if len(response.Processes) > 256 || response.ProcessObserved < len(response.Processes) || (!response.ProcessTruncated && response.ProcessObserved < 0) {
+		return observation.ProcessSnapshot{}, errors.New("helper returned invalid process observation bounds")
+	}
+	for _, process := range response.Processes {
+		identity, decodeErr := hex.DecodeString(process.Identity)
+		if decodeErr != nil || len(identity) != 32 || process.PID < 1 || process.PPID < 0 || len(process.Name) > 131 || len(process.Executable) > 1027 || len(process.Reason) > 256 ||
+			(process.EventType != "suspicious_privileged_process_started" && process.EventType != "deleted_executable_process_running") {
+			return observation.ProcessSnapshot{}, errors.New("helper returned an invalid process observation")
+		}
+	}
+	return observation.ProcessSnapshot{Processes: response.Processes, Observed: response.ProcessObserved, Truncated: response.ProcessTruncated}, nil
+}
+
+func truncateHelperError(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
+	if len(value) > 256 {
+		return value[:256]
+	}
+	return value
 }

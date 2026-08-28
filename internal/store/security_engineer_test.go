@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -41,9 +43,31 @@ func TestRuntimeSignalsCreateGenericIncidentsWithoutAutomaticMutation(t *testing
 	}
 }
 
+func TestNetworkListenerSignalsCorrelatePerListener(t *testing.T) {
+	s, deviceID, now := openReportCommandTestStore(t)
+	for index, port := range []int{8080, 8443} {
+		payload, _ := json.Marshal(map[string]any{"address": "any", "port": port, "trust": "verified"})
+		if _, err := s.ProcessSecurityEvent(context.Background(), domain.SecurityEvent{ID: fmt.Sprintf("evt_listener_%d", index), DeviceID: deviceID, Type: "network_listener_opened", OccurredAt: now.Add(time.Duration(index) * time.Second), Payload: payload}, false, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	incidents, err := s.ListIncidents(context.Background(), deviceID, nil, 10)
+	if err != nil || len(incidents) != 2 {
+		t.Fatalf("incidents=%#v err=%v", incidents, err)
+	}
+	for _, incident := range incidents {
+		if incident.Category != "network" || !strings.Contains(incident.CorrelationKey, "any:") {
+			t.Fatalf("listener identity collapsed: %#v", incident)
+		}
+	}
+}
+
 func TestSSHNoiseIsPromotedOnlyAfterDeterministicThreshold(t *testing.T) {
 	s, deviceID, now := openReportCommandTestStore(t)
 	putTestDefensePolicy(t, s, deviceID, now, false, 3, 5*time.Minute)
+	if _, err := s.ProcessSecurityEvent(context.Background(), domain.SecurityEvent{ID: "evt_success_before_threshold", DeviceID: deviceID, Type: "ssh_auth_success", SourceIP: "8.8.8.8", OccurredAt: now, Payload: json.RawMessage(`{"method":"publickey","principal":"deploy"}`)}, false, now); err != nil {
+		t.Fatal(err)
+	}
 	processTestEvent(t, s, deviceID, "evt_below_one", "8.8.8.8", now)
 	processTestEvent(t, s, deviceID, "evt_below_two", "8.8.8.8", now.Add(time.Second))
 	incidents, err := s.ListIncidents(context.Background(), deviceID, nil, 10)
@@ -55,11 +79,19 @@ func TestSSHNoiseIsPromotedOnlyAfterDeterministicThreshold(t *testing.T) {
 		t.Fatal("deterministic SSH threshold did not match")
 	}
 	incidents, err = s.ListIncidents(context.Background(), deviceID, nil, 10)
-	if err != nil || len(incidents) != 1 || incidents[0].SignalCount != 1 {
+	if err != nil || len(incidents) != 1 || incidents[0].SignalCount != 2 {
 		t.Fatalf("threshold match did not create one bounded incident: %#v err=%v", incidents, err)
 	}
 	signals, err := s.ListIncidentSignals(context.Background(), incidents[0].ID, 10)
-	if err != nil || len(signals) != 1 || !strings.Contains(string(signals[0].Payload), `"failureCount":3`) {
+	if err != nil || len(signals) != 2 {
+		t.Fatalf("promoted case did not retain success evidence: %#v err=%v", signals, err)
+	}
+	var failureEvidence, successEvidence bool
+	for _, signal := range signals {
+		failureEvidence = failureEvidence || strings.Contains(string(signal.Payload), `"failureCount":3`)
+		successEvidence = successEvidence || signal.Type == "ssh_auth_success"
+	}
+	if !failureEvidence || !successEvidence {
 		t.Fatalf("promoted signal lacks correlation evidence: %#v err=%v", signals, err)
 	}
 }
@@ -115,6 +147,9 @@ func TestInvestigationLifecycleCreatesAuditableResponsePlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	investigation.Status, investigation.Hypothesis, investigation.Conclusion, investigation.Confidence = domain.InvestigationCompleted, "configuration drift", "A protected file changed and needs review.", 80
+	investigation.Observations = []string{"The protected path digest changed."}
+	investigation.Uncertainties = []string{"The actor is not known."}
+	investigation.NextChecks = []string{"Review the incident timeline."}
 	plan := &domain.ResponsePlan{Title: "Review and restore permissions", Rationale: "The deterministic signal identifies a supported target.", Risk: "medium", RequiresApproval: true,
 		Steps: []domain.ResponseStep{{ID: "step_test", ActionType: "file_permission_repair", Title: "Restore mode", Rationale: "Return to the approved mode.", Parameters: json.RawMessage(`{"path":"/etc/witshield/test","mode":"600"}`), Risk: "medium", RequiresApproval: true}}}
 	if err = s.CompleteInvestigation(context.Background(), investigation, plan, now.Add(2*time.Minute)); err != nil {
@@ -127,6 +162,10 @@ func TestInvestigationLifecycleCreatesAuditableResponsePlan(t *testing.T) {
 	plans, err := s.ListResponsePlans(context.Background(), incident.ID, 10)
 	if err != nil || len(plans) != 1 || len(plans[0].Steps) != 1 {
 		t.Fatalf("response plan was not retained: %#v err=%v", plans, err)
+	}
+	investigations, err := s.ListInvestigations(context.Background(), incident.ID, 10)
+	if err != nil || len(investigations) != 1 || len(investigations[0].Observations) != 1 || len(investigations[0].Uncertainties) != 1 || len(investigations[0].NextChecks) != 1 {
+		t.Fatalf("structured investigation evidence was not retained: %#v err=%v", investigations, err)
 	}
 	timeline, err := s.ListIncidentTimeline(context.Background(), incident.ID, 20)
 	if err != nil || len(timeline) < 3 {
@@ -246,5 +285,45 @@ func TestResponsePlanStepCreatesExactlyOneActionAndTracksVerifiedOutcome(t *test
 	incident, _ := s.Incident(context.Background(), incidents[0].ID)
 	if storedPlan.Status != domain.ResponsePlanCompleted || incident.Status != domain.IncidentMonitoring {
 		t.Fatalf("verified response was not projected: plan=%s incident=%s", storedPlan.Status, incident.Status)
+	}
+}
+
+func TestInvestigationEvidenceMigrationV8UpgradesAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "investigation-v8.sqlite")
+	s, err := Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"observations", "uncertainties", "next_checks"} {
+		if _, err = s.db.ExecContext(ctx, `ALTER TABLE investigations DROP COLUMN `+column); err != nil {
+			t.Fatalf("prepare legacy schema without %s: %v", column, err)
+		}
+	}
+	if _, err = s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=8`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		s, err = Open(ctx, databasePath)
+		if err != nil {
+			t.Fatalf("open after migration attempt %d: %v", attempt+1, err)
+		}
+		for _, column := range []string{"observations", "uncertainties", "next_checks"} {
+			exists, inspectErr := s.tableHasColumn(ctx, "investigations", column)
+			if inspectErr != nil || !exists {
+				t.Fatalf("column %s missing after migration: exists=%t err=%v", column, exists, inspectErr)
+			}
+		}
+		var versions int
+		if err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version=8`).Scan(&versions); err != nil || versions != 1 {
+			t.Fatalf("migration marker count=%d err=%v", versions, err)
+		}
+		if err = s.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

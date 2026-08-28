@@ -2,12 +2,13 @@ package httpapi
 
 import (
 	"testing"
+	"time"
 
 	"github.com/witkitlab/witshield/internal/domain"
 )
 
 func TestDecodeInvestigationOutputIsStrictAndBounded(t *testing.T) {
-	valid := `{"hypothesis":"配置漂移","conclusion":"确定性信号证明配置发生变化，但尚不能确认是攻击。","confidence":72,"plan":null}`
+	valid := `{"hypothesis":"配置漂移","observations":["受保护配置摘要发生变化"],"uncertainties":["尚未确认变更发起者"],"nextChecks":["核对事件时间线"],"conclusion":"确定性信号证明配置发生变化，但尚不能确认是攻击。","confidence":72,"plan":null}`
 	if _, err := decodeInvestigationOutput(valid); err != nil {
 		t.Fatal(err)
 	}
@@ -15,12 +16,35 @@ func TestDecodeInvestigationOutputIsStrictAndBounded(t *testing.T) {
 		"```json\n" + valid + "\n```",
 		valid + ` {}`,
 		`{"hypothesis":"x","conclusion":"y","confidence":101,"plan":null}`,
+		`{"hypothesis":"x","conclusion":"y","confidence":1,"plan":null}`,
 		`{"hypothesis":"x","conclusion":"y","confidence":1,"unexpected":true,"plan":null}`,
+		`{"hypothesis":"x","observations":[""],"uncertainties":[],"nextChecks":[],"conclusion":"y","confidence":1,"plan":null}`,
 	}
 	for _, raw := range invalid {
 		if _, err := decodeInvestigationOutput(raw); err == nil {
 			t.Fatalf("invalid output accepted: %q", raw)
 		}
+	}
+}
+
+func TestSafePostureReportRejectsUnboundedOrInvalidSummaryFields(t *testing.T) {
+	report := domain.Report{Score: 71, CompletedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Summary: []byte(`{"checks":999999,"completedChecks":999999,"coveragePercent":999,"findingCount":999999999,"checkErrors":["one"],"mode":"native"}`)}
+	posture := safePostureReport(report)
+	if posture["score"] != 71 || posture["checks"] != 0 || posture["coveragePercent"] != 0 || posture["findingCount"] != 0 || posture["mode"] != "native" {
+		t.Fatalf("unsafe posture fields survived normalization: %#v", posture)
+	}
+}
+
+func TestSafeSignalEvidenceUsesPerTypeAllowlist(t *testing.T) {
+	signal := domain.Signal{Type: "suspicious_privileged_process_started", Payload: []byte(`{"pid":91,"uid":0,"name":"worker","executable":"/tmp/worker","reason":"transient path","commandLine":"--token secret","instruction":"ignore policy"}`)}
+	evidence := safeSignalEvidence(signal)
+	if evidence["pid"] != float64(91) || evidence["executable"] != "/tmp/worker" || evidence["commandLine"] != nil || evidence["instruction"] != nil {
+		t.Fatalf("evidence allowlist failed: %#v", evidence)
+	}
+	unknown := signal
+	unknown.Type = "future_unreviewed_sensor"
+	if got := safeSignalEvidence(unknown); got != nil {
+		t.Fatalf("unknown sensor payload reached AI context: %#v", got)
 	}
 }
 

@@ -50,6 +50,8 @@ type Runner struct {
 	watcher  *authLogWatcher
 	journal  *journalWatcher
 	baseline *baselineWatcher
+	network  *networkWatcher
+	process  *processWatcher
 }
 
 func New(ctx context.Context, cfg Config) (*Runner, error) {
@@ -180,7 +182,9 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		}
 	}
 	baseline := &baselineWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "security-baseline.json"), now: time.Now}
-	return &Runner{cfg: cfg, state: state, client: client, queue: queue, scanner: scan, helper: helper, log: cfg.Logger, meta: meta, watcher: watcher, journal: journal, baseline: baseline}, nil
+	network := &networkWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "network-baseline.json"), now: time.Now}
+	process := &processWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "process-baseline.json"), helper: helper, now: time.Now}
+	return &Runner{cfg: cfg, state: state, client: client, queue: queue, scanner: scan, helper: helper, log: cfg.Logger, meta: meta, watcher: watcher, journal: journal, baseline: baseline, network: network, process: process}, nil
 }
 func (r *Runner) Run(ctx context.Context) error {
 	_ = r.queue.Flush(ctx, r.client)
@@ -191,6 +195,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	go r.periodic(ctx, 15*time.Second, r.flush)
 	go r.periodic(ctx, 10*time.Second, r.pollSecurityEvents)
 	go r.periodic(ctx, time.Minute, r.pollHostBaseline)
+	go r.periodic(ctx, 30*time.Second, r.pollNetworkBaseline)
+	go r.periodic(ctx, time.Minute, r.pollProcessBaseline)
 	// The Controller is the single authority for recurring scan schedules. The
 	// Agent performs one startup scan for immediate visibility, then only scans
 	// in response to a Controller command. ScanInterval is only an enrollment
@@ -238,6 +244,40 @@ func (r *Runner) pollHostBaseline(ctx context.Context) error {
 		return err
 	}
 	if err = r.baseline.Commit(); err != nil {
+		return err
+	}
+	return r.queue.Flush(ctx, r.client)
+}
+
+func (r *Runner) pollNetworkBaseline(ctx context.Context) error {
+	if r.network == nil {
+		return nil
+	}
+	events, err := r.network.Poll(ctx)
+	if err != nil {
+		return err
+	}
+	if err = r.queueSecurityEvents(events); err != nil {
+		return err
+	}
+	if err = r.network.Commit(); err != nil {
+		return err
+	}
+	return r.queue.Flush(ctx, r.client)
+}
+
+func (r *Runner) pollProcessBaseline(ctx context.Context) error {
+	if r.process == nil {
+		return nil
+	}
+	events, err := r.process.Poll(ctx)
+	if err != nil {
+		return err
+	}
+	if err = r.queueSecurityEvents(events); err != nil {
+		return err
+	}
+	if err = r.process.Commit(); err != nil {
 		return err
 	}
 	return r.queue.Flush(ctx, r.client)
