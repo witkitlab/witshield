@@ -171,6 +171,21 @@ describe('WitShieldApp', () => {
     await waitFor(() => expect(screen.queryByText(/X-Organization/)).not.toBeInTheDocument());
   });
 
+  it('explains the fixed minimal AI disclosure without presenting it as an editable field', async () => {
+    render(<WitShieldApp />);
+    await screen.findByText('服务器安全概览');
+
+    fireEvent.click(screen.getByRole('button', { name: /^设置$/ }));
+    expect(await screen.findByText('数据发送策略')).toBeInTheDocument();
+    expect(screen.getByText('推荐 · 当前固定')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('最少信息：仅相关发现与必要证据')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('查看发送范围与保护方式'));
+    expect(screen.getByText(/相关的开放风险（最多 20 项）/)).toBeInTheDocument();
+    expect(screen.getByText(/完整日志、任意文件正文、环境变量/)).toBeInTheDocument();
+    expect(screen.getByText(/模型只能解释和建议，不能直接执行操作/)).toBeInTheDocument();
+  });
+
   it('never reuses a stored API key after the endpoint origin changes', async () => {
     render(<WitShieldApp />);
     await screen.findByText('服务器安全概览');
