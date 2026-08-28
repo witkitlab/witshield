@@ -16,7 +16,6 @@ import {
   Terminal,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { BrandMark } from './brand-mark';
 import styles from './marketing.module.css';
 
 type Language = 'zh' | 'en';
@@ -29,8 +28,8 @@ const copy = {
     lead: '妙计巡御持续检查风险、解释影响，在你批准后完成修复，并在明确授权的边界内响应攻击。',
     install: '一行命令安装',
     github: '查看 GitHub',
-    heroDemoLabel: '移动控制台',
-    heroDemoHint: '设备、风险与审批实时同步',
+    heroDemoLabel: '跨端控制台',
+    heroDemoHint: '桌面与手机，同一任务实时同步',
     heroOnline: '2 台 Agent 在线',
     heroApproval: '1 项动作等待批准',
     openConsole: '打开完整控制台',
@@ -82,8 +81,8 @@ const copy = {
     lead: 'WitShield AI continuously finds risk, explains impact, fixes issues after your approval, and responds to attacks within boundaries you define.',
     install: 'Install with one command',
     github: 'View on GitHub',
-    heroDemoLabel: 'Mobile control',
-    heroDemoHint: 'Devices, risks, and approvals stay in sync',
+    heroDemoLabel: 'Cross-device control',
+    heroDemoHint: 'Desktop and mobile stay on the same live task',
     heroOnline: '2 Agents online',
     heroApproval: '1 action awaiting approval',
     openConsole: 'Open the full console',
@@ -157,7 +156,7 @@ export function MarketingHome() {
     <main className={styles.site}>
       <header className={styles.header}>
         <a className={styles.logo} href="#top" aria-label={language === 'zh' ? '妙计巡御首页' : 'WitShield AI home'}>
-          <span className={styles.logoMark}><BrandMark /></span>
+          <span className={styles.logoMark}><ShieldCheck /></span>
           <span><strong>妙计巡御</strong><small>WitShield AI</small></span>
         </a>
         <nav className={styles.nav} aria-label={language === 'zh' ? '官网导航' : 'Site navigation'}>
@@ -189,12 +188,18 @@ export function MarketingHome() {
             <span><i className={styles.liveDot} />{text.heroDemoLabel}</span>
             <small>{text.heroDemoHint}</small>
           </div>
-          <div className={styles.phoneStage}>
+          <div className={styles.crossDeviceStage}>
             <span className={`${styles.heroSignal} ${styles.heroSignalOnline}`}><i className={styles.liveDot} />{text.heroOnline}</span>
+            <div className={styles.desktopFrame}>
+              <div className={styles.desktopChrome} aria-hidden="true"><i /><i /><i /><span>control.witshield.local</span></div>
+              <div className={styles.desktopScreen}>
+                <iframe src="/demo" title={`${text.heroDemoLabel} desktop`} tabIndex={-1} />
+              </div>
+            </div>
             <div className={styles.phoneFrame}>
               <div className={styles.phoneScreen}>
                 <div className={styles.phoneStatus} aria-hidden="true"><span>09:41</span><i /></div>
-                <iframe src="/demo" title={text.heroDemoLabel} />
+                <iframe src="/demo" title={`${text.heroDemoLabel} mobile`} />
               </div>
             </div>
             <span className={`${styles.heroSignal} ${styles.heroSignalApproval}`}><ShieldCheck size={13} />{text.heroApproval}</span>
@@ -286,7 +291,7 @@ export function MarketingHome() {
       <aside className={styles.statusNote}><span>v0.1</span><p>{text.currentStatus}</p></aside>
 
       <footer className={styles.footer}>
-        <a className={styles.logo} href="#top"><span className={styles.logoMark}><BrandMark /></span><span><strong>妙计巡御</strong><small>WitShield AI</small></span></a>
+        <a className={styles.logo} href="#top"><span className={styles.logoMark}><ShieldCheck /></span><span><strong>妙计巡御</strong><small>WitShield AI</small></span></a>
         <p>{text.footerLine}</p>
         <div><a href="https://github.com/witkitlab/witshield">GitHub</a><a href="https://github.com/witkitlab/witshield/blob/main/SECURITY.md">Security</a><span>Apache 2.0</span></div>
       </footer>

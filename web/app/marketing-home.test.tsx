@@ -17,7 +17,8 @@ describe('MarketingHome', () => {
     render(<MarketingHome />);
 
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('让每台服务器，都有一位懂边界的智能守卫。');
-    expect(screen.getByTitle('移动控制台')).toHaveAttribute('src', '/demo');
+    expect(screen.getByTitle('跨端控制台 desktop')).toHaveAttribute('src', '/demo');
+    expect(screen.getByTitle('跨端控制台 mobile')).toHaveAttribute('src', '/demo');
     expect(screen.getByTitle('交互式产品演示')).toHaveAttribute('src', '/demo');
     expect(screen.getByText('固定演示数据 · 不连接真实服务器')).toBeInTheDocument();
     expect(screen.getByText('Docker 观察模式')).toBeInTheDocument();
