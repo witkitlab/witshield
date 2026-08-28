@@ -43,11 +43,11 @@
   margin: 0 auto;
   padding: 58px 38px 62px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 390px);
-  gap: 64px;
+  grid-template-columns: minmax(0, 1fr) minmax(500px, 590px);
+  gap: 38px;
   align-items: center;
 }
-.heroCopy { max-width: 990px; }
+.heroCopy { max-width: 900px; }
 .eyebrow { margin: 0 0 26px; color: var(--site-blue); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .hero h1 { margin: 0; font-size: clamp(47px, 6vw, 92px); line-height: .96; letter-spacing: -.065em; font-weight: 610; }
 .hero h1 span { display: block; }
@@ -57,21 +57,28 @@
 .primaryCta { color: white; background: var(--site-ink); }
 .primaryCta svg:last-child { margin-left: 8px; }
 .secondaryCta { color: var(--site-ink); background: transparent; }
-.heroProduct { width: 100%; max-width: 390px; justify-self: end; }
+.heroProduct { width: 100%; max-width: 590px; justify-self: end; }
 .heroProductHeading { margin: 0 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .heroProductHeading > span { display: inline-flex; align-items: center; gap: 8px; color: #354047; font-size: 11px; font-weight: 680; }
 .heroProductHeading small { color: #7a8387; font-size: 9px; }
-.phoneStage { position: relative; min-height: 650px; }
-.phoneFrame { position: relative; width: 320px; height: 620px; margin: 8px auto 18px; border: 1px solid #3a4146; border-radius: 42px; padding: 9px; background: #171b1f; box-shadow: 36px 42px 90px rgb(27 35 39 / 19%), 0 3px 9px rgb(27 35 39 / 16%); transform: perspective(1200px) rotateY(-9deg) rotateZ(3.5deg); transform-origin: 50% 54%; transition: transform .35s cubic-bezier(.2, .75, .25, 1), box-shadow .35s ease; }
-.phoneFrame:hover, .phoneFrame:focus-within { box-shadow: 24px 34px 74px rgb(27 35 39 / 16%), 0 3px 9px rgb(27 35 39 / 14%); transform: perspective(1200px) rotateY(-4deg) rotateZ(1.5deg) translateY(-4px); }
+.crossDeviceStage { position: relative; min-height: 490px; isolation: isolate; }
+.desktopFrame { position: absolute; top: 30px; left: 0; width: 500px; height: 350px; overflow: hidden; border: 1px solid #c7cecc; border-radius: 14px; background: #f7f9f7; box-shadow: 0 30px 70px rgb(27 35 39 / 14%); transform: perspective(1300px) rotateY(4deg) rotateZ(-1.1deg); transform-origin: 45% 55%; transition: transform .35s cubic-bezier(.2, .75, .25, 1), box-shadow .35s ease; }
+.desktopFrame:hover, .desktopFrame:focus-within { box-shadow: 0 25px 58px rgb(27 35 39 / 12%); transform: perspective(1300px) rotateY(1deg) rotateZ(-.3deg) translateY(-3px); }
+.desktopChrome { height: 32px; border-bottom: 1px solid #d9dfdc; display: flex; align-items: center; gap: 6px; padding: 0 11px; color: #7d8583; background: #e8ece9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; }
+.desktopChrome i { width: 6px; height: 6px; border-radius: 50%; background: #bcc4c1; }
+.desktopChrome span { margin-left: 5px; }
+.desktopScreen { position: relative; height: calc(100% - 32px); overflow: hidden; background: #f7f9f7; }
+.desktopScreen iframe { width: 1040px; height: 665px; border: 0; background: #f7f9f7; transform: scale(.48); transform-origin: top left; pointer-events: none; }
+.phoneFrame { position: absolute; z-index: 3; top: 92px; right: 2px; width: 220px; height: 425px; border: 1px solid #3a4146; border-radius: 31px; padding: 7px; background: #171b1f; box-shadow: 30px 34px 72px rgb(27 35 39 / 22%), 0 3px 9px rgb(27 35 39 / 16%); transform: perspective(1200px) rotateY(-8deg) rotateZ(4.5deg); transform-origin: 50% 54%; transition: transform .35s cubic-bezier(.2, .75, .25, 1), box-shadow .35s ease; }
+.phoneFrame:hover, .phoneFrame:focus-within { box-shadow: 22px 28px 60px rgb(27 35 39 / 18%), 0 3px 9px rgb(27 35 39 / 14%); transform: perspective(1200px) rotateY(-3deg) rotateZ(2deg) translateY(-4px); }
 .phoneFrame::after { content: ''; position: absolute; top: 96px; right: -3px; width: 3px; height: 76px; border-radius: 0 3px 3px 0; background: #30363a; }
-.phoneScreen { height: 100%; overflow: hidden; border-radius: 28px; background: #f7f9f7; }
+.phoneScreen { height: 100%; overflow: hidden; border-radius: 23px; background: #f7f9f7; }
 .phoneStatus { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; color: #f4f6f5; background: #171b1f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; }
 .phoneStatus i { width: 38px; height: 8px; border-radius: 999px; background: #31373b; }
 .phoneScreen iframe { width: 100%; height: calc(100% - 24px); border: 0; background: #f7f9f7; }
 .heroSignal { position: absolute; z-index: 2; min-height: 31px; border: 1px solid #d5dcda; border-radius: 999px; display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; color: #46514f; background: rgb(249 250 248 / 92%); box-shadow: 0 12px 32px rgb(27 35 39 / 10%); backdrop-filter: blur(12px); font-size: 9px; font-weight: 650; white-space: nowrap; }
-.heroSignalOnline { top: 78px; left: -18px; }
-.heroSignalApproval { right: -12px; bottom: 102px; color: #5e4930; border-color: #e0d3bc; background: rgb(255 251 242 / 94%); }
+.heroSignalOnline { top: 55px; left: -14px; }
+.heroSignalApproval { right: -8px; bottom: 42px; color: #5e4930; border-color: #e0d3bc; background: rgb(255 251 242 / 94%); }
 .heroSignalApproval svg { color: #9b6b2f; }
 .heroDemoLink { width: max-content; margin: 13px 8px 0 auto; display: flex; align-items: center; gap: 6px; color: var(--site-ink); text-decoration: none; font-size: 10px; }
 
@@ -154,7 +161,7 @@
   .header { grid-template-columns: 1fr auto; }
   .nav { display: none; }
   .hero { min-height: auto; padding-top: 68px; grid-template-columns: 1fr; gap: 56px; }
-  .heroProduct { max-width: 430px; justify-self: center; }
+  .heroProduct { max-width: 590px; justify-self: center; }
   .demoViewport { height: 650px; }
   .workflow { grid-template-columns: 1fr; gap: 64px; }
   .sectionIntro { max-width: 760px; }
@@ -175,8 +182,17 @@
   .lead { margin-top: 26px; font-size: 16px; }
   .heroProduct { max-width: 380px; }
   .heroProductHeading { align-items: flex-start; flex-direction: column; gap: 4px; }
-  .phoneStage { min-height: 616px; }
-  .phoneFrame { width: min(300px, calc(100vw - 70px)); height: 590px; border-radius: 38px; transform: perspective(1200px) rotateY(-6deg) rotateZ(2.5deg); }
+  .crossDeviceStage { min-height: 430px; }
+  .desktopFrame { top: 18px; width: calc(100% - 20px); height: 245px; border-radius: 11px; transform: perspective(1000px) rotateY(3deg) rotateZ(-.8deg); }
+  .desktopChrome { height: 26px; }
+  .desktopScreen { height: calc(100% - 26px); }
+  .desktopScreen iframe { width: 1030px; height: 665px; transform: scale(.34); }
+  .phoneFrame { top: 92px; right: -4px; width: 172px; height: 340px; border-radius: 25px; padding: 5px; transform: perspective(1000px) rotateY(-5deg) rotateZ(4deg); }
+  .phoneFrame::after { top: 70px; height: 48px; }
+  .phoneScreen { border-radius: 17px; }
+  .phoneStatus { height: 17px; padding: 0 10px; font-size: 6px; }
+  .phoneStatus i { width: 25px; height: 5px; }
+  .phoneScreen iframe { height: calc(100% - 17px); }
   .heroSignal { display: none; }
   .productSection { padding: 0 0 60px; }
   .demoHeading { margin: 0 18px; }
