@@ -28,15 +28,14 @@ const copy = {
     lead: '妙计巡御持续检查风险、解释影响，在你批准后完成修复，并在明确授权的边界内响应攻击。',
     install: '一行命令安装',
     github: '查看 GitHub',
+    heroDemoLabel: '移动控制台',
+    heroDemoHint: '设备、风险与审批实时同步',
+    heroOnline: '2 台 Agent 在线',
+    heroApproval: '1 项动作等待批准',
+    openConsole: '打开完整控制台',
     demoLabel: '交互式产品演示',
     demoHint: '固定演示数据 · 不连接真实服务器',
     openDemo: '打开完整演示',
-    statOne: '2 台',
-    statOneLabel: '受保护设备',
-    statTwo: '14 项',
-    statTwoLabel: '本轮安全检查',
-    statThree: '1 项',
-    statThreeLabel: '等待管理员批准',
     workflowEyebrow: '从发现到闭环',
     workflowTitle: '不是再发一封告警，\n而是把问题处理完。',
     workflowLead: '规则负责事实，AI 负责解释，策略与管理员共同决定动作能否发生。每一步都有记录，每一次变更都要验证。',
@@ -82,15 +81,14 @@ const copy = {
     lead: 'WitShield AI continuously finds risk, explains impact, fixes issues after your approval, and responds to attacks within boundaries you define.',
     install: 'Install with one command',
     github: 'View on GitHub',
+    heroDemoLabel: 'Mobile control',
+    heroDemoHint: 'Devices, risks, and approvals stay in sync',
+    heroOnline: '2 Agents online',
+    heroApproval: '1 action awaiting approval',
+    openConsole: 'Open the full console',
     demoLabel: 'Interactive product demo',
     demoHint: 'Fixed sample data · No real server connection',
     openDemo: 'Open full demo',
-    statOne: '2',
-    statOneLabel: 'protected servers',
-    statTwo: '14',
-    statTwoLabel: 'security checks',
-    statThree: '1',
-    statThreeLabel: 'awaiting approval',
     workflowEyebrow: 'From signal to closure',
     workflowTitle: 'Not another alert.\nA problem carried to completion.',
     workflowLead: 'Rules establish facts. AI explains them. Policies and the administrator decide what may happen. Every step is recorded and every change is verified.',
@@ -185,11 +183,23 @@ export function MarketingHome() {
             <a className={styles.secondaryCta} href="https://github.com/witkitlab/witshield" target="_blank" rel="noreferrer"><GitBranch size={16} />{text.github}</a>
           </div>
         </div>
-        <dl className={styles.heroStats} aria-label={language === 'zh' ? '演示环境概况' : 'Demo environment summary'}>
-          <div><dt>{text.statOne}</dt><dd>{text.statOneLabel}</dd></div>
-          <div><dt>{text.statTwo}</dt><dd>{text.statTwoLabel}</dd></div>
-          <div><dt>{text.statThree}</dt><dd>{text.statThreeLabel}</dd></div>
-        </dl>
+        <div className={styles.heroProduct}>
+          <div className={styles.heroProductHeading}>
+            <span><i className={styles.liveDot} />{text.heroDemoLabel}</span>
+            <small>{text.heroDemoHint}</small>
+          </div>
+          <div className={styles.phoneStage}>
+            <span className={`${styles.heroSignal} ${styles.heroSignalOnline}`}><i className={styles.liveDot} />{text.heroOnline}</span>
+            <div className={styles.phoneFrame}>
+              <div className={styles.phoneScreen}>
+                <div className={styles.phoneStatus} aria-hidden="true"><span>09:41</span><i /></div>
+                <iframe src="/demo" title={text.heroDemoLabel} />
+              </div>
+            </div>
+            <span className={`${styles.heroSignal} ${styles.heroSignalApproval}`}><ShieldCheck size={13} />{text.heroApproval}</span>
+          </div>
+          <a className={styles.heroDemoLink} href="/demo" target="_blank">{text.openConsole}<ArrowRight size={14} /></a>
+        </div>
       </section>
 
       <section className={styles.productSection} id="product">
@@ -200,7 +210,7 @@ export function MarketingHome() {
         <div className={styles.demoFrame}>
           <div className={styles.windowBar} aria-hidden="true"><i /><i /><i /><span>demo.witshield.local</span></div>
           <div className={styles.demoViewport}>
-            <iframe src="/demo" title={text.demoLabel} />
+            <iframe src="/demo" title={text.demoLabel} loading="lazy" />
           </div>
         </div>
       </section>
