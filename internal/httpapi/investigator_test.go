@@ -32,6 +32,37 @@ func TestDecodeInvestigationOutputIsStrictAndBounded(t *testing.T) {
 	}
 }
 
+func TestDecodeInvestigationOutputNormalizesConfidenceConventions(t *testing.T) {
+	tests := []struct {
+		confidence string
+		want       modelConfidence
+	}{
+		{"0", 0},
+		{"1", 1},
+		{"0.2", 20},
+		{"1.0", 100},
+		{"72", 72},
+		{"72.5", 73},
+		{"100", 100},
+	}
+	for _, tt := range tests {
+		raw := `{"hypothesis":"x","observations":[],"uncertainties":[],"nextChecks":[],"conclusion":"y","confidence":` + tt.confidence + `,"plan":null}`
+		got, err := decodeInvestigationOutput(raw)
+		if err != nil {
+			t.Fatalf("confidence %s rejected: %v", tt.confidence, err)
+		}
+		if got.Confidence != tt.want {
+			t.Fatalf("confidence %s normalized to %d, want %d", tt.confidence, got.Confidence, tt.want)
+		}
+	}
+	for _, invalid := range []string{"-0.1", "100.1", `"high"`, "null"} {
+		raw := `{"hypothesis":"x","observations":[],"uncertainties":[],"nextChecks":[],"conclusion":"y","confidence":` + invalid + `,"plan":null}`
+		if _, err := decodeInvestigationOutput(raw); err == nil {
+			t.Fatalf("invalid confidence accepted: %s", invalid)
+		}
+	}
+}
+
 func TestSafePostureReportRejectsUnboundedOrInvalidSummaryFields(t *testing.T) {
 	report := domain.Report{Score: 71, CompletedAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC), Summary: []byte(`{"checks":999999,"completedChecks":999999,"coveragePercent":999,"findingCount":999999999,"checkErrors":["one"],"mode":"native"}`)}
 	posture := safePostureReport(report)
