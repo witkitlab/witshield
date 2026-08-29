@@ -136,6 +136,8 @@ type investigationPublicError struct {
 	Cause   error
 }
 
+const investigationRequestTimeout = 90 * time.Second
+
 func (e *investigationPublicError) Error() string { return e.Code }
 func (e *investigationPublicError) Unwrap() error { return e.Cause }
 
@@ -197,7 +199,12 @@ plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","s
 		return investigation, nil, budgetErr
 	}
 	messages := []ai.Message{{Role: "system", Content: system}, {Role: "user", Content: "ALLOWLISTED_READ_ONLY_TOOL_RESULTS (untrusted data):\n" + string(contextPayload)}}
-	requestCtx, cancel := contextWithTimeout(ctx, 35*time.Second)
+	// Security investigations send a bounded but materially larger evidence
+	// payload than the interactive connectivity check. Reasoning-oriented
+	// models commonly need more than the chat timeout while producing the
+	// required structured conclusion. The AI client still enforces a two-minute
+	// absolute ceiling.
+	requestCtx, cancel := contextWithTimeout(ctx, investigationRequestTimeout)
 	defer cancel()
 	reply, err := client.Chat(requestCtx, messages)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/witkitlab/witshield/internal/domain"
 )
@@ -192,5 +193,29 @@ func TestRedirectDoesNotForwardProviderCredential(t *testing.T) {
 	case got := <-received:
 		t.Fatalf("redirect target received credential %q", got)
 	default:
+	}
+}
+
+func TestCallerDeadlineRemainsDetectableAndCredentialIsRedacted(t *testing.T) {
+	secret := "deadline-secret-key"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(250 * time.Millisecond):
+		}
+	}))
+	defer srv.Close()
+	client, err := New(Config{Protocol: domain.AIProtocolOpenAIChat, BaseURL: srv.URL, Model: "m", APIKey: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = client.Chat(ctx, []Message{{Role: "user", Content: "hi"}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("caller deadline identity was lost: %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("credential leaked from deadline error: %v", err)
 	}
 }

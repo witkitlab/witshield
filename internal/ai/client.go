@@ -19,7 +19,18 @@ import (
 	"github.com/witkitlab/witshield/internal/domain"
 )
 
-const maxResponseBody = 2 << 20
+const (
+	maxResponseBody      = 2 << 20
+	maxAIRequestDuration = 2 * time.Minute
+)
+
+type requestError struct {
+	message string
+	cause   error
+}
+
+func (e *requestError) Error() string { return e.message }
+func (e *requestError) Unwrap() error { return e.cause }
 
 type Config struct {
 	Protocol      domain.AIProtocol
@@ -63,7 +74,11 @@ func New(cfg Config) (*Client, error) {
 	// Provider credentials must never be forwarded to an ambient HTTP proxy.
 	transport.Proxy = nil
 	transport.DialContext = safeDialer((&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext)
-	return &Client{cfg: cfg, endpoint: u, http: &http.Client{Timeout: 35 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("AI endpoint redirects are disabled") }}}, nil
+	// Callers apply shorter operation-specific deadlines (connectivity tests,
+	// chat, and investigations have very different latency profiles). Keep a
+	// hard upper bound here so a caller bug still cannot leave an upstream
+	// request hanging indefinitely.
+	return &Client{cfg: cfg, endpoint: u, http: &http.Client{Timeout: maxAIRequestDuration, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("AI endpoint redirects are disabled") }}}, nil
 }
 
 func validateURL(u *url.URL) error {
@@ -270,7 +285,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 
 	resp, err := c.http.Do(req) // lgtm[go/request-forgery]
 	if err != nil {
-		return "", fmt.Errorf("AI request failed: %s", c.redact(err.Error()))
+		return "", &requestError{message: "AI request failed: " + c.redact(err.Error()), cause: err}
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, maxResponseBody+1)
