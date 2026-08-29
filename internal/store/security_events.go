@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -163,6 +164,11 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 		if _, _, err = s.upsertSignalIncidentTx(ctx, tx, signal, correlationKey); err != nil {
 			return out, err
 		}
+		if event.Type == "suspicious_privileged_process_started" && !observerOnly {
+			if err = maybeQueueProcessContainmentTx(ctx, tx, event, &out, now); err != nil {
+				return out, err
+			}
+		}
 		return out, tx.Commit()
 	}
 	policy, err := defensePolicyTx(ctx, tx, event.DeviceID, now)
@@ -294,6 +300,68 @@ func (s *Store) ProcessSecurityEvent(ctx context.Context, event domain.SecurityE
 		return SecurityEventProcessOutcome{}, err
 	}
 	return out, nil
+}
+
+func maybeQueueProcessContainmentTx(ctx context.Context, tx *sql.Tx, event domain.SecurityEvent, out *SecurityEventProcessOutcome, now time.Time) error {
+	var evidence struct {
+		AutomaticActionEligible bool   `json:"automaticActionEligible"`
+		Trust                   string `json:"trust"`
+		PID                     int    `json:"pid"`
+		UID                     uint64 `json:"uid"`
+		StartTime               uint64 `json:"startTime"`
+		Executable              string `json:"executable"`
+	}
+	if json.Unmarshal(event.Payload, &evidence) != nil || !evidence.AutomaticActionEligible || evidence.Trust != "verified" || evidence.PID < 2 || evidence.UID != 0 || evidence.StartTime == 0 {
+		return nil
+	}
+	clean := strings.TrimSpace(evidence.Executable)
+	if clean == "" || filepath.Clean(clean) != clean || clean != strings.TrimSuffix(clean, " (deleted)") || !(strings.HasPrefix(clean, "/tmp/") || strings.HasPrefix(clean, "/var/tmp/") || strings.HasPrefix(clean, "/dev/shm/")) {
+		return nil
+	}
+	var enabled, emergencyStop bool
+	var mode, allowedJSON string
+	var maxPerHour int
+	err := tx.QueryRowContext(ctx, `SELECT enabled,emergency_stop,mode,allowed_action_types,max_actions_per_hour FROM policy_grants WHERE device_id=? AND capability='workload.runtime'`, event.DeviceID).Scan(&enabled, &emergencyStop, &mode, &allowedJSON, &maxPerHour)
+	if errors.Is(err, sql.ErrNoRows) || !enabled || emergencyStop || mode != string(domain.AutonomyEnhanced) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var allowed []string
+	if json.Unmarshal([]byte(allowedJSON), &allowed) != nil {
+		return errors.New("runtime policy action list is invalid")
+	}
+	authorized := false
+	for _, item := range allowed {
+		authorized = authorized || item == string(action.TypeTemporaryProcessSuspend)
+	}
+	if !authorized || maxPerHour < 1 {
+		return nil
+	}
+	var recent int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM actions WHERE device_id=? AND approved_by='policy:workload.runtime' AND created_at>=?`, event.DeviceID, timeText(now.Add(-time.Hour))).Scan(&recent); err != nil {
+		return err
+	}
+	if recent >= maxPerHour {
+		return nil
+	}
+	params, _ := json.Marshal(action.TemporaryProcessSuspendParams{PID: evidence.PID, StartTime: evidence.StartTime, Executable: clean, TTLSeconds: 120, Reason: "verified privileged executable started from a transient writable path"})
+	preview, _ := json.Marshal(map[string]any{"summary": "预授权策略将临时暂停一个精确匹配的高风险进程", "pid": evidence.PID, "executable": clean, "ttlSeconds": 120, "automaticResume": true})
+	approvedAt := now.UTC()
+	actionID, commandID := ids.New("act"), ids.New("cmd")
+	policyAction := domain.Action{ID: actionID, DeviceID: event.DeviceID, Type: string(action.TypeTemporaryProcessSuspend), Parameters: params, Preview: preview, Status: domain.ActionApproved, ApprovedBy: "policy:workload.runtime", ApprovedAt: &approvedAt, CreatedAt: approvedAt, UpdatedAt: approvedAt}
+	payload, _ := json.Marshal(map[string]any{"actionId": actionID, "type": action.TypeTemporaryProcessSuspend, "parameters": json.RawMessage(params), "policyAuthorized": true})
+	command := domain.DeviceCommand{ID: commandID, DeviceID: event.DeviceID, Type: domain.CommandExecuteAction, Payload: payload, CreatedAt: approvedAt}
+	if err = insertPolicyActionAndCommand(ctx, tx, policyAction, command, "policy:workload.runtime"); err != nil {
+		return err
+	}
+	out.Recorded, out.ActionID, out.CommandID = true, actionID, commandID
+	out.Decision = defense.Evaluation{Matched: true, ShouldBan: false, Reason: "verified transient privileged process matched the pre-authorized runtime policy"}
+	notificationEvent := domain.NotificationEvent{ID: "defense:" + actionID, Type: "defense_event", Severity: domain.SeverityCritical, DeviceID: event.DeviceID, Title: "已触发进程隔离", Message: "发现精确匹配的高风险特权进程，已按预授权暂停 120 秒并保留自动恢复。", OccurredAt: approvedAt}
+	out.NotificationQueued, err = enqueueNotificationTx(ctx, tx, notificationEvent, now)
+	out.Notification = &notificationEvent
+	return err
 }
 
 func (s *Store) attachRecentSSHSuccessTx(ctx context.Context, tx *sql.Tx, deviceID, sourceIP, correlationKey string, since, now time.Time) error {

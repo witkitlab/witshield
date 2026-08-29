@@ -484,10 +484,15 @@ func (s *Store) PutDefensePolicyAndCancelQueued(ctx context.Context, x domain.De
 		x.DeviceID, "network.auth_bruteforce", x.Enabled, string(mode), `["temporary_ip_ban"]`, x.MaxBansPerHour, x.EmergencyStop, timeText(x.UpdatedAt)); err != nil {
 		return 0, err
 	}
+	// The device emergency stop is intentionally global: adding a new
+	// pre-authorized capability must never create a second hidden stop switch.
+	if _, err = tx.ExecContext(ctx, `UPDATE policy_grants SET emergency_stop=?,updated_at=? WHERE device_id=?`, x.EmergencyStop, timeText(x.UpdatedAt), x.DeviceID); err != nil {
+		return 0, err
+	}
 	if !x.EmergencyStop {
 		return 0, tx.Commit()
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT c.id,a.id FROM device_commands c JOIN actions a ON a.id=json_extract(c.payload,'$.actionId') WHERE c.device_id=? AND c.completed_at IS NULL AND c.type=? AND a.approved_by='policy:ssh_bruteforce' AND a.status=?`, x.DeviceID, string(domain.CommandExecuteAction), string(domain.ActionApproved))
+	rows, err := tx.QueryContext(ctx, `SELECT c.id,a.id FROM device_commands c JOIN actions a ON a.id=json_extract(c.payload,'$.actionId') WHERE c.device_id=? AND c.completed_at IS NULL AND c.type=? AND a.approved_by LIKE 'policy:%' AND a.status=?`, x.DeviceID, string(domain.CommandExecuteAction), string(domain.ActionApproved))
 	if err != nil {
 		return 0, err
 	}

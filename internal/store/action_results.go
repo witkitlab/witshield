@@ -73,6 +73,16 @@ func (s *Store) CreatePolicyActionAndEnqueueLimited(ctx context.Context, x domai
 }
 
 func insertPolicyActionAndEnqueue(ctx context.Context, tx *sql.Tx, x domain.Action, cmd domain.DeviceCommand, ban domain.TemporaryBan, policyActor string) error {
+	if err := insertPolicyActionAndCommand(ctx, tx, x, cmd, policyActor); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO temporary_bans(id,device_id,action_id,source_ip,reason,expires_at,created_at,simulated,status) VALUES(?,?,?,?,?,?,?,?,?)`, ban.ID, ban.DeviceID, x.ID, ban.SourceIP, ban.Reason, timeText(ban.ExpiresAt), timeText(ban.CreatedAt), false, "pending"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func insertPolicyActionAndCommand(ctx context.Context, tx *sql.Tx, x domain.Action, cmd domain.DeviceCommand, policyActor string) error {
 	if err := expireDraftActionsTx(ctx, tx, x.DeviceID, x.CreatedAt); err != nil {
 		return err
 	}
@@ -92,9 +102,6 @@ func insertPolicyActionAndEnqueue(ctx context.Context, tx *sql.Tx, x domain.Acti
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO device_commands(id,device_id,type,payload,created_at) VALUES(?,?,?,?,?)`, cmd.ID, cmd.DeviceID, string(cmd.Type), string(cmd.Payload), timeText(cmd.CreatedAt)); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO temporary_bans(id,device_id,action_id,source_ip,reason,expires_at,created_at,simulated,status) VALUES(?,?,?,?,?,?,?,?,?)`, ban.ID, ban.DeviceID, x.ID, ban.SourceIP, ban.Reason, timeText(ban.ExpiresAt), timeText(ban.CreatedAt), false, "pending"); err != nil {
 		return err
 	}
 	return nil
@@ -180,7 +187,7 @@ func (s *Store) StartActionCommand(ctx context.Context, deviceID, commandID stri
 		}
 		return false, tx.Commit()
 	}
-	if commandType == string(domain.CommandExecuteAction) && meta.PolicyAuthorized {
+	if commandType == string(domain.CommandExecuteAction) && meta.PolicyAuthorized && meta.Type == action.TypeTemporaryIPBan {
 		var enabled, emergencyStop, autoBan bool
 		err = tx.QueryRowContext(ctx, `SELECT enabled,emergency_stop,auto_ban FROM defense_policies WHERE device_id=?`, deviceID).Scan(&enabled, &emergencyStop, &autoBan)
 		if errors.Is(err, sql.ErrNoRows) || !enabled || emergencyStop || !autoBan {
@@ -201,6 +208,45 @@ func (s *Store) StartActionCommand(ctx context.Context, deviceID, commandID stri
 		}
 		if err != nil {
 			return false, err
+		}
+	} else if commandType == string(domain.CommandExecuteAction) && meta.PolicyAuthorized {
+		capability := ""
+		if meta.Type == action.TypeTemporaryProcessSuspend {
+			capability = "workload.runtime"
+		}
+		var enabled, emergencyStop bool
+		var mode, allowedJSON string
+		if capability == "" {
+			err = sql.ErrNoRows
+		} else {
+			err = tx.QueryRowContext(ctx, `SELECT enabled,emergency_stop,mode,allowed_action_types FROM policy_grants WHERE device_id=? AND capability=?`, deviceID, capability).Scan(&enabled, &emergencyStop, &mode, &allowedJSON)
+		}
+		var allowed []string
+		if err == nil {
+			err = json.Unmarshal([]byte(allowedJSON), &allowed)
+		}
+		authorized := enabled && !emergencyStop && mode == string(domain.AutonomyEnhanced)
+		if authorized {
+			authorized = false
+			for _, actionType := range allowed {
+				if actionType == string(meta.Type) {
+					authorized = true
+					break
+				}
+			}
+		}
+		if err != nil || !authorized {
+			const message = "pre-authorized action cancelled because its policy grant is no longer active"
+			if _, updateErr := tx.ExecContext(ctx, `UPDATE device_commands SET completed_at=?,result='{"ok":false}',error=? WHERE id=? AND completed_at IS NULL`, timeText(now), message, commandID); updateErr != nil {
+				return false, updateErr
+			}
+			if _, updateErr := tx.ExecContext(ctx, `UPDATE actions SET status=?,completed_at=?,error=?,updated_at=? WHERE id=? AND device_id=? AND status=?`, string(domain.ActionCancelled), timeText(now), message, timeText(now), meta.ActionID, deviceID, string(domain.ActionApproved)); updateErr != nil {
+				return false, updateErr
+			}
+			if _, updateErr := tx.ExecContext(ctx, `INSERT INTO action_audit(action_id,actor,event,details,created_at) VALUES(?,?,?,?,?)`, meta.ActionID, "controller", "policy_command_cancelled_before_execution", `{}`, timeText(now)); updateErr != nil {
+				return false, updateErr
+			}
+			return false, tx.Commit()
 		}
 	}
 	if commandType == string(domain.CommandExecuteAction) {

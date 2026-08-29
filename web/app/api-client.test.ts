@@ -160,6 +160,8 @@ describe('live API client contracts', () => {
       if (url.includes('/actions')) return json({ items: [] });
 			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
+      if (url.endsWith('/ai/investigation-policy')) return json({ policy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '2026-08-26T00:00:00Z' }, usage: { day: '2026-08-26', regularTokensUsed: 0, emergencyTokensUsed: 0, investigationCalls: 0, updatedAt: '2026-08-26T00:00:00Z' } });
+      if (url.endsWith('/sensors')) return json({ items: [] });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.endsWith('/schedules')) return json({ items: [] });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_1', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
@@ -183,6 +185,8 @@ describe('live API client contracts', () => {
       if (url.includes('/findings') || url.includes('/reports') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
 			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
+      if (url.endsWith('/ai/investigation-policy')) return json({ policy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '2026-08-26T00:00:00Z' }, usage: { day: '2026-08-26', regularTokensUsed: 0, emergencyTokensUsed: 0, investigationCalls: 0, updatedAt: '2026-08-26T00:00:00Z' } });
+      if (url.endsWith('/sensors')) return json({ items: [] });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_new', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
       return json({ error: { message: 'unexpected URL' } }, 500);
@@ -214,6 +218,8 @@ describe('live API client contracts', () => {
       if (url.includes('/findings') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
 			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
+      if (url.endsWith('/ai/investigation-policy')) return json({ policy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '2026-08-26T00:00:00Z' }, usage: { day: '2026-08-26', regularTokensUsed: 0, emergencyTokensUsed: 0, investigationCalls: 0, updatedAt: '2026-08-26T00:00:00Z' } });
+      if (url.endsWith('/sensors')) return json({ items: [] });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_unknown', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
       return json({ error: { message: `unexpected URL: ${url}` } }, 500);
@@ -246,6 +252,8 @@ describe('live API client contracts', () => {
       if (url.includes('/findings') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
 			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
+      if (url.endsWith('/ai/investigation-policy')) return json({ policy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '2026-08-26T00:00:00Z' }, usage: { day: '2026-08-26', regularTokensUsed: 0, emergencyTokensUsed: 0, investigationCalls: 0, updatedAt: '2026-08-26T00:00:00Z' } });
+      if (url.endsWith('/sensors')) return json({ items: [] });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ deviceId: 'dev_malformed', enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
       return json({ error: { message: `unexpected URL: ${url}` } }, 500);
@@ -280,6 +288,8 @@ describe('live API client contracts', () => {
       if (url.includes('/findings') || url.includes('/audit') || url.includes('/security-events') || url.includes('/actions') || url.endsWith('/schedules')) return json({ items: [] });
 			if (url.includes('/incidents') || url.includes('/policy-grants')) return json({ items: [] });
       if (url.endsWith('/ai/settings')) return json({ protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4', keyConfigured: false });
+      if (url.endsWith('/ai/investigation-policy')) return json({ policy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '2026-08-26T00:00:00Z' }, usage: { day: '2026-08-26', regularTokensUsed: 0, emergencyTokensUsed: 0, investigationCalls: 0, updatedAt: '2026-08-26T00:00:00Z' } });
+      if (url.endsWith('/sensors')) return json({ items: [] });
       if (url.endsWith('/notifications/settings')) return json({ configured: false, webhookEnabled: false, smtpEnabled: false });
       if (url.includes('/defense-policy')) return json({ enabled: false, emergencyStop: false, autoBan: false, failureThreshold: 10, window: '5m0s', banDuration: '15m0s', maxBansPerHour: 10, allowlist: [] });
       return json({ error: { message: `unexpected URL: ${url}` } }, 500);

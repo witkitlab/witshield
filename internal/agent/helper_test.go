@@ -113,7 +113,7 @@ func TestHelperClientReadsOnlyBoundedProcessObservation(t *testing.T) {
 		}
 		response := map[string]any{"ok": true, "processObserved": 1, "processes": []observation.Process{{
 			Identity: strings.Repeat("b", 64), EventType: "suspicious_privileged_process_started", Reason: "test",
-			Name: "worker", Executable: "/tmp/worker", PID: 123, PPID: 1, UID: 0,
+			Name: "worker", Executable: "/tmp/worker", PID: 123, PPID: 1, UID: 0, StartTime: 456,
 		}}}
 		encoded, _ := json.Marshal(response)
 		_, writeErr := connection.Write(append(encoded, '\n'))

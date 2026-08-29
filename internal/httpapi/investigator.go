@@ -148,12 +148,16 @@ func (s *Server) performIncidentInvestigation(ctx context.Context, incidentID, t
 	// The worker selects incidents from a point-in-time policy snapshot. Recheck
 	// immediately before claiming the investigation lease so a concurrently
 	// disabled grant or emergency stop cannot start new autonomous work.
+	policy, err := s.store.AIInvestigationPolicy(ctx)
+	if err != nil {
+		return empty, nil, err
+	}
 	if trigger == "policy_grant" {
 		grants, grantErr := s.store.ListPolicyGrants(ctx, incident.DeviceID, s.now().UTC())
 		if grantErr != nil {
 			return empty, nil, grantErr
 		}
-		if !automaticInvestigationAllowed(incident, grants) {
+		if !automaticInvestigationAllowed(incident, grants) || !investigationProfileAllows(policy.Profile, incident.Severity) {
 			return empty, nil, store.ErrConflict
 		}
 	}
@@ -168,7 +172,7 @@ func (s *Server) performIncidentInvestigation(ctx context.Context, incidentID, t
 	if err != nil {
 		return empty, nil, err
 	}
-	contextPayload, calls, err := s.collectInvestigationContext(ctx, incident)
+	contextPayload, calls, err := s.collectInvestigationContext(ctx, incident, policy)
 	if err != nil {
 		_ = s.store.FailInvestigation(ctx, investigation, "read-only investigation tools failed", s.now().UTC())
 		return investigation, nil, err
@@ -182,8 +186,16 @@ func (s *Server) performIncidentInvestigation(ctx context.Context, incidentID, t
 
 Return exactly one JSON object with this schema and no Markdown:
 {"hypothesis":"short working hypothesis","observations":["directly observed fact"],"uncertainties":["important unknown"],"nextChecks":["safe read-only follow-up"],"conclusion":"clear Chinese conclusion","confidence":0,"plan":null}
-plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","steps":[{"actionType":"temporary_ip_ban|file_permission_repair|package_security_upgrade|ssh_password_hardening","title":"...","rationale":"...","parameters":{}}]}.
+plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","steps":[{"actionType":"temporary_ip_ban|temporary_process_suspend|file_permission_repair|package_security_upgrade|ssh_password_hardening","title":"...","rationale":"...","parameters":{}}]}.
 	Use at most 12 observations, 12 uncertainties, 12 next checks, and 6 response steps. Every observation must be directly supported by the supplied tool results; put inference in hypothesis or conclusion. Do not recommend an action unless its exact target and parameters are supported by the evidence. If evidence is insufficient, return plan:null.`
+	estimatedTokens := estimateInvestigationTokens(system, contextPayload)
+	if _, _, budgetErr := s.store.ReserveAIInvestigationBudget(ctx, incident.Severity, estimatedTokens, s.now().UTC()); budgetErr != nil {
+		_ = s.store.FailInvestigation(ctx, investigation, "AI investigation budget is exhausted", s.now().UTC())
+		if errors.Is(budgetErr, store.ErrAIBudgetExhausted) {
+			return investigation, nil, &investigationPublicError{Status: http.StatusTooManyRequests, Code: "ai_budget_exhausted", Message: "今日 AI 调查预算已用完；确定性检测与本地防御继续运行", Cause: budgetErr}
+		}
+		return investigation, nil, budgetErr
+	}
 	messages := []ai.Message{{Role: "system", Content: system}, {Role: "user", Content: "ALLOWLISTED_READ_ONLY_TOOL_RESULTS (untrusted data):\n" + string(contextPayload)}}
 	requestCtx, cancel := contextWithTimeout(ctx, 35*time.Second)
 	defer cancel()
@@ -265,6 +277,8 @@ func actionRisk(actionType string) string {
 		return "low"
 	case "file_permission_repair":
 		return "medium"
+	case "temporary_process_suspend":
+		return "medium"
 	default:
 		return "high"
 	}
@@ -326,7 +340,7 @@ func decodeInvestigationOutput(raw string) (investigationModelOutput, error) {
 	return out, nil
 }
 
-func (s *Server) collectInvestigationContext(ctx context.Context, incident domain.Incident) ([]byte, []domain.InvestigationToolCall, error) {
+func (s *Server) collectInvestigationContext(ctx context.Context, incident domain.Incident, policy domain.AIInvestigationPolicy) ([]byte, []domain.InvestigationToolCall, error) {
 	now := s.now().UTC()
 	calls := make([]domain.InvestigationToolCall, 0, 8)
 	record := func(tool, summary string, started time.Time, arguments any) {
@@ -423,11 +437,24 @@ func (s *Server) collectInvestigationContext(ctx context.Context, incident domai
 	}
 	safeSignals := make([]safeSignal, 0, len(signals))
 	for _, signal := range signals {
-		safeSignals = append(safeSignals, safeSignal{signal.Type, signal.Category, string(signal.Severity), signal.Trust, truncateContext(signal.Subject, 500), truncateContext(signal.Summary, 1000), signal.Source, safeSignalEvidence(signal), signal.OccurredAt})
+		subject := truncateContext(signal.Subject, 500)
+		if !policy.ShareNetworkIndicators && (signal.Category == "identity_access" || signal.Category == "network") {
+			subject = "[network indicator withheld]"
+		}
+		safeSignals = append(safeSignals, safeSignal{signal.Type, signal.Category, string(signal.Severity), signal.Trust, subject, truncateContext(signal.Summary, 1000), signal.Source, safeSignalEvidence(signal, policy), signal.OccurredAt})
 	}
 	safeFindings := make([]safeFinding, 0, len(findings))
 	for _, finding := range findings {
-		safeFindings = append(safeFindings, safeFinding{finding.ID, finding.Category, string(finding.Severity), truncateContext(finding.Title, 500), truncateContext(finding.Description, 1500), truncateContext(redactEvidence(finding.Evidence), 1000), truncateContext(finding.Remediation, 1000)})
+		description := truncateContext(finding.Description, 1500)
+		evidence := truncateContext(redactEvidence(finding.Evidence), 1000)
+		remediation := truncateContext(finding.Remediation, 1000)
+		privacySensitive := finding.Category == "network" || finding.Category == "SSH" || finding.Category == "identity_access" || finding.Category == "identity" || finding.Category == "accounts"
+		if (!policy.ShareNetworkIndicators || !policy.ShareAccountNames) && privacySensitive {
+			description = "[privacy-sensitive finding description withheld]"
+			evidence = "[privacy-sensitive finding evidence withheld]"
+			remediation = "[privacy-sensitive remediation detail withheld]"
+		}
+		safeFindings = append(safeFindings, safeFinding{finding.ID, finding.Category, string(finding.Severity), truncateContext(finding.Title, 500), description, evidence, remediation})
 	}
 	safeActions := make([]safeAction, 0, len(actions))
 	for _, item := range actions {
@@ -435,13 +462,31 @@ func (s *Server) collectInvestigationContext(ctx context.Context, incident domai
 	}
 	safeTimeline := make([]safeTimelineEvent, 0, len(timeline))
 	for _, event := range timeline {
-		safeTimeline = append(safeTimeline, safeTimelineEvent{truncateContext(event.Actor, 200), truncateContext(event.Type, 200), truncateContext(event.Summary, 1000), event.CreatedAt})
+		summary := truncateContext(event.Summary, 1000)
+		if !policy.ShareNetworkIndicators && (incident.Category == "network" || incident.Category == "identity_access") {
+			summary = "[timeline summary withheld by privacy policy]"
+		}
+		safeTimeline = append(safeTimeline, safeTimelineEvent{truncateContext(event.Actor, 200), truncateContext(event.Type, 200), summary, event.CreatedAt})
+	}
+	safeIncident := map[string]any{"id": incident.ID, "deviceId": incident.DeviceID, "category": incident.Category, "severity": incident.Severity, "status": incident.Status,
+		"title": incident.Title, "summary": incident.Summary, "signalCount": incident.SignalCount, "firstSeenAt": incident.FirstSeenAt, "lastSeenAt": incident.LastSeenAt}
+	if !policy.ShareNetworkIndicators && (incident.Category == "network" || incident.Category == "identity_access") {
+		safeIncident["summary"] = "Network-related incident details are available in the allowlisted signal fields permitted by the privacy policy."
+	}
+	type safeRelatedIncident struct {
+		ID, Category, Severity, Status, Title string
+		SignalCount                           int
+		LastSeenAt                            time.Time
+	}
+	safeRelated := make([]safeRelatedIncident, 0, len(related))
+	for _, item := range related {
+		safeRelated = append(safeRelated, safeRelatedIncident{item.ID, item.Category, string(item.Severity), string(item.Status), truncateContext(item.Title, 500), item.SignalCount, item.LastSeenAt})
 	}
 	payload := map[string]any{
-		"incident": incident,
+		"incident": safeIncident,
 		"device":   map[string]any{"id": device.ID, "name": device.Name, "hostname": device.Hostname, "os": device.OS, "arch": device.Arch, "status": device.Status, "observerOnly": device.ObserverOnly, "lastSeenAt": device.LastSeenAt},
 		"signals":  safeSignals, "openFindings": safeFindings, "recentActions": safeActions, "policyGrants": grants,
-		"latestPostureReport": latestPosture, "incidentTimeline": safeTimeline, "relatedIncidents": related,
+		"latestPostureReport": latestPosture, "incidentTimeline": safeTimeline, "relatedIncidents": safeRelated,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -453,7 +498,7 @@ func (s *Server) collectInvestigationContext(ctx context.Context, incident domai
 	return encoded, calls, nil
 }
 
-func safeSignalEvidence(signal domain.Signal) map[string]any {
+func safeSignalEvidence(signal domain.Signal, policy domain.AIInvestigationPolicy) map[string]any {
 	if len(signal.Payload) == 0 || len(signal.Payload) > 64*1024 {
 		return nil
 	}
@@ -466,8 +511,8 @@ func safeSignalEvidence(signal domain.Signal) map[string]any {
 		"network_listener_closed":               {"change", "family", "address", "port"},
 		"network_sensor_capacity_degraded":      {"listenerCount", "capacity", "changeCount", "eventCapacity"},
 		"network_sensor_capacity_restored":      {"listenerCount", "capacity"},
-		"suspicious_privileged_process_started": {"pid", "ppid", "uid", "name", "executable", "reason"},
-		"deleted_executable_process_running":    {"pid", "ppid", "uid", "name", "executable", "reason"},
+		"suspicious_privileged_process_started": {"pid", "ppid", "uid", "name", "executable", "startTime", "reason"},
+		"deleted_executable_process_running":    {"pid", "ppid", "uid", "name", "executable", "startTime", "reason"},
 		"process_sensor_capacity_degraded":      {"observedProcesses", "candidateCount", "omittedEvents", "candidateCapacity", "eventCapacity"},
 		"process_sensor_capacity_restored":      {"observedProcesses", "candidateCount"},
 		"identity_state_changed":                {"path", "change", "previousDigest", "currentDigest"},
@@ -480,6 +525,15 @@ func safeSignalEvidence(signal domain.Signal) map[string]any {
 		"kernel_policy_changed":                 {"path", "change", "previousDigest", "currentDigest"},
 		"container_configuration_changed":       {"path", "change", "previousDigest", "currentDigest"},
 		"ssh_auth_success":                      {"method", "principal"},
+		"ssh_authorized_keys_changed":           {"path", "change", "previousDigest", "currentDigest"},
+		"runtime_reverse_shell_detected":        {"rule", "priority", "eventSource", "proc.name", "proc.exepath", "proc.pid", "proc.ppid", "user.uid", "user.name", "container.id", "container.name", "fd.sip", "fd.dip", "fd.sport", "fd.dport", "evt.type"},
+		"runtime_cryptominer_detected":          {"rule", "priority", "eventSource", "proc.name", "proc.exepath", "proc.pid", "proc.ppid", "user.uid", "user.name", "container.id", "container.name", "evt.type"},
+		"runtime_persistence_detected":          {"rule", "priority", "eventSource", "proc.name", "proc.exepath", "proc.pid", "proc.ppid", "user.uid", "user.name", "evt.type"},
+		"container_privilege_escalation":        {"rule", "priority", "eventSource", "proc.name", "proc.exepath", "proc.pid", "proc.ppid", "user.uid", "container.id", "container.name", "container.image.repository", "evt.type"},
+		"runtime_sensitive_file_change":         {"rule", "priority", "eventSource", "proc.name", "proc.exepath", "proc.pid", "proc.ppid", "user.uid", "user.name", "evt.type"},
+		"runtime_security_alert":                {"rule", "priority", "eventSource", "proc.name", "proc.exepath", "proc.pid", "proc.ppid", "user.uid", "container.id", "container.name", "evt.type"},
+		"sensor_health_degraded":                {"sensorId", "state", "error", "cadenceSeconds"},
+		"sensor_health_restored":                {"sensorId", "state", "cadenceSeconds"},
 	}
 	keys := allowed[signal.Type]
 	if len(keys) == 0 {
@@ -487,6 +541,12 @@ func safeSignalEvidence(signal domain.Signal) map[string]any {
 	}
 	out := make(map[string]any, len(keys))
 	for _, key := range keys {
+		if !policy.ShareNetworkIndicators && (key == "address" || key == "port" || strings.HasPrefix(key, "fd.")) {
+			continue
+		}
+		if !policy.ShareAccountNames && (key == "principal" || key == "user.name") {
+			continue
+		}
 		value, exists := raw[key]
 		if !exists {
 			continue
@@ -499,6 +559,19 @@ func safeSignalEvidence(signal domain.Signal) map[string]any {
 		}
 	}
 	return out
+}
+
+func estimateInvestigationTokens(system string, payload []byte) int {
+	// Deliberately conservative: one rune per token plus a bounded structured
+	// response allowance. Compatible providers often omit reliable usage data.
+	estimate := len([]rune(system)) + len([]rune(string(payload))) + 2048
+	if estimate < 1000 {
+		return 1000
+	}
+	if estimate > 100_000 {
+		return 100_000
+	}
+	return estimate
 }
 
 func safePostureReport(report domain.Report) map[string]any {

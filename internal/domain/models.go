@@ -117,6 +117,61 @@ type AISettings struct {
 	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
+type InvestigationProfile string
+
+const (
+	InvestigationEconomy   InvestigationProfile = "economy"
+	InvestigationBalanced  InvestigationProfile = "balanced"
+	InvestigationSensitive InvestigationProfile = "sensitive"
+)
+
+// AIInvestigationPolicy controls autonomous model use. Token accounting is a
+// conservative local estimate because several compatible upstream APIs do not
+// return reliable usage metadata. The emergency reserve can only be consumed
+// by critical incidents and therefore cannot be exhausted by routine noise.
+type AIInvestigationPolicy struct {
+	Profile                InvestigationProfile `json:"profile"`
+	DailyTokenBudget       int                  `json:"dailyTokenBudget"`
+	EmergencyReserveTokens int                  `json:"emergencyReserveTokens"`
+	ShareNetworkIndicators bool                 `json:"shareNetworkIndicators"`
+	ShareAccountNames      bool                 `json:"shareAccountNames"`
+	UpdatedAt              time.Time            `json:"updatedAt"`
+}
+
+type AIInvestigationUsage struct {
+	Day                 string    `json:"day"`
+	RegularTokensUsed   int       `json:"regularTokensUsed"`
+	EmergencyTokensUsed int       `json:"emergencyTokensUsed"`
+	InvestigationCalls  int       `json:"investigationCalls"`
+	UpdatedAt           time.Time `json:"updatedAt"`
+}
+
+type SensorState string
+
+const (
+	SensorActive      SensorState = "active"
+	SensorDegraded    SensorState = "degraded"
+	SensorUnavailable SensorState = "unavailable"
+	SensorOptional    SensorState = "optional"
+)
+
+// SensorHealth is reported independently for each source. A live Agent is not
+// treated as proof that authentication, process, network, or runtime evidence
+// is fresh.
+type SensorHealth struct {
+	DeviceID       string      `json:"deviceId,omitempty"`
+	SensorID       string      `json:"sensorId"`
+	Name           string      `json:"name"`
+	Mode           string      `json:"mode"`
+	State          SensorState `json:"state"`
+	CadenceSeconds int         `json:"cadenceSeconds"`
+	LastSuccessAt  *time.Time  `json:"lastSuccessAt,omitempty"`
+	LastEventAt    *time.Time  `json:"lastEventAt,omitempty"`
+	EventCount     int64       `json:"eventCount"`
+	Error          string      `json:"error,omitempty"`
+	UpdatedAt      time.Time   `json:"updatedAt"`
+}
+
 type Headers map[string]string
 
 type NotificationSettings struct {

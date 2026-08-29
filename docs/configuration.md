@@ -54,10 +54,17 @@ witshield-agent [options]
 | `--interval` | `WITSHIELD_SCAN_INTERVAL` | `24h` | **首次注册时**建议 Controller 创建的初始扫描周期，如 `24h`、`168h`；注册完成后以 Controller 中的 schedule 为准 |
 | `--auth-log` | `WITSHIELD_AUTH_LOG` | 原生为 `/var/log/auth.log` | 可选：显式 SSH 认证日志绝对路径 |
 | `--journalctl` | `WITSHIELD_JOURNALCTL` | `/usr/bin/journalctl` | 固定的 journald 读取器；原生模式优先保存 cursor 增量读取；失败时 auth.log 回退仅用于可见性/告警，不授权自动处置 |
+| `--runtime-event-log` | `WITSHIELD_RUNTIME_EVENT_LOG` | `/var/log/falco/events.jsonl` | 可选的 Falco JSONL 输出；文件必须是普通文件、不能是符号链接，root 拥有且不可被组/其他用户写入时才标为可信 |
 | `--host-root` | `WITSHIELD_HOST_ROOT` | `/` | Docker observer 的只读宿主机挂载根 |
 | `--observer-only` | `WITSHIELD_OBSERVER_ONLY` | `false` | 禁止全部特权动作，只执行可见范围内的扫描 |
 
 systemd 安装使用 `/etc/witshield/agent.env`，指向 `/var/lib/witshield-agent/enrollment.token`；服务带 `--consume-enrollment-token`，首次注册成功后删除该文件。Agent 保存独立设备身份并停止依赖 enrollment token。不要在 URL 查询参数或普通进程参数中传递令牌。
+
+### 可选的增强运行时传感器
+
+基础安装不自动添加第三方 APT 仓库，也不会静默安装内核探针。需要反向 Shell、挖矿、容器提权、异常持久化和敏感文件运行时写入等秒级行为信号时，可按 Falco 官方文档安装 Falco，并将其 JSON 输出写入 `/var/log/falco/events.jsonl`。建议文件由 `root:adm` 拥有、权限 `0640`；原生安装的 `witshield-agent` 已加入 `adm` 组。若该文件不存在，界面会明确显示“可选增强”，基础传感器继续工作；若文件曾可用后连续失败，则显示覆盖降级并创建传感器健康事件。
+
+Falco 规则和驱动更新属于独立供应链，应先在测试机验证。巡御只读取白名单字段，不接收 Falco 输出中的命令行、环境变量或任意正文，也不会因单条 Falco 告警直接执行动作。
 
 ### 扫描调度权威
 

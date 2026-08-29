@@ -37,7 +37,7 @@ func TestProcessWatcherReportsPrivilegedTransientExecutableWithoutCommandLine(t 
 		t.Fatalf("events=%#v err=%v", events, err)
 	}
 	var payload map[string]any
-	if err = json.Unmarshal(events[0].Payload, &payload); err != nil || payload["uid"] != float64(0) || payload["executable"] != "/tmp/evil-worker" || payload["automaticActionEligible"] != false {
+	if err = json.Unmarshal(events[0].Payload, &payload); err != nil || payload["uid"] != float64(0) || payload["executable"] != "/tmp/evil-worker" || payload["automaticActionEligible"] != true {
 		t.Fatalf("payload=%#v err=%v", payload, err)
 	}
 	if _, exists := payload["commandLine"]; exists {

@@ -34,6 +34,7 @@ type Process struct {
 	PID        int    `json:"pid"`
 	PPID       int    `json:"ppid"`
 	UID        uint64 `json:"uid"`
+	StartTime  uint64 `json:"startTime"`
 }
 
 // ProcessSnapshot reports whether the deliberately bounded observation was
@@ -127,7 +128,7 @@ func inspectProcess(root *os.Root, pid int) (Process, bool) {
 	return Process{
 		Identity: hex.EncodeToString(sum[:]), EventType: eventType, Reason: reason,
 		Name: truncateField(name, 128), Executable: truncateField(executable, 1024),
-		PID: pid, PPID: ppid, UID: uid,
+		PID: pid, PPID: ppid, UID: uid, StartTime: startTime,
 	}, true
 }
 

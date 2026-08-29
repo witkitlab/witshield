@@ -31,7 +31,7 @@ var supportedPolicyCapabilities = map[string]struct{}{
 var allowedPolicyActions = map[string]map[string]struct{}{
 	"network.auth_bruteforce":   {"temporary_ip_ban": {}},
 	"identity.persistence":      {"ssh_password_hardening": {}},
-	"workload.runtime":          {},
+	"workload.runtime":          {"temporary_process_suspend": {}},
 	"file.integrity":            {"file_permission_repair": {}},
 	"vulnerability.remediation": {"package_security_upgrade": {}},
 }
@@ -104,6 +104,24 @@ func signalFromSecurityEvent(event domain.SecurityEvent, now time.Time) (domain.
 		category, severity, title = "sensor_health", domain.SeverityInfo, "进程感知容量已恢复"
 	case "container_configuration_changed":
 		category, severity, title = "container_runtime", domain.SeverityMedium, "容器运行时配置发生变化"
+	case "runtime_reverse_shell_detected":
+		category, severity, title = "workload_runtime", domain.SeverityCritical, "运行时检测到反向 Shell 行为"
+	case "runtime_cryptominer_detected":
+		category, severity, title = "workload_runtime", domain.SeverityCritical, "运行时检测到疑似挖矿行为"
+	case "runtime_persistence_detected":
+		category, severity, title = "persistence", domain.SeverityHigh, "运行时检测到持久化行为"
+	case "container_privilege_escalation":
+		category, severity, title = "container_runtime", domain.SeverityCritical, "容器运行时检测到高危特权行为"
+	case "runtime_sensitive_file_change":
+		category, severity, title = "file_integrity", domain.SeverityHigh, "运行时检测到敏感文件变更"
+	case "runtime_security_alert":
+		category, severity, title = "workload_runtime", domain.SeverityMedium, "增强运行时传感器发现异常"
+	case "ssh_authorized_keys_changed":
+		category, severity, title = "identity_persistence", domain.SeverityHigh, "SSH 授权密钥发生变化"
+	case "sensor_health_degraded":
+		category, severity, title = "sensor_health", domain.SeverityHigh, "安全传感器持续失效"
+	case "sensor_health_restored":
+		category, severity, title = "sensor_health", domain.SeverityInfo, "安全传感器已恢复"
 	default:
 		if strings.Contains(event.Type, "container") {
 			category, title = "container_runtime", "容器运行时安全事件"
@@ -399,7 +417,7 @@ func defaultPolicyGrants(deviceID string, now time.Time) []domain.PolicyGrant {
 	return []domain.PolicyGrant{
 		{DeviceID: deviceID, Capability: "network.auth_bruteforce", Mode: domain.AutonomyObserve, AllowedActionTypes: []string{"temporary_ip_ban"}, MaxActionsPerHour: 10, UpdatedAt: now},
 		{DeviceID: deviceID, Capability: "identity.persistence", Mode: domain.AutonomyObserve, AllowedActionTypes: []string{"ssh_password_hardening"}, MaxActionsPerHour: 5, UpdatedAt: now},
-		{DeviceID: deviceID, Capability: "workload.runtime", Mode: domain.AutonomyObserve, AllowedActionTypes: []string{}, MaxActionsPerHour: 5, UpdatedAt: now},
+		{DeviceID: deviceID, Capability: "workload.runtime", Mode: domain.AutonomyObserve, AllowedActionTypes: []string{"temporary_process_suspend"}, MaxActionsPerHour: 5, UpdatedAt: now},
 		{DeviceID: deviceID, Capability: "file.integrity", Mode: domain.AutonomyObserve, AllowedActionTypes: []string{"file_permission_repair"}, MaxActionsPerHour: 5, UpdatedAt: now},
 		{DeviceID: deviceID, Capability: "vulnerability.remediation", Mode: domain.AutonomyObserve, AllowedActionTypes: []string{"package_security_upgrade"}, MaxActionsPerHour: 2, UpdatedAt: now},
 	}

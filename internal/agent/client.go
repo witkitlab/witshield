@@ -290,8 +290,15 @@ func (c *Client) Enroll(ctx context.Context, in EnrollRequest) (domain.Device, s
 	}
 	return out.Device, out.DeviceToken, err
 }
-func (c *Client) Heartbeat(ctx context.Context, meta map[string]string) error {
-	return c.do(ctx, http.MethodPost, "/agent/v1/heartbeat", meta, &struct{}{})
+func (c *Client) Heartbeat(ctx context.Context, meta map[string]string, sensorBatches ...[]domain.SensorHealth) error {
+	payload := map[string]any{}
+	for key, value := range meta {
+		payload[key] = value
+	}
+	if len(sensorBatches) > 0 && len(sensorBatches[0]) > 0 {
+		payload["sensors"] = sensorBatches[0]
+	}
+	return c.do(ctx, http.MethodPost, "/agent/v1/heartbeat", payload, &struct{}{})
 }
 
 func (c *Client) StartCommand(ctx context.Context, commandID string) (bool, error) {

@@ -30,8 +30,9 @@ type processState struct {
 
 // processWatcher deliberately observes only two high-value process states. It
 // does not collect command lines, environments, open files, or arbitrary
-// process output: those commonly contain credentials. The resulting event is
-// investigation evidence and is never eligible to authorize an action.
+// process output: those commonly contain credentials. Only the exact verified
+// UID-0 transient-executable event may enter the separate pre-authorization
+// gate; this watcher itself never decides or executes an action.
 type processWatcher struct {
 	hostRoot, statePath string
 	helper              *HelperClient
@@ -71,9 +72,9 @@ func (w *processWatcher) Poll(ctx context.Context) ([]domain.SecurityEvent, erro
 			continue
 		}
 		payload, _ := json.Marshal(map[string]any{
-			"source": "procfs", "trust": "verified", "automaticActionEligible": false,
+			"source": "procfs", "trust": "verified", "automaticActionEligible": candidate.EventType == "suspicious_privileged_process_started",
 			"pid": candidate.PID, "ppid": candidate.PPID, "uid": candidate.UID,
-			"name": candidate.Name, "executable": candidate.Executable, "reason": candidate.Reason,
+			"name": candidate.Name, "executable": candidate.Executable, "startTime": candidate.StartTime, "identity": candidate.Identity, "reason": candidate.Reason,
 		})
 		sum := sha256.Sum256([]byte(candidate.Identity + "\x00" + candidate.EventType))
 		events = append(events, domain.SecurityEvent{ID: "evt_" + hex.EncodeToString(sum[:12]), Type: candidate.EventType, OccurredAt: now, Payload: payload})

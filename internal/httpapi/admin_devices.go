@@ -499,13 +499,22 @@ func (s *Server) agentEnroll(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	device := deviceFrom(r.Context())
-	var in struct{ Name, Hostname, OS, Arch, AgentVersion string }
+	var in struct {
+		Name, Hostname, OS, Arch, AgentVersion string
+		Sensors                                []domain.SensorHealth `json:"sensors,omitempty"`
+	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
 	if !validAgentName(in.Name) || len(in.Hostname) > 255 || len(in.OS) > 200 || len(in.Arch) > 30 || len(in.AgentVersion) > 100 {
 		writeError(w, 400, "invalid_device", "invalid device metadata")
 		return
+	}
+	if len(in.Sensors) > 0 {
+		if err := s.store.PutSensorHealth(r.Context(), device.ID, in.Sensors, s.now().UTC()); err != nil {
+			writeError(w, 400, "invalid_sensor_health", err.Error())
+			return
+		}
 	}
 	if err := s.store.Heartbeat(r.Context(), device.ID, in.Name, in.Hostname, in.OS, in.Arch, in.AgentVersion, s.now()); err != nil {
 		s.fail(w, err)

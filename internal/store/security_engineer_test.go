@@ -43,6 +43,34 @@ func TestRuntimeSignalsCreateGenericIncidentsWithoutAutomaticMutation(t *testing
 	}
 }
 
+func TestVerifiedTransientRootProcessRequiresExplicitRuntimePreauthorization(t *testing.T) {
+	s, deviceID, now := openReportCommandTestStore(t)
+	event := domain.SecurityEvent{ID: "evt_transient_root", DeviceID: deviceID, Type: "suspicious_privileged_process_started", OccurredAt: now,
+		Payload: json.RawMessage(`{"source":"procfs","trust":"verified","automaticActionEligible":true,"pid":441,"uid":0,"startTime":9981,"executable":"/tmp/unknown-worker"}`)}
+	out, err := s.ProcessSecurityEvent(context.Background(), event, false, now)
+	if err != nil || out.ActionID != "" {
+		t.Fatalf("observe-by-default policy created action: outcome=%#v err=%v", out, err)
+	}
+	grant := domain.PolicyGrant{DeviceID: deviceID, Capability: "workload.runtime", Enabled: true, Mode: domain.AutonomyEnhanced,
+		AllowedActionTypes: []string{"temporary_process_suspend"}, MaxActionsPerHour: 2, UpdatedAt: now}
+	if err = s.PutPolicyGrant(context.Background(), grant); err != nil {
+		t.Fatal(err)
+	}
+	event.ID = "evt_transient_root_authorized"
+	out, err = s.ProcessSecurityEvent(context.Background(), event, false, now.Add(time.Second))
+	if err != nil || out.ActionID == "" || out.CommandID == "" || !out.Decision.Matched {
+		t.Fatalf("pre-authorized runtime event was not contained: outcome=%#v err=%v", out, err)
+	}
+	actions, err := s.ListActions(context.Background(), deviceID, 10)
+	if err != nil || len(actions) != 1 || actions[0].Type != "temporary_process_suspend" || actions[0].ApprovedBy != "policy:workload.runtime" {
+		t.Fatalf("runtime action audit is incomplete: actions=%#v err=%v", actions, err)
+	}
+	allowed, err := s.StartActionCommand(context.Background(), deviceID, out.CommandID, now.Add(2*time.Second))
+	if err != nil || !allowed {
+		t.Fatalf("active runtime grant failed final authorization: allowed=%v err=%v", allowed, err)
+	}
+}
+
 func TestNetworkListenerSignalsCorrelatePerListener(t *testing.T) {
 	s, deviceID, now := openReportCommandTestStore(t)
 	for index, port := range []int{8080, 8443} {

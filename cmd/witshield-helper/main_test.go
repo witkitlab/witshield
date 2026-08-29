@@ -184,7 +184,7 @@ func TestHelperProtocolServesFixedReadOnlyProcessObservation(t *testing.T) {
 	called := 0
 	helper := &server{token: token, observeProcesses: func(context.Context) (observation.ProcessSnapshot, error) {
 		called++
-		return observation.ProcessSnapshot{Processes: []observation.Process{{Identity: strings.Repeat("f", 64), EventType: "deleted_executable_process_running", Reason: "deleted", Name: "daemon", Executable: "/usr/bin/daemon (deleted)", PID: 42, PPID: 1, UID: 0}}, Observed: 1}, nil
+		return observation.ProcessSnapshot{Processes: []observation.Process{{Identity: strings.Repeat("f", 64), EventType: "deleted_executable_process_running", Reason: "deleted", Name: "daemon", Executable: "/usr/bin/daemon (deleted)", PID: 42, PPID: 1, StartTime: 123, UID: 0}}, Observed: 1}, nil
 	}}
 	done := make(chan struct{})
 	go func() {

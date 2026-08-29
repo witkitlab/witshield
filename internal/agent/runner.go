@@ -33,6 +33,7 @@ type Config struct {
 	HostRoot                                                           string
 	AuthLogPath                                                        string
 	JournalctlPath                                                     string
+	RuntimeEventLogPath                                                string
 	ObserverOnly                                                       bool
 	HelperSocket, HelperTokenFile                                      string
 	Logger                                                             *slog.Logger
@@ -52,6 +53,9 @@ type Runner struct {
 	baseline *baselineWatcher
 	network  *networkWatcher
 	process  *processWatcher
+	runtime  *runtimeLogWatcher
+	healthMu sync.Mutex
+	sensors  map[string]*localSensorHealth
 }
 
 func New(ctx context.Context, cfg Config) (*Runner, error) {
@@ -184,19 +188,29 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 	baseline := &baselineWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "security-baseline.json"), now: time.Now}
 	network := &networkWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "network-baseline.json"), now: time.Now}
 	process := &processWatcher{hostRoot: cfg.HostRoot, statePath: filepath.Join(cfg.DataDir, "process-baseline.json"), helper: helper, now: time.Now}
-	return &Runner{cfg: cfg, state: state, client: client, queue: queue, scanner: scan, helper: helper, log: cfg.Logger, meta: meta, watcher: watcher, journal: journal, baseline: baseline, network: network, process: process}, nil
+	var runtimeWatcher *runtimeLogWatcher
+	if !cfg.ObserverOnly && runtime.GOOS == "linux" && strings.TrimSpace(cfg.RuntimeEventLogPath) != "" {
+		if !filepath.IsAbs(cfg.RuntimeEventLogPath) {
+			return nil, errors.New("runtime event log path must be absolute")
+		}
+		runtimeWatcher = &runtimeLogWatcher{path: filepath.Clean(cfg.RuntimeEventLogPath), statePath: filepath.Join(cfg.DataDir, "runtime-log.offset"), now: time.Now}
+	}
+	runner := &Runner{cfg: cfg, state: state, client: client, queue: queue, scanner: scan, helper: helper, log: cfg.Logger, meta: meta, watcher: watcher, journal: journal, baseline: baseline, network: network, process: process, runtime: runtimeWatcher}
+	runner.sensors = initialSensorHealth(cfg.ObserverOnly, journal != nil)
+	return runner, nil
 }
 func (r *Runner) Run(ctx context.Context) error {
 	_ = r.queue.Flush(ctx, r.client)
-	if err := r.client.Heartbeat(ctx, r.meta); err != nil {
+	if err := r.client.Heartbeat(ctx, r.meta, r.sensorSnapshot()); err != nil {
 		r.log.Warn("initial heartbeat failed", "error", err)
 	}
 	go r.periodic(ctx, 30*time.Second, r.heartbeat)
 	go r.periodic(ctx, 15*time.Second, r.flush)
-	go r.periodic(ctx, 10*time.Second, r.pollSecurityEvents)
+	go r.periodic(ctx, 5*time.Second, r.pollSecurityEvents)
 	go r.periodic(ctx, time.Minute, r.pollHostBaseline)
 	go r.periodic(ctx, 30*time.Second, r.pollNetworkBaseline)
-	go r.periodic(ctx, time.Minute, r.pollProcessBaseline)
+	go r.periodic(ctx, 10*time.Second, r.pollProcessBaseline)
+	go r.periodic(ctx, 2*time.Second, r.pollRuntimeEvents)
 	// The Controller is the single authority for recurring scan schedules. The
 	// Agent performs one startup scan for immediate visibility, then only scans
 	// in response to a Controller command. ScanInterval is only an enrollment
@@ -238,8 +252,10 @@ func (r *Runner) pollHostBaseline(ctx context.Context) error {
 	}
 	events, err := r.baseline.Poll(ctx)
 	if err != nil {
+		r.recordSensor("host_baseline", "polling", err, 0, false)
 		return err
 	}
+	r.recordSensor("host_baseline", "polling", nil, len(events), false)
 	if err = r.queueSecurityEvents(events); err != nil {
 		return err
 	}
@@ -255,8 +271,10 @@ func (r *Runner) pollNetworkBaseline(ctx context.Context) error {
 	}
 	events, err := r.network.Poll(ctx)
 	if err != nil {
+		r.recordSensor("network", "polling", err, 0, false)
 		return err
 	}
+	r.recordSensor("network", "polling", nil, len(events), false)
 	if err = r.queueSecurityEvents(events); err != nil {
 		return err
 	}
@@ -272,12 +290,37 @@ func (r *Runner) pollProcessBaseline(ctx context.Context) error {
 	}
 	events, err := r.process.Poll(ctx)
 	if err != nil {
+		r.recordSensor("process", "procfs", err, 0, false)
 		return err
 	}
+	r.recordSensor("process", "procfs", nil, len(events), false)
 	if err = r.queueSecurityEvents(events); err != nil {
 		return err
 	}
 	if err = r.process.Commit(); err != nil {
+		return err
+	}
+	return r.queue.Flush(ctx, r.client)
+}
+
+func (r *Runner) pollRuntimeEvents(ctx context.Context) error {
+	if r.runtime == nil {
+		return nil
+	}
+	events, checkpoint, err := r.runtime.Poll(ctx)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+		r.recordOptionalSensor("runtime", "falco_jsonl", "增强运行时传感器尚未接入；基础保护继续运行")
+		return nil
+	}
+	if err != nil {
+		r.recordSensor("runtime", "falco_jsonl", err, 0, false)
+		return err
+	}
+	r.recordSensor("runtime", "falco_jsonl", nil, len(events), false)
+	if err = r.queueSecurityEvents(events); err != nil {
+		return err
+	}
+	if err = r.runtime.Commit(checkpoint); err != nil {
 		return err
 	}
 	return r.queue.Flush(ctx, r.client)
@@ -296,12 +339,15 @@ func (r *Runner) periodic(ctx context.Context, every time.Duration, fn func(cont
 		}
 	}
 }
-func (r *Runner) heartbeat(ctx context.Context) error { return r.client.Heartbeat(ctx, r.meta) }
-func (r *Runner) flush(ctx context.Context) error     { return r.queue.Flush(ctx, r.client) }
+func (r *Runner) heartbeat(ctx context.Context) error {
+	return r.client.Heartbeat(ctx, r.meta, r.sensorSnapshot())
+}
+func (r *Runner) flush(ctx context.Context) error { return r.queue.Flush(ctx, r.client) }
 func (r *Runner) pollSecurityEvents(ctx context.Context) error {
 	if r.journal != nil {
 		events, cursor, err := r.journal.Poll(ctx)
 		if err == nil {
+			r.recordSensor("authentication", "journald", nil, len(events), false)
 			if err = r.queueSecurityEvents(events); err != nil {
 				return err
 			}
@@ -310,12 +356,17 @@ func (r *Runner) pollSecurityEvents(ctx context.Context) error {
 			}
 			return r.queue.Flush(ctx, r.client)
 		}
+		r.recordSensor("authentication", "auth_log_fallback", err, 0, true)
 		r.log.Warn("journald security event source unavailable; trying auth log", "error", err)
 	}
 	events, checkpoint, err := r.watcher.Poll(ctx)
 	if err != nil {
+		r.recordSensor("authentication", "auth_log_fallback", err, 0, true)
 		return err
 	}
+	// Plain auth.log has weaker provenance than native journald even when it is
+	// readable, so it can inform an investigation but never authorize action.
+	r.recordSensor("authentication", "auth_log_fallback", nil, len(events), true)
 	if !checkpoint.valid() {
 		return nil
 	}
@@ -449,7 +500,7 @@ func (r *Runner) handleCommand(ctx context.Context, cmd domain.DeviceCommand) er
 
 func knownActionType(value action.Type) bool {
 	switch value {
-	case action.TypePackageSecurityUpgrade, action.TypeSSHPasswordHardening, action.TypeTemporaryIPBan, action.TypeFilePermissionRepair:
+	case action.TypePackageSecurityUpgrade, action.TypeSSHPasswordHardening, action.TypeTemporaryIPBan, action.TypeFilePermissionRepair, action.TypeTemporaryProcessSuspend:
 		return true
 	default:
 		return false
