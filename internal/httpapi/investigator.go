@@ -216,7 +216,7 @@ plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","s
 	}
 	output, err := decodeInvestigationOutput(reply)
 	if err != nil {
-		_ = s.store.FailInvestigation(ctx, investigation, "AI returned invalid structured investigation output", s.now().UTC())
+		_ = s.store.FailInvestigation(ctx, investigation, "AI returned invalid structured investigation output: "+err.Error(), s.now().UTC())
 		return investigation, nil, &investigationPublicError{Status: http.StatusBadGateway, Code: "invalid_ai_investigation", Message: err.Error(), Cause: err}
 	}
 	investigation.Status = domain.InvestigationCompleted
@@ -309,6 +309,15 @@ func decodeInvestigationOutput(raw string) (investigationModelOutput, error) {
 	var out investigationModelOutput
 	if len(raw) == 0 || len(raw) > 64*1024 {
 		return out, errors.New("AI investigation response size is invalid")
+	}
+	raw = strings.TrimSpace(raw)
+	// Some otherwise compliant reasoning models wrap their sole JSON value in a
+	// Markdown JSON fence even when explicitly told not to. Accept only that
+	// exact presentation wrapper: no prose before/after it, no unlabelled or
+	// arbitrary-language fence, and the inner value still passes the same strict
+	// schema, bounds, typed-action, and approval checks below.
+	if strings.HasPrefix(raw, "```json\n") && strings.HasSuffix(raw, "\n```") {
+		raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "```json\n"), "\n```"))
 	}
 	decoder := json.NewDecoder(bytes.NewReader([]byte(raw)))
 	decoder.DisallowUnknownFields()

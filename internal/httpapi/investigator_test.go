@@ -12,8 +12,13 @@ func TestDecodeInvestigationOutputIsStrictAndBounded(t *testing.T) {
 	if _, err := decodeInvestigationOutput(valid); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := decodeInvestigationOutput("```json\n" + valid + "\n```"); err != nil {
+		t.Fatalf("sole JSON fence was rejected: %v", err)
+	}
 	invalid := []string{
-		"```json\n" + valid + "\n```",
+		"preface\n```json\n" + valid + "\n```",
+		"```\n" + valid + "\n```",
+		"```json\n" + valid + "\n```\ntrailing prose",
 		valid + ` {}`,
 		`{"hypothesis":"x","conclusion":"y","confidence":101,"plan":null}`,
 		`{"hypothesis":"x","conclusion":"y","confidence":1,"plan":null}`,
