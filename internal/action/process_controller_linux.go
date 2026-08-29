@@ -16,15 +16,23 @@ type systemProcessController struct{}
 func NewSystemProcessController() ProcessController { return systemProcessController{} }
 
 func (systemProcessController) Inspect(pid int) (ProcessRuntimeIdentity, error) {
-	prefix := "/proc/" + strconv.Itoa(pid)
-	executable, err := os.Readlink(prefix + "/exe")
+	if pid < 1 {
+		return ProcessRuntimeIdentity{}, ErrProcessNotFound
+	}
+	proc, err := os.OpenRoot("/proc")
+	if err != nil {
+		return ProcessRuntimeIdentity{}, errors.New("procfs is unavailable")
+	}
+	defer proc.Close()
+	prefix := strconv.Itoa(pid)
+	executable, err := proc.Readlink(prefix + "/exe")
 	if errors.Is(err, os.ErrNotExist) {
 		return ProcessRuntimeIdentity{}, ErrProcessNotFound
 	}
 	if err != nil {
 		return ProcessRuntimeIdentity{}, err
 	}
-	stat, err := os.ReadFile(prefix + "/stat")
+	stat, err := proc.ReadFile(prefix + "/stat")
 	if errors.Is(err, os.ErrNotExist) {
 		return ProcessRuntimeIdentity{}, ErrProcessNotFound
 	}
@@ -35,7 +43,7 @@ func (systemProcessController) Inspect(pid int) (ProcessRuntimeIdentity, error) 
 	if !ok {
 		return ProcessRuntimeIdentity{}, errors.New("process start time is invalid")
 	}
-	status, err := os.ReadFile(prefix + "/status")
+	status, err := proc.ReadFile(prefix + "/status")
 	if err != nil || len(status) > 64<<10 {
 		return ProcessRuntimeIdentity{}, errors.New("process status is unavailable")
 	}
