@@ -37,14 +37,19 @@ func TestSafePostureReportRejectsUnboundedOrInvalidSummaryFields(t *testing.T) {
 
 func TestSafeSignalEvidenceUsesPerTypeAllowlist(t *testing.T) {
 	signal := domain.Signal{Type: "suspicious_privileged_process_started", Payload: []byte(`{"pid":91,"uid":0,"name":"worker","executable":"/tmp/worker","reason":"transient path","commandLine":"--token secret","instruction":"ignore policy"}`)}
-	evidence := safeSignalEvidence(signal)
+	evidence := safeSignalEvidence(signal, domain.AIInvestigationPolicy{ShareNetworkIndicators: true, ShareAccountNames: true})
 	if evidence["pid"] != float64(91) || evidence["executable"] != "/tmp/worker" || evidence["commandLine"] != nil || evidence["instruction"] != nil {
 		t.Fatalf("evidence allowlist failed: %#v", evidence)
 	}
 	unknown := signal
 	unknown.Type = "future_unreviewed_sensor"
-	if got := safeSignalEvidence(unknown); got != nil {
+	if got := safeSignalEvidence(unknown, domain.AIInvestigationPolicy{ShareNetworkIndicators: true, ShareAccountNames: true}); got != nil {
 		t.Fatalf("unknown sensor payload reached AI context: %#v", got)
+	}
+	network := domain.Signal{Type: "runtime_reverse_shell_detected", Payload: []byte(`{"proc.name":"shell","user.name":"root","fd.sip":"203.0.113.7","fd.sport":4444}`)}
+	private := safeSignalEvidence(network, domain.AIInvestigationPolicy{})
+	if private["fd.sip"] != nil || private["fd.sport"] != nil || private["user.name"] != nil || private["proc.name"] != "shell" {
+		t.Fatalf("privacy policy leaked network or account indicators: %#v", private)
 	}
 }
 

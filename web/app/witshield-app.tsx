@@ -56,6 +56,7 @@ import {
   requestScan,
   rollbackAction,
   saveAISettings,
+  saveInvestigationPolicy,
   saveDefensePolicy,
   savePolicyGrant,
 	prepareResponsePlanStep,
@@ -533,6 +534,7 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
   const [detailLoading, setDetailLoading] = useState(false);
   const [investigating, setInvestigating] = useState<string | null>(null);
   const [savingGrant, setSavingGrant] = useState<string | null>(null);
+	const [savingInvestigationPolicy, setSavingInvestigationPolicy] = useState(false);
 	const [prepared, setPrepared] = useState<{ stepId: string; plan: ActionPlan } | null>(null);
 	const [approving, setApproving] = useState(false);
 	const [incidentScope, setIncidentScope] = useState<'active' | 'all' | 'closed'>('active');
@@ -551,6 +553,7 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
 		return severityFilter === 'all' || incident.severity === severityFilter;
 	});
 	const selectedDevice = dashboard.devices.find((device) => device.id === deviceId);
+	const sensors = dashboard.sensors.filter((sensor) => sensor.deviceId === deviceId);
 	const latestInvestigation = detail?.investigations[0];
 
   async function openIncident(id: string) {
@@ -579,13 +582,36 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
   async function changeGrant(grant: PolicyGrant, patch: Partial<PolicyGrant>) {
     setSavingGrant(grant.capability);
     try {
-      await savePolicyGrant({ ...grant, ...patch });
+		const next = { ...grant, ...patch };
+		if (grant.capability === 'workload.runtime' && next.mode === 'enhanced' && !next.allowedActionTypes.includes('temporary_process_suspend')) {
+			next.allowedActionTypes = [...next.allowedActionTypes, 'temporary_process_suspend'];
+		}
+		await savePolicyGrant(next);
       notify('值守授权已保存');
       await onRefresh();
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : '保存授权失败');
     } finally { setSavingGrant(null); }
   }
+
+	async function changeInvestigationPolicy(patch: Partial<DashboardSnapshot['investigationPolicy']>) {
+		setSavingInvestigationPolicy(true);
+		try {
+			await saveInvestigationPolicy({ ...dashboard.investigationPolicy, ...patch });
+			notify('AI 调查策略已保存');
+			await onRefresh();
+		} catch (cause) {
+			notify(cause instanceof Error ? cause.message : '保存 AI 调查策略失败');
+		} finally {
+			setSavingInvestigationPolicy(false);
+		}
+	}
+
+	function investigationProfilePatch(profile: DashboardSnapshot['investigationPolicy']['profile']): Partial<DashboardSnapshot['investigationPolicy']> {
+		if (profile === 'economy') return { profile, dailyTokenBudget: 30000, emergencyReserveTokens: 20000 };
+		if (profile === 'sensitive') return { profile, dailyTokenBudget: 120000, emergencyReserveTokens: 30000 };
+		return { profile, dailyTokenBudget: 60000, emergencyReserveTokens: 20000 };
+	}
 
   async function closeIncident(status: 'resolved' | 'dismissed') {
     if (!selectedIncidentId) return;
@@ -630,11 +656,7 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
       </section>
 
 		<section className="sensor-ribbon" aria-label="安全感知范围">
-			<div><span className="sensor-capability" /><strong>配置完整性</strong><small>20 类关键路径</small></div>
-			<div><span className="sensor-capability" /><strong>认证活动</strong><small>SSH 可信事件流</small></div>
-			<div><span className="sensor-capability" /><strong>网络暴露</strong><small>TCP 监听变化</small></div>
-			<div><span className="sensor-capability" /><strong>运行时进程</strong><small>2 类高价值状态</small></div>
-			<div><span className={selectedDevice?.status === 'online' ? 'sensor-live' : 'sensor-idle'} /><strong>确定性巡检</strong><small>{selectedDevice?.status === 'online' ? '设备在线' : '等待设备连接'}</small></div>
+			{sensors.length ? sensors.map((sensor) => <div key={sensor.sensorId} title={sensor.error ?? `${sensor.mode} · ${sensor.lastSuccessAt ?? '等待采样'}`}><span className={`sensor-${sensor.state}`} /><strong>{sensor.name}</strong><small>{sensor.state === 'active' ? `${sensor.cadenceSeconds}s 实时更新` : sensor.state === 'optional' ? '可选增强' : sensor.state === 'degraded' ? '覆盖已降级' : '暂不可用'}</small></div>) : <div><span className={selectedDevice?.status === 'online' ? 'sensor-degraded' : 'sensor-unavailable'} /><strong>等待传感器状态</strong><small>{selectedDevice?.status === 'online' ? 'Agent 正在首次采样' : '等待设备连接'}</small></div>}
 		</section>
 
       <div className="engineer-layout">
@@ -681,6 +703,14 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
 
         <aside className="capability-panel">
           <div className="engineer-section-heading compact"><div><p className="eyebrow">权限边界</p><h2>值守能力</h2><p>每类能力独立授权，不存在一个无限权限的总开关。</p></div></div>
+		  <section className="investigation-policy-card">
+			<header><div><strong>AI 调查节奏</strong><p>只有新证据才触发，预算用完后本地检测与确定性防御继续运行。</p></div>{savingInvestigationPolicy && <LoaderCircle className="spin" size={14} />}</header>
+			<div className="profile-picker">{(['economy', 'balanced', 'sensitive'] as const).map((profile) => <button key={profile} className={dashboard.investigationPolicy.profile === profile ? 'active' : ''} disabled={savingInvestigationPolicy} onClick={() => void changeInvestigationPolicy(investigationProfilePatch(profile))}><strong>{profile === 'economy' ? '节省' : profile === 'balanced' ? '平衡' : '敏锐'}</strong><small>{profile === 'economy' ? '仅严重事件 · 3 万/日' : profile === 'balanced' ? '中风险及以上 · 6 万/日' : '低风险及以上 · 12 万/日'}</small></button>)}</div>
+			<div className="budget-meter"><span><strong>{dashboard.investigationUsage.regularTokensUsed.toLocaleString()}</strong> / {dashboard.investigationPolicy.dailyTokenBudget.toLocaleString()} 估算 Token</span><span>{dashboard.investigationUsage.investigationCalls} 次调查</span></div>
+			<div className="budget-track"><span style={{ width: `${Math.min(100, Math.round(dashboard.investigationUsage.regularTokensUsed / Math.max(1, dashboard.investigationPolicy.dailyTokenBudget) * 100))}%` }} /></div>
+			<label className="compact-check"><input type="checkbox" checked={dashboard.investigationPolicy.shareNetworkIndicators} disabled={savingInvestigationPolicy} onChange={(event) => void changeInvestigationPolicy({ shareNetworkIndicators: event.target.checked })} /><span>允许发送必要的网络标识</span></label>
+			<label className="compact-check"><input type="checkbox" checked={dashboard.investigationPolicy.shareAccountNames} disabled={savingInvestigationPolicy} onChange={(event) => void changeInvestigationPolicy({ shareAccountNames: event.target.checked })} /><span>允许发送必要的账号名称</span></label>
+		  </section>
           <div className="capability-list">{grants.map((grant) => {
             const meta = capabilityCopy[grant.capability] ?? { title: grant.capability, description: '受控安全能力', icon: ShieldCheck };
             const Icon = meta.icon;
@@ -695,20 +725,20 @@ function SecurityEngineerView({ dashboard, deviceId, onRefresh, notify }: {
 
       <details className="engineer-advanced">
         <summary><span><Radar size={16} />登录攻击的确定性触发规则</span><small>配置阈值、封禁时长与管理员保护地址</small><ChevronRight size={15} /></summary>
-        <PoliciesView policies={policies} deviceId={deviceId} onUpdate={async () => { notify('确定性策略已保存'); await onRefresh(); }} onEmergency={async (active) => { notify(active ? '已停止尚未开始的自动动作' : '自动防御已恢复'); await onRefresh(); }} />
+        <PoliciesView policies={policies} deviceId={deviceId} automaticActive={automaticGrants.length > 0} onUpdate={async () => { notify('确定性策略已保存'); await onRefresh(); }} onEmergency={async (active) => { notify(active ? '已停止尚未开始的自动动作' : '自动防御已恢复'); await onRefresh(); }} />
       </details>
     </div>
   );
 }
 
-function PoliciesView({ policies, deviceId, onUpdate, onEmergency }: { policies: DefensePolicy[]; deviceId: string; onUpdate: (policy: DefensePolicy) => void; onEmergency: (active: boolean) => void }) {
+function PoliciesView({ policies, deviceId, automaticActive, onUpdate, onEmergency }: { policies: DefensePolicy[]; deviceId: string; automaticActive: boolean; onUpdate: (policy: DefensePolicy) => void; onEmergency: (active: boolean) => void }) {
   const [saving, setSaving] = useState<string | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
   const [editing, setEditing] = useState<DefensePolicy | null>(null);
   const [allowlistText, setAllowlistText] = useState('');
   const devicePolicies = policies.filter((policy) => !policy.deviceId || policy.deviceId === deviceId);
   const emergencyActive = devicePolicies.some((policy) => policy.emergencyStop);
-  const autoContainActive = devicePolicies.some((policy) => policy.enabled && policy.mode === 'auto_contain') && !emergencyActive;
+  const autoContainActive = (automaticActive || devicePolicies.some((policy) => policy.enabled && policy.mode === 'auto_contain')) && !emergencyActive;
   async function update(policy: DefensePolicy) {
     setSaving(policy.id); setPolicyError(null);
     try { onUpdate(await saveDefensePolicy(deviceId, policy)); return true; }
@@ -753,7 +783,7 @@ function PoliciesView({ policies, deviceId, onUpdate, onEmergency }: { policies:
 	}
   return (
     <div className="page-surface">
-		<div className="defense-banner"><ShieldAlert size={21} /><div><strong>{emergencyActive ? 'SSH 自动遏制已紧急停止' : autoContainActive ? 'SSH 自动遏制正按预授权规则运行' : 'SSH 登录攻击目前只记录和建议'}</strong><p>{emergencyActive ? '不会创建新动作，所有尚未开始的自动动作已取消；已经执行的限时封禁仍会按原定 TTL 自动解除。' : '只有确定性认证日志规则可以触发限时封禁；AI 调查不能自行扩大这个权限。'}</p></div><button className={emergencyActive || autoContainActive ? 'danger-outline' : 'secondary-button'} onClick={bannerAction} disabled={!deviceId || saving === 'emergency'}>{saving === 'emergency' && <LoaderCircle className="spin" size={14} />}{emergencyActive ? '恢复自动防御' : autoContainActive ? '紧急停止' : '配置自动防御'}</button></div>
+		<div className="defense-banner"><ShieldAlert size={21} /><div><strong>{emergencyActive ? '本机自动防御已紧急停止' : autoContainActive ? '本机自动防御正按预授权规则运行' : '当前只记录、调查和建议'}</strong><p>{emergencyActive ? '不会创建新动作，所有尚未开始的预授权动作已取消；已生效的限时动作仍按 TTL 自动恢复。' : '只有明确启用的确定性规则可触发可逆动作；AI 调查不能自行扩大权限。下面单独配置 SSH 登录攻击规则。'}</p></div><button className={emergencyActive || autoContainActive ? 'danger-outline' : 'secondary-button'} onClick={bannerAction} disabled={!deviceId || saving === 'emergency'}>{saving === 'emergency' && <LoaderCircle className="spin" size={14} />}{emergencyActive ? '恢复自动防御' : autoContainActive ? '紧急停止' : '配置自动防御'}</button></div>
       {policyError && <p className="form-error" role="alert">{policyError}</p>}
       <div className="policy-list">{devicePolicies.length === 0 && <div className="empty-state"><Server size={20} /><p>连接设备后即可配置防御策略。</p></div>}{devicePolicies.map((policy) => (
         <article className="policy-card" key={policy.id}>

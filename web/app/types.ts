@@ -239,6 +239,37 @@ export interface AISettings {
   privacyMode: 'minimal' | 'balanced';
 }
 
+export interface AIInvestigationPolicy {
+  profile: 'economy' | 'balanced' | 'sensitive';
+  dailyTokenBudget: number;
+  emergencyReserveTokens: number;
+  shareNetworkIndicators: boolean;
+  shareAccountNames: boolean;
+  updatedAt: string;
+}
+
+export interface AIInvestigationUsage {
+  day: string;
+  regularTokensUsed: number;
+  emergencyTokensUsed: number;
+  investigationCalls: number;
+  updatedAt: string;
+}
+
+export interface SensorHealth {
+  deviceId: string;
+  sensorId: string;
+  name: string;
+  mode: string;
+  state: 'active' | 'degraded' | 'unavailable' | 'optional';
+  cadenceSeconds: number;
+  lastSuccessAt?: string;
+  lastEventAt?: string;
+  eventCount: number;
+  error?: string;
+  updatedAt: string;
+}
+
 export interface NotificationSettings {
   configured: boolean;
   webhookEnabled: boolean;
@@ -273,6 +304,9 @@ export interface DashboardSnapshot {
   securityEvents: SecurityObservation[];
   actions: ActionRecord[];
   ai: AISettings;
+  investigationPolicy: AIInvestigationPolicy;
+  investigationUsage: AIInvestigationUsage;
+  sensors: SensorHealth[];
   notifications: NotificationSettings;
   schedules: ScanSchedule[];
   coverageIssues: Array<{

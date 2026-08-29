@@ -250,7 +250,7 @@ describe('WitShieldApp', () => {
       fireEvent.change(screen.getByLabelText(/管理员保护地址/), { target: { value: '127.0.0.0/8\n203.0.113.8' } });
       fireEvent.click(screen.getByRole('button', { name: '保存防御策略' }));
       fireEvent.click(await screen.findByRole('button', { name: '紧急停止' }));
-      expect(await screen.findByText('SSH 自动遏制已紧急停止')).toBeInTheDocument();
+      expect(await screen.findByText('本机自动防御已紧急停止')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: '恢复自动防御' })).toBeInTheDocument();
     } finally {
       demoDashboard.policies.splice(0, demoDashboard.policies.length, ...originalPolicies);

@@ -210,7 +210,11 @@ func buildEngine(journalDir string, protectedPrefixValues, adminIPValues []strin
 	if err != nil {
 		return nil, err
 	}
-	return action.NewEngineWithStateKey(stateKey, packagePlaybook, sshPlaybook, banPlaybook, permissionPlaybook)
+	processPlaybook, err := action.NewTemporaryProcessSuspendPlaybook(action.NewSystemProcessController())
+	if err != nil {
+		return nil, err
+	}
+	return action.NewEngineWithStateKey(stateKey, packagePlaybook, sshPlaybook, banPlaybook, permissionPlaybook, processPlaybook)
 }
 
 func defaultApprovedPaths(groupID int) []action.ApprovedPath {

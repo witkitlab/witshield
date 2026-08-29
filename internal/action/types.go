@@ -14,10 +14,11 @@ import (
 type Type string
 
 const (
-	TypePackageSecurityUpgrade Type = "package_security_upgrade"
-	TypeSSHPasswordHardening   Type = "ssh_password_hardening"
-	TypeTemporaryIPBan         Type = "temporary_ip_ban"
-	TypeFilePermissionRepair   Type = "file_permission_repair"
+	TypePackageSecurityUpgrade  Type = "package_security_upgrade"
+	TypeSSHPasswordHardening    Type = "ssh_password_hardening"
+	TypeTemporaryIPBan          Type = "temporary_ip_ban"
+	TypeFilePermissionRepair    Type = "file_permission_repair"
+	TypeTemporaryProcessSuspend Type = "temporary_process_suspend"
 )
 
 // ExecutionIndeterminateMessage is returned only after an action request may

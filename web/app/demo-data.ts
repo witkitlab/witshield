@@ -133,7 +133,7 @@ export const demoDashboard: DashboardSnapshot = {
   policyGrants: [
     { deviceId: 'dev_local', capability: 'network.auth_bruteforce', enabled: true, mode: 'assist', allowedActionTypes: ['temporary_ip_ban'], maxActionsPerHour: 10, emergencyStop: false, updatedAt: '今天 08:00' },
     { deviceId: 'dev_local', capability: 'identity.persistence', enabled: true, mode: 'assist', allowedActionTypes: ['ssh_password_hardening'], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
-    { deviceId: 'dev_local', capability: 'workload.runtime', enabled: true, mode: 'assist', allowedActionTypes: [], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
+    { deviceId: 'dev_local', capability: 'workload.runtime', enabled: true, mode: 'assist', allowedActionTypes: ['temporary_process_suspend'], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
     { deviceId: 'dev_local', capability: 'file.integrity', enabled: true, mode: 'assist', allowedActionTypes: ['file_permission_repair'], maxActionsPerHour: 5, emergencyStop: false, updatedAt: '今天 08:00' },
     { deviceId: 'dev_local', capability: 'vulnerability.remediation', enabled: true, mode: 'assist', allowedActionTypes: ['package_security_upgrade'], maxActionsPerHour: 2, emergencyStop: false, updatedAt: '今天 08:00' },
   ],
@@ -180,6 +180,15 @@ export const demoDashboard: DashboardSnapshot = {
     protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4',
     hasKey: true, keyHint: '••••••••••••K3mP', customHeaderKeys: ['X-Organization'], privacyMode: 'minimal',
   },
+  investigationPolicy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '今天 08:00' },
+  investigationUsage: { day: '2026-08-29', regularTokensUsed: 12400, emergencyTokensUsed: 0, investigationCalls: 3, updatedAt: '10 分钟前' },
+  sensors: [
+    { deviceId: 'dev_local', sensorId: 'authentication', name: '登录与认证', mode: 'journald', state: 'active', cadenceSeconds: 5, lastSuccessAt: '刚刚', eventCount: 18, updatedAt: '刚刚' },
+    { deviceId: 'dev_local', sensorId: 'host_baseline', name: '账号与持久化基线', mode: 'polling', state: 'active', cadenceSeconds: 60, lastSuccessAt: '刚刚', eventCount: 2, updatedAt: '刚刚' },
+    { deviceId: 'dev_local', sensorId: 'network', name: '网络监听', mode: 'polling', state: 'active', cadenceSeconds: 30, lastSuccessAt: '刚刚', eventCount: 3, updatedAt: '刚刚' },
+    { deviceId: 'dev_local', sensorId: 'process', name: '高风险进程', mode: 'procfs', state: 'active', cadenceSeconds: 10, lastSuccessAt: '刚刚', eventCount: 1, updatedAt: '刚刚' },
+    { deviceId: 'dev_local', sensorId: 'runtime', name: '增强运行时行为', mode: 'falco_jsonl', state: 'optional', cadenceSeconds: 2, eventCount: 0, error: '增强运行时传感器尚未接入；基础保护继续运行', updatedAt: '刚刚' },
+  ],
   notifications: {
     configured: true,
     webhookEnabled: true,

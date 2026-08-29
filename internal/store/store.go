@@ -15,11 +15,12 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrConflict       = errors.New("conflict")
-	ErrUnauthorized   = errors.New("unauthorized")
-	ErrTokenExpired   = errors.New("token expired")
-	ErrTokenExhausted = errors.New("token exhausted")
+	ErrNotFound          = errors.New("not found")
+	ErrConflict          = errors.New("conflict")
+	ErrUnauthorized      = errors.New("unauthorized")
+	ErrTokenExpired      = errors.New("token expired")
+	ErrTokenExhausted    = errors.New("token exhausted")
+	ErrAIBudgetExhausted = errors.New("AI investigation budget exhausted")
 )
 
 type Store struct{ db *sql.DB }
@@ -152,6 +153,25 @@ CREATE TABLE IF NOT EXISTS ai_settings (
   model TEXT NOT NULL, encrypted_api_key TEXT NOT NULL DEFAULT '', api_key_hint TEXT NOT NULL DEFAULT '',
   encrypted_headers TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_investigation_policy (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1), profile TEXT NOT NULL,
+  daily_token_budget INTEGER NOT NULL CHECK(daily_token_budget BETWEEN 1000 AND 2000000),
+  emergency_reserve_tokens INTEGER NOT NULL CHECK(emergency_reserve_tokens BETWEEN 0 AND 500000),
+  share_network_indicators INTEGER NOT NULL DEFAULT 1,
+  share_account_names INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_investigation_usage (
+  usage_day TEXT PRIMARY KEY, regular_tokens_used INTEGER NOT NULL DEFAULT 0 CHECK(regular_tokens_used >= 0),
+  emergency_tokens_used INTEGER NOT NULL DEFAULT 0 CHECK(emergency_tokens_used >= 0),
+  investigation_calls INTEGER NOT NULL DEFAULT 0 CHECK(investigation_calls >= 0), updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sensor_health (
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, sensor_id TEXT NOT NULL,
+  name TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, cadence_seconds INTEGER NOT NULL,
+  last_success_at TEXT, last_event_at TEXT, event_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(device_id,sensor_id)
+);
+CREATE INDEX IF NOT EXISTS sensor_health_device_state_idx ON sensor_health(device_id,state,updated_at);
 CREATE TABLE IF NOT EXISTS notification_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), webhook_enabled INTEGER NOT NULL DEFAULT 0,
   webhook_url TEXT NOT NULL DEFAULT '', encrypted_webhook_secret TEXT NOT NULL DEFAULT '',
@@ -431,7 +451,39 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_
 	if err = s.migrateSecurityEventRetentionV7(ctx); err != nil {
 		return err
 	}
-	return s.migrateInvestigationEvidenceV8(ctx)
+	if err = s.migrateInvestigationEvidenceV8(ctx); err != nil {
+		return err
+	}
+	return s.migrateRealtimeDefenseV9(ctx)
+}
+
+func (s *Store) migrateRealtimeDefenseV9(ctx context.Context) error {
+	now := timeText(time.Now().UTC())
+	_, err := s.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS ai_investigation_policy (
+			singleton INTEGER PRIMARY KEY CHECK(singleton=1), profile TEXT NOT NULL,
+			daily_token_budget INTEGER NOT NULL CHECK(daily_token_budget BETWEEN 1000 AND 2000000),
+			emergency_reserve_tokens INTEGER NOT NULL CHECK(emergency_reserve_tokens BETWEEN 0 AND 500000),
+			share_network_indicators INTEGER NOT NULL DEFAULT 1,
+			share_account_names INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS ai_investigation_usage (
+			usage_day TEXT PRIMARY KEY, regular_tokens_used INTEGER NOT NULL DEFAULT 0 CHECK(regular_tokens_used >= 0),
+			emergency_tokens_used INTEGER NOT NULL DEFAULT 0 CHECK(emergency_tokens_used >= 0),
+			investigation_calls INTEGER NOT NULL DEFAULT 0 CHECK(investigation_calls >= 0), updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS sensor_health (
+			device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, sensor_id TEXT NOT NULL,
+			name TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, cadence_seconds INTEGER NOT NULL,
+			last_success_at TEXT, last_event_at TEXT, event_count INTEGER NOT NULL DEFAULT 0,
+			error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(device_id,sensor_id)
+		);
+		CREATE INDEX IF NOT EXISTS sensor_health_device_state_idx ON sensor_health(device_id,state,updated_at);
+		INSERT OR IGNORE INTO ai_investigation_policy(singleton,profile,daily_token_budget,emergency_reserve_tokens,share_network_indicators,share_account_names,updated_at)
+			VALUES(1,'balanced',60000,20000,1,1,?);
+		INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(9,?);
+	`, now, now)
+	return err
 }
 
 func (s *Store) migrateInvestigationEvidenceV8(ctx context.Context) error {

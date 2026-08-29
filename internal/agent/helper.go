@@ -175,7 +175,7 @@ func (c *HelperClient) ObserveSuspiciousProcesses(ctx context.Context) (observat
 	}
 	for _, process := range response.Processes {
 		identity, decodeErr := hex.DecodeString(process.Identity)
-		if decodeErr != nil || len(identity) != 32 || process.PID < 1 || process.PPID < 0 || len(process.Name) > 131 || len(process.Executable) > 1027 || len(process.Reason) > 256 ||
+		if decodeErr != nil || len(identity) != 32 || process.PID < 1 || process.PPID < 0 || process.StartTime == 0 || len(process.Name) > 131 || len(process.Executable) > 1027 || len(process.Reason) > 256 ||
 			(process.EventType != "suspicious_privileged_process_started" && process.EventType != "deleted_executable_process_running") {
 			return observation.ProcessSnapshot{}, errors.New("helper returned an invalid process observation")
 		}

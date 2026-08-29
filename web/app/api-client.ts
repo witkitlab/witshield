@@ -3,6 +3,8 @@ import type {
   ActionPlan,
   ActionRecord,
   AISettings,
+  AIInvestigationPolicy,
+  AIInvestigationUsage,
   AuditEvent,
   DashboardSnapshot,
   DefensePolicy,
@@ -17,6 +19,7 @@ import type {
   SecurityIncident,
   SecurityReport,
   SecurityObservation,
+  SensorHealth,
   Severity,
 } from './types';
 
@@ -318,6 +321,9 @@ export interface LiveSnapshot {
   securityEvents: SecurityObservation[];
   actions: ActionRecord[];
   ai: AISettings;
+  investigationPolicy: AIInvestigationPolicy;
+  investigationUsage: AIInvestigationUsage;
+  sensors: SensorHealth[];
   notifications: NotificationSettings;
   schedules: ScanSchedule[];
   coverageIssues: DashboardSnapshot['coverageIssues'];
@@ -388,6 +394,9 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       securityEvents: structuredClone(demoDashboard.securityEvents),
       actions: structuredClone(demoDashboard.actions),
       ai: structuredClone(demoDashboard.ai),
+      investigationPolicy: structuredClone(demoDashboard.investigationPolicy),
+      investigationUsage: structuredClone(demoDashboard.investigationUsage),
+      sensors: structuredClone(demoDashboard.sensors),
       notifications: structuredClone(demoDashboard.notifications),
       schedules: structuredClone(demoDashboard.schedules),
       coverageIssues: structuredClone(demoDashboard.coverageIssues),
@@ -395,13 +404,15 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     };
   }
   const rawDevices = await requestItems<RawDevice>('/devices');
-  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawNotifications, rawSchedules, rawIncidents, policyResults, grantResults] = await Promise.all([
+  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawInvestigation, rawSensors, rawNotifications, rawSchedules, rawIncidents, policyResults, grantResults] = await Promise.all([
     requestCurrentFindingsForDevices(rawDevices),
     requestLatestReportsForDevices(rawDevices),
     requestItems<RawAudit>('/audit?limit=200'),
     requestSecurityObservations(),
     requestItems<RawAction>('/actions?limit=200'),
     request<RawAISettings>('/ai/settings'),
+    request<{ policy: AIInvestigationPolicy; usage: AIInvestigationUsage }>('/ai/investigation-policy'),
+    requestItems<SensorHealth>('/sensors'),
     request<RawNotificationSettings>('/notifications/settings'),
     requestItems<RawSchedule>('/schedules'),
     requestItems<RawIncident>('/incidents?limit=200'),
@@ -512,11 +523,33 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       customHeaderKeys: Object.keys(rawAI.customHeaders ?? {}).sort(),
       privacyMode: 'minimal',
     },
+    investigationPolicy: { ...rawInvestigation.policy, updatedAt: dateText(rawInvestigation.policy.updatedAt) },
+    investigationUsage: { ...rawInvestigation.usage, updatedAt: dateText(rawInvestigation.usage.updatedAt) },
+    sensors: rawSensors.map((sensor) => ({ ...sensor, lastSuccessAt: sensor.lastSuccessAt ? dateText(sensor.lastSuccessAt) : undefined, lastEventAt: sensor.lastEventAt ? dateText(sensor.lastEventAt) : undefined, updatedAt: dateText(sensor.updatedAt) })),
     notifications: mapNotifications(rawNotifications),
     schedules: rawSchedules.map(mapSchedule),
     coverageIssues,
     checks,
   };
+}
+
+export async function saveInvestigationPolicy(policy: AIInvestigationPolicy): Promise<AIInvestigationPolicy> {
+  if (demoMode) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    demoDashboard.investigationPolicy = { ...structuredClone(policy), updatedAt: '刚刚' };
+    return structuredClone(demoDashboard.investigationPolicy);
+  }
+  const raw = await request<AIInvestigationPolicy>('/ai/investigation-policy', {
+    method: 'PUT',
+    body: JSON.stringify({
+      profile: policy.profile,
+      dailyTokenBudget: policy.dailyTokenBudget,
+      emergencyReserveTokens: policy.emergencyReserveTokens,
+      shareNetworkIndicators: policy.shareNetworkIndicators,
+      shareAccountNames: policy.shareAccountNames,
+    }),
+  });
+  return { ...raw, updatedAt: dateText(raw.updatedAt) };
 }
 
 function mapReport(raw: RawReport, detailsLoaded = Array.isArray(raw.findings)): SecurityReport {

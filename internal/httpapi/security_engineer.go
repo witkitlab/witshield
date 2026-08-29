@@ -136,7 +136,7 @@ func (s *Server) putPolicyGrant(w http.ResponseWriter, r *http.Request) {
 	allowedByCapability := map[string]map[string]bool{
 		"network.auth_bruteforce":   {string(action.TypeTemporaryIPBan): true},
 		"identity.persistence":      {string(action.TypeSSHPasswordHardening): true},
-		"workload.runtime":          {},
+		"workload.runtime":          {string(action.TypeTemporaryProcessSuspend): true},
 		"file.integrity":            {string(action.TypeFilePermissionRepair): true},
 		"vulnerability.remediation": {string(action.TypePackageSecurityUpgrade): true},
 	}
@@ -181,6 +181,7 @@ func (s *Server) putPolicyGrant(w http.ResponseWriter, r *http.Request) {
 	known := map[string]bool{
 		string(action.TypePackageSecurityUpgrade): true, string(action.TypeSSHPasswordHardening): true,
 		string(action.TypeTemporaryIPBan): true, string(action.TypeFilePermissionRepair): true,
+		string(action.TypeTemporaryProcessSuspend): true,
 	}
 	seen := map[string]bool{}
 	for _, value := range in.AllowedActionTypes {

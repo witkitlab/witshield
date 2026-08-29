@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	securityEngineerPollInterval = 20 * time.Second
-	securityEngineerRetryDelay   = 15 * time.Minute
+	securityEngineerPollInterval = 5 * time.Second
+	securityEngineerDebounce     = 10 * time.Second
 )
 
 // RunSecurityEngineerWorker turns enabled assist modes into a resident service:
@@ -44,6 +44,13 @@ func (s *Server) runSecurityEngineerCycle(ctx context.Context) {
 		}
 		return
 	}
+	policy, err := s.store.AIInvestigationPolicy(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.log.Error("security engineer investigation policy unavailable", "error", "investigation policy could not be read")
+		}
+		return
+	}
 	incidents, err := s.store.ListIncidents(ctx, "", []domain.IncidentStatus{domain.IncidentOpen}, 20)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -56,8 +63,12 @@ func (s *Server) runSecurityEngineerCycle(ctx context.Context) {
 		if ctx.Err() != nil || processed >= 3 {
 			return
 		}
-		if incident.LastInvestigatedAt != nil && now.Sub(*incident.LastInvestigatedAt) < securityEngineerRetryDelay {
-			continue
+		if incident.LastInvestigatedAt != nil {
+			// An open incident is not a timer. Re-run only when a sensor attached
+			// genuinely newer evidence; debounce a burst into one investigation.
+			if !incident.LastSeenAt.After(*incident.LastInvestigatedAt) || now.Sub(incident.LastSeenAt) < securityEngineerDebounce {
+				continue
+			}
 		}
 		grants, grantErr := s.store.ListPolicyGrants(ctx, incident.DeviceID, now)
 		if grantErr != nil {
@@ -67,10 +78,24 @@ func (s *Server) runSecurityEngineerCycle(ctx context.Context) {
 		if !automaticInvestigationAllowed(incident, grants) {
 			continue
 		}
+		if !investigationProfileAllows(policy.Profile, incident.Severity) {
+			continue
+		}
 		processed++
 		if _, _, runErr := s.performIncidentInvestigation(ctx, incident.ID, "policy_grant"); runErr != nil && !errors.Is(runErr, store.ErrConflict) && !errors.Is(runErr, context.Canceled) {
 			s.log.Warn("security engineer investigation failed", "incidentId", incident.ID, "error", "investigation did not complete")
 		}
+	}
+}
+
+func investigationProfileAllows(profile domain.InvestigationProfile, severity domain.Severity) bool {
+	switch profile {
+	case domain.InvestigationEconomy:
+		return severity == domain.SeverityCritical
+	case domain.InvestigationSensitive:
+		return severity != domain.SeverityInfo
+	default:
+		return severity == domain.SeverityMedium || severity == domain.SeverityHigh || severity == domain.SeverityCritical
 	}
 }
 

@@ -32,6 +32,7 @@ func main() {
 	hostRoot := flag.String("host-root", env("WITSHIELD_HOST_ROOT", "/"), "explicit host filesystem root for observer mode")
 	authLog := flag.String("auth-log", env("WITSHIELD_AUTH_LOG", ""), "optional explicit SSH authentication log path")
 	journalctl := flag.String("journalctl", env("WITSHIELD_JOURNALCTL", "/usr/bin/journalctl"), "fixed journalctl executable used for SSH security events")
+	runtimeLog := flag.String("runtime-event-log", env("WITSHIELD_RUNTIME_EVENT_LOG", "/var/log/falco/events.jsonl"), "optional Falco-compatible JSONL runtime event stream")
 	observer := flag.Bool("observer-only", envBool("WITSHIELD_OBSERVER_ONLY", false), "disable every privileged action and scan the mounted host root read-only")
 	helperSocket := flag.String("helper-socket", env("WITSHIELD_HELPER_SOCKET", "/run/witshield/helper.sock"), "privileged helper Unix socket")
 	helperToken := flag.String("helper-token-file", env("WITSHIELD_HELPER_TOKEN_FILE", "/etc/witshield/helper.token"), "privileged helper token file")
@@ -46,7 +47,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runner, err := agent.New(ctx, agent.Config{ControllerURL: *controller, Name: *name, DataDir: *data, EnrollmentToken: *enrollment, EnrollmentTokenFile: *enrollmentFile, ConsumeEnrollmentToken: *consume, Version: version, ScanInterval: interval, HostRoot: *hostRoot, AuthLogPath: *authLog, JournalctlPath: *journalctl, ObserverOnly: *observer, HelperSocket: *helperSocket, HelperTokenFile: *helperToken, Logger: slog.Default()})
+	runner, err := agent.New(ctx, agent.Config{ControllerURL: *controller, Name: *name, DataDir: *data, EnrollmentToken: *enrollment, EnrollmentTokenFile: *enrollmentFile, ConsumeEnrollmentToken: *consume, Version: version, ScanInterval: interval, HostRoot: *hostRoot, AuthLogPath: *authLog, JournalctlPath: *journalctl, RuntimeEventLogPath: *runtimeLog, ObserverOnly: *observer, HelperSocket: *helperSocket, HelperTokenFile: *helperToken, Logger: slog.Default()})
 	if err != nil {
 		log.Fatal(err)
 	}

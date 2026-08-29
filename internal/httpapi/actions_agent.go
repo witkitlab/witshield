@@ -170,6 +170,23 @@ func validateAction(actionType string, raw json.RawMessage) (map[string]any, err
 			}
 		}
 		return map[string]any{"summary": "Repair permissions on one approved path", "path": clean, "mode": p.Mode, "impact": "Access to this file or directory changes immediately.", "rollback": "Restore recorded mode and ownership."}, nil
+	case action.TypeTemporaryProcessSuspend:
+		var p action.TemporaryProcessSuspendParams
+		if err := strictRaw(raw, &p); err != nil {
+			return nil, err
+		}
+		if p.PID < 2 || p.StartTime == 0 || p.TTLSeconds < 30 || p.TTLSeconds > 900 || len(p.Reason) > 256 {
+			return nil, errors.New("pid, startTime, ttlSeconds, or reason is outside the safe bound")
+		}
+		clean := filepath.Clean(p.Executable)
+		allowed := false
+		for _, prefix := range []string{"/tmp/", "/var/tmp/", "/dev/shm/"} {
+			allowed = allowed || strings.HasPrefix(clean, prefix)
+		}
+		if !filepath.IsAbs(clean) || clean != p.Executable || !allowed {
+			return nil, errors.New("only an exact executable below a supported transient directory can be suspended")
+		}
+		return map[string]any{"summary": "Temporarily suspend one exact privileged process", "pid": p.PID, "executable": clean, "ttlSeconds": p.TTLSeconds, "impact": "The exact process is paused; its PID and start time are revalidated before every signal.", "rollback": "Automatically resume the same process after the TTL. A reused PID is never signaled."}, nil
 	default:
 		return nil, errors.New("unsupported action type")
 	}
@@ -590,7 +607,10 @@ func validSecurityEventType(eventType string) bool {
 		"container_configuration_changed", "network_listener_opened", "network_listener_closed",
 		"network_sensor_capacity_degraded", "network_sensor_capacity_restored",
 		"suspicious_privileged_process_started", "deleted_executable_process_running",
-		"process_sensor_capacity_degraded", "process_sensor_capacity_restored":
+		"process_sensor_capacity_degraded", "process_sensor_capacity_restored",
+		"runtime_reverse_shell_detected", "runtime_cryptominer_detected", "runtime_persistence_detected",
+		"container_privilege_escalation", "runtime_sensitive_file_change", "runtime_security_alert",
+		"ssh_authorized_keys_changed", "sensor_health_degraded", "sensor_health_restored":
 		return true
 	default:
 		return false
