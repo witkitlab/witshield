@@ -136,7 +136,10 @@ type investigationPublicError struct {
 	Cause   error
 }
 
-const investigationRequestTimeout = 90 * time.Second
+const (
+	investigationRequestTimeout  = 90 * time.Second
+	investigationMaxOutputTokens = 8192
+)
 
 func (e *investigationPublicError) Error() string { return e.Code }
 func (e *investigationPublicError) Unwrap() error { return e.Cause }
@@ -206,7 +209,7 @@ plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","s
 	// absolute ceiling.
 	requestCtx, cancel := contextWithTimeout(ctx, investigationRequestTimeout)
 	defer cancel()
-	reply, err := client.Chat(requestCtx, messages)
+	reply, err := client.ChatWithOutputLimit(requestCtx, messages, investigationMaxOutputTokens)
 	if err != nil {
 		_ = s.store.FailInvestigation(ctx, investigation, "AI upstream request failed", s.now().UTC())
 		return investigation, nil, &investigationPublicError{Status: http.StatusBadGateway, Code: "ai_upstream_error", Message: err.Error(), Cause: err}
@@ -571,7 +574,7 @@ func safeSignalEvidence(signal domain.Signal, policy domain.AIInvestigationPolic
 func estimateInvestigationTokens(system string, payload []byte) int {
 	// Deliberately conservative: one rune per token plus a bounded structured
 	// response allowance. Compatible providers often omit reliable usage data.
-	estimate := len([]rune(system)) + len([]rune(string(payload))) + 2048
+	estimate := len([]rune(system)) + len([]rune(string(payload))) + investigationMaxOutputTokens
 	if estimate < 1000 {
 		return 1000
 	}

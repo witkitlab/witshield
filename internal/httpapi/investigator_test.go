@@ -98,4 +98,7 @@ func TestInvestigationTimeoutAllowsReasoningModelsButStaysBounded(t *testing.T) 
 	if investigationRequestTimeout < 60*time.Second || investigationRequestTimeout >= 2*time.Minute {
 		t.Fatalf("investigation timeout is outside the intended safety window: %s", investigationRequestTimeout)
 	}
+	if investigationMaxOutputTokens < 4096 || investigationMaxOutputTokens > 16*1024 {
+		t.Fatalf("investigation output allowance is outside the intended safety window: %d", investigationMaxOutputTokens)
+	}
 }

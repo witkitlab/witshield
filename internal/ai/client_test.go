@@ -51,6 +51,13 @@ func TestProtocols(t *testing.T) {
 				if tt.p == domain.AIProtocolOpenAIResponses && payload["store"] != false {
 					t.Errorf("Responses store must be false: %v", payload)
 				}
+				field := "max_tokens"
+				if tt.p == domain.AIProtocolOpenAIResponses {
+					field = "max_output_tokens"
+				}
+				if payload[field] != float64(defaultOutputTokens) {
+					t.Errorf("%s=%v", field, payload[field])
+				}
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, tt.body)
 			}))
@@ -64,6 +71,34 @@ func TestProtocols(t *testing.T) {
 				t.Fatalf("%q %v", got, err)
 			}
 		})
+	}
+}
+
+func TestChatWithOutputLimitIsExplicitAndBounded(t *testing.T) {
+	var received float64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		received, _ = payload["max_output_tokens"].(float64)
+		fmt.Fprint(w, `{"output_text":"ok"}`)
+	}))
+	defer srv.Close()
+	client, err := New(Config{Protocol: domain.AIProtocolOpenAIResponses, BaseURL: srv.URL, Model: "reasoner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.ChatWithOutputLimit(context.Background(), []Message{{Role: "user", Content: "investigate"}}, 8192); err != nil {
+		t.Fatal(err)
+	}
+	if received != 8192 {
+		t.Fatalf("max_output_tokens=%v", received)
+	}
+	for _, invalid := range []int{0, maxOutputTokens + 1} {
+		if _, err = client.ChatWithOutputLimit(context.Background(), []Message{{Role: "user", Content: "invalid"}}, invalid); err == nil {
+			t.Fatalf("invalid output limit accepted: %d", invalid)
+		}
 	}
 }
 func TestKeyRedactedFromUpstreamError(t *testing.T) {

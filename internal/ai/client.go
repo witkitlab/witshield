@@ -22,6 +22,8 @@ import (
 const (
 	maxResponseBody      = 2 << 20
 	maxAIRequestDuration = 2 * time.Minute
+	defaultOutputTokens  = 2048
+	maxOutputTokens      = 16 * 1024
 )
 
 type requestError struct {
@@ -205,6 +207,17 @@ func validateHeader(k, v string) error {
 var headerNamePattern = regexp.MustCompile(`^[!#$%&'*+.^_\x60|~0-9A-Za-z-]+$`)
 
 func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
+	return c.ChatWithOutputLimit(ctx, messages, defaultOutputTokens)
+}
+
+// ChatWithOutputLimit lets bounded, reasoning-heavy operations reserve enough
+// room for both hidden reasoning and their final answer. Interactive callers
+// should normally use Chat so a larger investigation allowance cannot silently
+// increase every request's cost.
+func (c *Client) ChatWithOutputLimit(ctx context.Context, messages []Message, outputTokens int) (string, error) {
+	if outputTokens < 1 || outputTokens > maxOutputTokens {
+		return "", errors.New("output token limit must be between 1 and 16384")
+	}
 	if len(messages) == 0 || len(messages) > 40 {
 		return "", errors.New("messages must contain between 1 and 40 entries")
 	}
@@ -227,10 +240,10 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 		for _, m := range messages {
 			input = append(input, map[string]string{"role": m.Role, "content": m.Content})
 		}
-		body = map[string]any{"model": c.cfg.Model, "input": input, "max_output_tokens": 2048, "store": false}
+		body = map[string]any{"model": c.cfg.Model, "input": input, "max_output_tokens": outputTokens, "store": false}
 	case domain.AIProtocolOpenAIChat:
 		endpoint = "chat/completions"
-		body = map[string]any{"model": c.cfg.Model, "messages": messages, "max_tokens": 2048}
+		body = map[string]any{"model": c.cfg.Model, "messages": messages, "max_tokens": outputTokens}
 	case domain.AIProtocolAnthropic:
 		endpoint = "messages"
 		var system string
@@ -245,7 +258,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 				nonSystem = append(nonSystem, m)
 			}
 		}
-		body = map[string]any{"model": c.cfg.Model, "messages": nonSystem, "system": system, "max_tokens": 2048}
+		body = map[string]any{"model": c.cfg.Model, "messages": nonSystem, "system": system, "max_tokens": outputTokens}
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
