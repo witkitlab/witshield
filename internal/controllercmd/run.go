@@ -154,7 +154,10 @@ func MainVersion(ctx context.Context, args []string, version string) error {
 }
 
 func controllerHTTPServer(address string, handler http.Handler) *http.Server {
-	return &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
+	// Administrator-triggered AI investigations have a bounded 90-second
+	// upstream window. Keep the connection alive beyond that handler deadline so
+	// the client receives the stored result instead of an unexplained EOF.
+	return &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 2 * time.Minute, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 }
 
 func runMaintenance(ctx context.Context, db *store.Store, log *slog.Logger) {

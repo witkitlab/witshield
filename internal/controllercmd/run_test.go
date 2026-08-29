@@ -2,9 +2,11 @@ package controllercmd
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/witkitlab/witshield/internal/store"
 )
@@ -65,5 +67,15 @@ func TestIsolatedLocalListenAddress(t *testing.T) {
 		if got := isolatedLocalListenAddress(address); got != want {
 			t.Errorf("isolatedLocalListenAddress(%q)=%v want=%v", address, got, want)
 		}
+	}
+}
+
+func TestControllerWriteTimeoutCoversBoundedAIInvestigation(t *testing.T) {
+	server := controllerHTTPServer("127.0.0.1:0", http.NotFoundHandler())
+	if server.WriteTimeout < 90*time.Second || server.WriteTimeout > 2*time.Minute {
+		t.Fatalf("controller write timeout does not cover the bounded investigation window: %s", server.WriteTimeout)
+	}
+	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.MaxHeaderBytes > 32<<10 {
+		t.Fatalf("HTTP input bounds were weakened: %#v", server)
 	}
 }
