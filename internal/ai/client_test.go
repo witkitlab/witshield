@@ -101,6 +101,104 @@ func TestChatWithOutputLimitIsExplicitAndBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestChatJSONUsesNativeProviderMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol domain.AIProtocol
+		assert   func(*testing.T, map[string]any)
+		response string
+	}{
+		{
+			name:     "Responses",
+			protocol: domain.AIProtocolOpenAIResponses,
+			assert: func(t *testing.T, payload map[string]any) {
+				text, ok := payload["text"].(map[string]any)
+				if !ok {
+					t.Fatalf("missing Responses text config: %#v", payload)
+				}
+				format, ok := text["format"].(map[string]any)
+				if !ok || format["type"] != "json_object" {
+					t.Fatalf("unexpected Responses JSON mode: %#v", text)
+				}
+			},
+			response: `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"{\"ok\":true}"}]}]}`,
+		},
+		{
+			name:     "Chat Completions",
+			protocol: domain.AIProtocolOpenAIChat,
+			assert: func(t *testing.T, payload map[string]any) {
+				format, ok := payload["response_format"].(map[string]any)
+				if !ok || format["type"] != "json_object" {
+					t.Fatalf("unexpected Chat Completions JSON mode: %#v", payload)
+				}
+			},
+			response: `{"choices":[{"message":{"content":"{\"ok\":true}"}}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				tt.assert(t, payload)
+				fmt.Fprint(w, tt.response)
+			}))
+			defer srv.Close()
+			client, err := New(Config{Protocol: tt.protocol, BaseURL: srv.URL, Model: "reasoner"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := client.ChatJSONWithOutputLimit(context.Background(), []Message{{Role: "user", Content: "return JSON"}}, 8192)
+			if err != nil || got != `{"ok":true}` {
+				t.Fatalf("got=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestResponsesParserSelectsFinalOutputText(t *testing.T) {
+	data := []byte(`{
+		"status":"completed",
+		"output":[
+			{"type":"reasoning","content":[{"type":"reasoning_text","text":"internal analysis"}]},
+			{"type":"message","content":[{"type":"output_text","text":"{\"result\":\"final\"}"}]}
+		]
+	}`)
+	got, err := parseResponse(domain.AIProtocolOpenAIResponses, data)
+	if err != nil || got != `{"result":"final"}` {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestResponsesParserRejectsIncompleteAndNonFinalContent(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "incomplete output",
+			body: `{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}`,
+		},
+		{
+			name: "reasoning only",
+			body: `{"status":"completed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"not final"}]}]}`,
+		},
+		{
+			name: "refusal only",
+			body: `{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","text":"no"}]}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := parseResponse(domain.AIProtocolOpenAIResponses, []byte(tt.body)); err == nil {
+				t.Fatalf("unexpected result %q", got)
+			}
+		})
+	}
+}
 func TestKeyRedactedFromUpstreamError(t *testing.T) {
 	secret := "super-secret-key"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500); fmt.Fprint(w, "oops "+secret) }))

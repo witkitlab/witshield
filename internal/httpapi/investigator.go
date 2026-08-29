@@ -209,7 +209,7 @@ plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","s
 	// absolute ceiling.
 	requestCtx, cancel := contextWithTimeout(ctx, investigationRequestTimeout)
 	defer cancel()
-	reply, err := client.ChatWithOutputLimit(requestCtx, messages, investigationMaxOutputTokens)
+	reply, err := client.ChatJSONWithOutputLimit(requestCtx, messages, investigationMaxOutputTokens)
 	if err != nil {
 		_ = s.store.FailInvestigation(ctx, investigation, "AI upstream request failed", s.now().UTC())
 		return investigation, nil, &investigationPublicError{Status: http.StatusBadGateway, Code: "ai_upstream_error", Message: err.Error(), Cause: err}

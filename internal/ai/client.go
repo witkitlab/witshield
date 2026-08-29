@@ -215,6 +215,17 @@ func (c *Client) Chat(ctx context.Context, messages []Message) (string, error) {
 // should normally use Chat so a larger investigation allowance cannot silently
 // increase every request's cost.
 func (c *Client) ChatWithOutputLimit(ctx context.Context, messages []Message, outputTokens int) (string, error) {
+	return c.chatWithOutputLimit(ctx, messages, outputTokens, false)
+}
+
+// ChatJSONWithOutputLimit requests a JSON object from providers that expose a
+// native JSON mode. Anthropic Messages has no equivalent request field, so the
+// caller's schema prompt and local decoder remain the enforcement boundary.
+func (c *Client) ChatJSONWithOutputLimit(ctx context.Context, messages []Message, outputTokens int) (string, error) {
+	return c.chatWithOutputLimit(ctx, messages, outputTokens, true)
+}
+
+func (c *Client) chatWithOutputLimit(ctx context.Context, messages []Message, outputTokens int, jsonMode bool) (string, error) {
 	if outputTokens < 1 || outputTokens > maxOutputTokens {
 		return "", errors.New("output token limit must be between 1 and 16384")
 	}
@@ -240,10 +251,18 @@ func (c *Client) ChatWithOutputLimit(ctx context.Context, messages []Message, ou
 		for _, m := range messages {
 			input = append(input, map[string]string{"role": m.Role, "content": m.Content})
 		}
-		body = map[string]any{"model": c.cfg.Model, "input": input, "max_output_tokens": outputTokens, "store": false}
+		requestBody := map[string]any{"model": c.cfg.Model, "input": input, "max_output_tokens": outputTokens, "store": false}
+		if jsonMode {
+			requestBody["text"] = map[string]any{"format": map[string]any{"type": "json_object"}}
+		}
+		body = requestBody
 	case domain.AIProtocolOpenAIChat:
 		endpoint = "chat/completions"
-		body = map[string]any{"model": c.cfg.Model, "messages": messages, "max_tokens": outputTokens}
+		requestBody := map[string]any{"model": c.cfg.Model, "messages": messages, "max_tokens": outputTokens}
+		if jsonMode {
+			requestBody["response_format"] = map[string]any{"type": "json_object"}
+		}
+		body = requestBody
 	case domain.AIProtocolAnthropic:
 		endpoint = "messages"
 		var system string
@@ -322,9 +341,15 @@ func parseResponse(protocol domain.AIProtocol, data []byte) (string, error) {
 	switch protocol {
 	case domain.AIProtocolOpenAIResponses:
 		var x struct {
+			Status            string `json:"status"`
+			IncompleteDetails *struct {
+				Reason string `json:"reason"`
+			} `json:"incomplete_details"`
 			OutputText string `json:"output_text"`
 			Output     []struct {
+				Type    string `json:"type"`
 				Content []struct {
+					Type string `json:"type"`
 					Text string `json:"text"`
 				} `json:"content"`
 			} `json:"output"`
@@ -332,12 +357,41 @@ func parseResponse(protocol domain.AIProtocol, data []byte) (string, error) {
 		if err := json.Unmarshal(data, &x); err != nil {
 			return "", err
 		}
+		if x.Status == "incomplete" {
+			reason := "unknown reason"
+			if x.IncompleteDetails != nil && x.IncompleteDetails.Reason == "max_output_tokens" {
+				reason = "max_output_tokens"
+			}
+			return "", fmt.Errorf("response was incomplete: %s", reason)
+		}
+		if x.Status == "failed" {
+			return "", errors.New("response failed")
+		}
 		if x.OutputText != "" {
 			return x.OutputText, nil
 		}
+		// A Responses payload may contain reasoning and other item kinds before
+		// the final assistant message. Only output_text within a message is the
+		// model's final answer; array position alone is not meaningful.
 		for _, o := range x.Output {
+			if o.Type != "message" {
+				continue
+			}
 			for _, c := range o.Content {
-				if c.Text != "" {
+				if c.Type == "output_text" && c.Text != "" {
+					return c.Text, nil
+				}
+			}
+		}
+		// Preserve compatibility with older OpenAI-compatible gateways that
+		// omitted type discriminators, without ever treating typed reasoning
+		// content as the final answer.
+		for _, o := range x.Output {
+			if o.Type != "" {
+				continue
+			}
+			for _, c := range o.Content {
+				if c.Type == "" && c.Text != "" {
 					return c.Text, nil
 				}
 			}
