@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,12 +21,12 @@ import (
 )
 
 type investigationModelOutput struct {
-	Hypothesis    string   `json:"hypothesis"`
-	Observations  []string `json:"observations"`
-	Uncertainties []string `json:"uncertainties"`
-	NextChecks    []string `json:"nextChecks"`
-	Conclusion    string   `json:"conclusion"`
-	Confidence    int      `json:"confidence"`
+	Hypothesis    string          `json:"hypothesis"`
+	Observations  []string        `json:"observations"`
+	Uncertainties []string        `json:"uncertainties"`
+	NextChecks    []string        `json:"nextChecks"`
+	Conclusion    string          `json:"conclusion"`
+	Confidence    modelConfidence `json:"confidence"`
 	Plan          *struct {
 		Title     string `json:"title"`
 		Rationale string `json:"rationale"`
@@ -36,6 +38,26 @@ type investigationModelOutput struct {
 			Parameters json.RawMessage `json:"parameters"`
 		} `json:"steps"`
 	} `json:"plan"`
+}
+
+// modelConfidence accepts the two common confidence conventions produced by
+// otherwise schema-compliant models: a 0-100 score or a 0-1 probability. It is
+// presentation metadata only and never participates in action authorization.
+// Normalize it at the trust boundary so a harmless numeric convention cannot
+// discard an otherwise valid investigation.
+type modelConfidence int
+
+func (c *modelConfidence) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+		return errors.New("confidence must be a number between 0 and 100")
+	}
+	if value > 0 && value < 1 || value == 1 && strings.ContainsAny(raw, ".eE") {
+		value *= 100
+	}
+	*c = modelConfidence(math.Round(value))
+	return nil
 }
 
 func (s *Server) prepareResponseStep(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +214,7 @@ func (s *Server) performIncidentInvestigation(ctx context.Context, incidentID, t
 Return exactly one JSON object with this schema and no Markdown:
 {"hypothesis":"short working hypothesis","observations":["directly observed fact"],"uncertainties":["important unknown"],"nextChecks":["safe read-only follow-up"],"conclusion":"clear Chinese conclusion","confidence":0,"plan":null}
 plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","steps":[{"actionType":"temporary_ip_ban|temporary_process_suspend|file_permission_repair|package_security_upgrade|ssh_password_hardening","title":"...","rationale":"...","parameters":{}}]}.
-	Use at most 12 observations, 12 uncertainties, 12 next checks, and 6 response steps. Every observation must be directly supported by the supplied tool results; put inference in hypothesis or conclusion. Do not recommend an action unless its exact target and parameters are supported by the evidence. If evidence is insufficient, return plan:null.`
+	confidence must be an integer from 0 (no confidence) to 100 (fully confident). Use at most 12 observations, 12 uncertainties, 12 next checks, and 6 response steps. Every observation must be directly supported by the supplied tool results; put inference in hypothesis or conclusion. Do not recommend an action unless its exact target and parameters are supported by the evidence. If evidence is insufficient, return plan:null.`
 	estimatedTokens := estimateInvestigationTokens(system, contextPayload)
 	if _, _, budgetErr := s.store.ReserveAIInvestigationBudget(ctx, incident.Severity, estimatedTokens, s.now().UTC()); budgetErr != nil {
 		_ = s.store.FailInvestigation(ctx, investigation, "AI investigation budget is exhausted", s.now().UTC())
@@ -225,7 +247,7 @@ plan may instead be {"title":"...","rationale":"...","risk":"low|medium|high","s
 	investigation.Uncertainties = output.Uncertainties
 	investigation.NextChecks = output.NextChecks
 	investigation.Conclusion = output.Conclusion
-	investigation.Confidence = output.Confidence
+	investigation.Confidence = int(output.Confidence)
 	investigation.ToolCalls = calls
 	grants, err := s.store.ListPolicyGrants(ctx, incident.DeviceID, s.now().UTC())
 	if err != nil {
