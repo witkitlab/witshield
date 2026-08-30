@@ -190,8 +190,12 @@ record_unit_state() {
   mkdir -p "$state_dir"
   if unit_loaded "$unit"; then
     printf 'loaded\n' >"${state_dir}/${unit}.loaded"
-    systemctl is-active --quiet "$unit" && printf 'active\n' >"${state_dir}/${unit}.active" || true
-    systemctl is-enabled --quiet "$unit" && printf 'enabled\n' >"${state_dir}/${unit}.enabled" || true
+    if systemctl is-active --quiet "$unit"; then
+      printf 'active\n' >"${state_dir}/${unit}.active"
+    fi
+    if systemctl is-enabled --quiet "$unit"; then
+      printf 'enabled\n' >"${state_dir}/${unit}.enabled"
+    fi
   fi
 }
 
