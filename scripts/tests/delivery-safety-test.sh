@@ -94,10 +94,12 @@ grep -Fq 'first_pending_recovery_journal' "$installer" \
 # disposable root. This covers binaries and SQLite state without touching the
 # host installation.
 (
+  # Invoked indirectly by the extracted installer helpers below.
+  # shellcheck disable=SC2317,SC2329
   die() { printf '%s\n' "$*" >&2; exit 91; }
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source /dev/stdin <<<"$(sed -n '/^snapshot_upgrade_path() {$/,/^}$/p' "$installer")"
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source /dev/stdin <<<"$(sed -n '/^restore_upgrade_path() {$/,/^}$/p' "$installer")"
   ROLLBACK_DIR="${tmp_dir}/upgrade-rollback"
   target="${tmp_dir}/live/state"
@@ -209,6 +211,8 @@ grep -Fq '/usr/share/witshield/web.previous' "$uninstaller" \
 (
   # The shipping script is Linux-only and uses GNU stat. Adapt just this pure
   # helper test when the repository test is run on macOS.
+  # Invoked indirectly by the extracted uninstaller helper below.
+  # shellcheck disable=SC2317,SC2329
   stat() {
     if [[ "$1" == -c && "$2" == '%u' ]]; then printf '0\n'; return; fi
     if [[ "$(uname -s)" == Darwin ]]; then
@@ -221,7 +225,7 @@ grep -Fq '/usr/share/witshield/web.previous' "$uninstaller" \
     fi
     command stat "$@"
   }
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source /dev/stdin <<<"$(sed -n '/^pending_recovery_journal() {$/,/^}$/p' "$uninstaller")"
   recovery_dir="${tmp_dir}/process-resumes"
   mkdir -m 0700 "$recovery_dir"

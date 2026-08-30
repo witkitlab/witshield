@@ -108,21 +108,31 @@ stop_installed_units() {
 	done
 
 	if [[ " ${loaded_units[*]} " == *" witshield-agent.service "* ]]; then
-		systemctl is-active --quiet witshield-agent.service && agent_was_active=1 || true
+		if systemctl is-active --quiet witshield-agent.service; then
+			agent_was_active=1
+		fi
 		systemctl stop witshield-agent.service >/dev/null \
 			|| die "failed to stop witshield-agent.service; no files were removed"
 		! systemctl is-active --quiet witshield-agent.service \
 			|| die "witshield-agent.service is still active; no files were removed"
 	fi
 	if pending=$(first_pending_recovery_journal); then
-		((agent_was_active)) && systemctl start witshield-agent.service >/dev/null || true
+		if ((agent_was_active)); then
+			systemctl start witshield-agent.service >/dev/null || true
+		fi
 		die "automatic safety recovery is still pending at $pending; wait for it or explicitly confirm/roll it back before uninstalling"
 	fi
 
 	if [[ " ${loaded_units[*]} " == *" witshield-helper.service "* ]]; then
-		systemctl is-active --quiet witshield-helper.service && helper_was_active=1 || true
-		systemctl stop witshield-helper.service >/dev/null \
-			|| { ((agent_was_active)) && systemctl start witshield-agent.service >/dev/null || true; die "failed to stop witshield-helper.service; no files were removed"; }
+		if systemctl is-active --quiet witshield-helper.service; then
+			helper_was_active=1
+		fi
+		if ! systemctl stop witshield-helper.service >/dev/null; then
+			if ((agent_was_active)); then
+				systemctl start witshield-agent.service >/dev/null || true
+			fi
+			die "failed to stop witshield-helper.service; no files were removed"
+		fi
 		! systemctl is-active --quiet witshield-helper.service \
 			|| die "witshield-helper.service is still active; no files were removed"
 	fi
@@ -130,8 +140,12 @@ stop_installed_units() {
 	# already crossed the socket, restore both services so the durable timer keeps
 	# owning recovery and refuse to remove any file.
 	if pending=$(first_pending_recovery_journal); then
-		((helper_was_active)) && systemctl start witshield-helper.service >/dev/null || true
-		((agent_was_active)) && systemctl start witshield-agent.service >/dev/null || true
+		if ((helper_was_active)); then
+			systemctl start witshield-helper.service >/dev/null || true
+		fi
+		if ((agent_was_active)); then
+			systemctl start witshield-agent.service >/dev/null || true
+		fi
 		die "automatic safety recovery became pending at $pending; services were restored and uninstall was cancelled"
 	fi
 
