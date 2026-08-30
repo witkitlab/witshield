@@ -115,7 +115,11 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		} else if pendingErr != nil {
 			return nil, fmt.Errorf("load pending enrollment identity: %w", pendingErr)
 		}
-		enrollClient, err := NewClient(cfg.ControllerURL, "")
+		clientFactory := NewClient
+		if cfg.ObserverOnly {
+			clientFactory = NewObserverClient
+		}
+		enrollClient, err := clientFactory(cfg.ControllerURL, "")
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +146,11 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 	if state.ObserverOnly != cfg.ObserverOnly {
 		return nil, errors.New("observer capability differs from the signed enrollment; re-enroll this device to change modes")
 	}
-	client, err := NewClient(cfg.ControllerURL, state.DeviceToken)
+	clientFactory := NewClient
+	if cfg.ObserverOnly {
+		clientFactory = NewObserverClient
+	}
+	client, err := clientFactory(cfg.ControllerURL, state.DeviceToken)
 	if err != nil {
 		return nil, err
 	}

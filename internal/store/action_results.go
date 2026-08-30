@@ -11,6 +11,7 @@ import (
 
 	"github.com/witkitlab/witshield/internal/action"
 	"github.com/witkitlab/witshield/internal/domain"
+	"github.com/witkitlab/witshield/internal/ids"
 )
 
 var (
@@ -466,7 +467,8 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		ok = false
 		errorText = "only an action execution may return durable rollback state"
 	}
-	if ok && receipt.ConfirmBy != nil && (meta.Type != action.TypeSSHPasswordHardening || commandType != string(domain.CommandExecuteAction)) {
+	legacyProcessResume := ok && receipt.ConfirmBy != nil && meta.Type == action.TypeTemporaryProcessSuspend && commandType == string(domain.CommandExecuteAction)
+	if ok && receipt.ConfirmBy != nil && !legacyProcessResume && (meta.Type != action.TypeSSHPasswordHardening || commandType != string(domain.CommandExecuteAction)) {
 		ok = false
 		errorText = "only an SSH hardening execution may request a safety confirmation window"
 	}
@@ -483,10 +485,17 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 			errorText = "SSH receipt requested confirmation even though verification reported no pending change"
 		}
 	}
-	if ok && receipt.ConfirmBy != nil && !(completed.Valid && oldCompletionDigest == "") && (!receipt.ConfirmBy.After(now) || !receipt.ConfirmBy.Before(now.Add(15*time.Minute))) {
-		ok = false
-		errorText = "SSH safety confirmation deadline was invalid or already elapsed"
+	if ok && receipt.ConfirmBy != nil && !(completed.Valid && oldCompletionDigest == "") {
+		deadlineInvalid := !receipt.ConfirmBy.Before(now.Add(15 * time.Minute))
+		if !legacyProcessResume {
+			deadlineInvalid = deadlineInvalid || !receipt.ConfirmBy.After(now)
+		}
+		if deadlineInvalid {
+			ok = false
+			errorText = "safety recovery deadline was invalid or already elapsed"
+		}
 	}
+	legacyProcessResume = legacyProcessResume && ok
 	indeterminate := isActionCommand && !submittedOK && errorText == action.ExecutionIndeterminateMessage
 	if indeterminate {
 		// This exact error is bound by the Agent's device-identity signature and
@@ -628,7 +637,10 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 			status = domain.ActionSucceeded
 		}
 		var completedAt, confirmBy any = timeText(now), nil
-		if ok && receipt.ConfirmBy != nil {
+		if legacyProcessResume {
+			status = domain.ActionRollingBack
+			completedAt = nil
+		} else if ok && receipt.ConfirmBy != nil {
 			status = domain.ActionAwaitingConfirmation
 			completedAt = nil
 			confirmBy = timeText(*receipt.ConfirmBy)
@@ -639,6 +651,16 @@ func (s *Store) CompleteCommandAndActionWithOutcome(ctx context.Context, deviceI
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return outcome, ErrConflict
+		}
+		if legacyProcessResume {
+			rollbackPayload, _ := json.Marshal(map[string]any{"actionId": meta.ActionID, "type": meta.Type, "parameters": meta.Parameters, "rollbackPayload": rollback})
+			if _, err = tx.ExecContext(ctx, `INSERT INTO device_commands(id,device_id,type,payload,created_at) VALUES(?,?,?,?,?)`, ids.New("cmd"), deviceID, string(domain.CommandRollback), string(rollbackPayload), timeText(now)); err != nil {
+				return outcome, err
+			}
+			legacyDetails, _ := json.Marshal(map[string]any{"reason": "legacy helper receipt had no crash-safe local resume journal", "automaticResumeQueued": true})
+			if _, err = tx.ExecContext(ctx, `INSERT INTO action_audit(action_id,actor,event,details,created_at) VALUES(?,?,?,?,?)`, meta.ActionID, "controller", "legacy_process_resume_queued", string(legacyDetails), timeText(now)); err != nil {
+				return outcome, err
+			}
 		}
 		banStatus := "failed"
 		if indeterminate {

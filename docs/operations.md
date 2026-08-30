@@ -195,13 +195,17 @@ WITSHIELD_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 sudo bash install.sh --mode standalone --version vX.Y.Z --require-signature
 ```
 
-安装器保留已有环境文件和数据目录，只替换二进制、systemd unit 与 Web 资产。Agent 已有设备身份时不会要求或生成新的 enrollment token。安装与卸载共享全局锁并拒绝并发执行；签名和归档验证通过后、任何系统变更发生前，目标版本先写入 `/usr/share/witshield/VERSION.pending`。全部服务验证成功后才原子提交为 `VERSION`；中途失败留下的 pending 版本也会成为反降级下限，防止部分升级或数据库迁移后被旧版覆盖。普通卸载会保留该下限及用户数据，只有明确 `--purge` 才清除。确需回退时，必须先恢复匹配版本的数据备份并显式增加 `--allow-downgrade`，不能只覆盖二进制。升级后检查：
+安装器保留已有环境文件和数据目录。签名与归档验证通过后，升级会先停止相关服务、确认没有 SSH/临时进程安全恢复待执行，再把二进制、unit、Web、配置和运行数据复制到 root-only 一致性快照。Controller 升级随后创建 `/var/lib/witshield-upgrade/gate`：直到提交完成，Controller 只接受健康检查，管理端、Agent 和写请求全部返回 `503`，避免快照后的成功写入在回滚时丢失。之后安装器才写入 `/usr/share/witshield/VERSION.pending` 和替换文件；`--no-start` 也不会绕过安全恢复检查。服务启动或完整就绪检查失败时，安装器自动恢复快照和原有启用/运行状态；恢复不完整会保留快照路径并明确报错。Agent 已有设备身份时不会要求或生成新的 enrollment token。安装与卸载共享全局锁并拒绝并发执行。全部服务和后台 worker 就绪后才原子提交 `VERSION`；pending 版本仍是反降级下限。普通卸载保留该下限及用户数据，只有明确 `--purge` 才清除。确需人工回退时，必须先恢复匹配版本的数据备份并显式增加 `--allow-downgrade`，不能只覆盖二进制。升级后检查：
 
 ```bash
 systemctl is-active witshield-controller witshield-helper witshield-agent
-curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/readyz
 journalctl -u witshield-controller -u witshield-helper -u witshield-agent -n 100 --no-pager
 ```
+
+`/healthz` 只表示 Controller HTTP 进程仍在；`/readyz` 还会检查数据库以及调度、维护、安全工程师和通知 worker 的新鲜度。认证后的“设置 → 生产就绪检查”会进一步显示设备、扫描、传感器、AI、通知、计划与响应授权是否已经完成生产配置。
+
+若主机在升级事务中断电，root-owned 闸门会保留并让 Controller 持续 fail-closed。再次运行安装器会报告闸门中记录的回滚快照路径；应先检查或恢复该快照，验证安装完整后再移除闸门，不能在未确认部分升级状态时直接删除标记。未配置 AI 不会令服务离线；安全工程师 worker 仍会保持健康，配置 AI 后再做真实连接验证即可。
 
 不要自动降级数据库。需要回退时先停止服务，按发布说明恢复匹配版本的二进制和数据库备份。
 
@@ -211,7 +215,7 @@ journalctl -u witshield-controller -u witshield-helper -u witshield-agent -n 100
 
 - `/var/lib/witshield/`：Controller 数据库、审计和默认主密钥；
 - `/var/lib/witshield-agent/`：设备身份、状态和回滚材料；
-- `/var/lib/witshield-helper/`：特权 Playbook 的 SSH 回滚日志；
+- `/var/lib/witshield-helper/`：特权 Playbook 的 SSH 回滚、临时进程恢复日志和回执；
 - `/etc/witshield/`：运行配置（可能包含短期初始化材料）。
 
 在应用一致性无法保证的版本，停止服务后再复制：
@@ -257,3 +261,5 @@ sudo witshield-uninstall --purge
 ```
 
 清除动作不可恢复，会再次确认。执行后脚本会说明删除了什么以及是否保留数据。
+
+若仍有 SSH 配置回滚或临时进程恢复计时器，卸载器会先恢复 Agent，并在 Helper 仍可执行恢复时拒绝卸载；等待自动恢复或从动作记录明确确认/回滚后再试。脚本在停止 Helper 后还会二次检查，以关闭“刚好正在创建恢复日志”的并发窗口。

@@ -5,6 +5,7 @@ root_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 installer="${root_dir}/scripts/install.sh"
 uninstaller="${root_dir}/scripts/uninstall.sh"
 helper_unit="${root_dir}/packaging/systemd/witshield-helper.service"
+controller_unit="${root_dir}/packaging/systemd/witshield-controller.service"
 tmp_dir=$(mktemp -d -t witshield-delivery-test.XXXXXXXX)
 trap 'rm -rf -- "$tmp_dir"' EXIT
 
@@ -76,6 +77,49 @@ grep -Fq 'commit_pending_version' "$installer" \
   || fail 'installer does not atomically commit the installed release version'
 perl -0ne 'exit(!/stage_pending_version.*?apt-get/s)' "$installer" \
   || fail 'pending version is not written before package mutation'
+perl -0ne 'exit(!/prepare_upgrade_transaction\s+stage_pending_version/s)' "$installer" \
+  || fail 'upgrade snapshot is not prepared before the pending version mutates state'
+grep -Fq 'rollback_upgrade_transaction' "$installer" \
+  || fail 'installer has no automatic upgrade rollback path'
+grep -Fq 'http://127.0.0.1:8080/readyz' "$installer" \
+  || fail 'installer commits upgrades without Controller worker readiness'
+grep -Fq 'WITSHIELD_CONTROLLER_URL="http://127.0.0.1:8080"' "$installer" \
+  || fail 'standalone upgrade does not recognize the quoted legacy Controller URL'
+grep -Fq -- '--upgrade-gate-file /var/lib/witshield-upgrade/gate' "$controller_unit" \
+  || fail 'Controller does not enforce the transactional upgrade write gate'
+grep -Fq 'first_pending_recovery_journal' "$installer" \
+  || fail 'upgrade can strand a pending Helper-owned safety recovery'
+
+# Exercise the exact file/directory snapshot and restoration primitives on a
+# disposable root. This covers binaries and SQLite state without touching the
+# host installation.
+(
+  die() { printf '%s\n' "$*" >&2; exit 91; }
+  # shellcheck disable=SC1090
+  source /dev/stdin <<<"$(sed -n '/^snapshot_upgrade_path() {$/,/^}$/p' "$installer")"
+  # shellcheck disable=SC1090
+  source /dev/stdin <<<"$(sed -n '/^restore_upgrade_path() {$/,/^}$/p' "$installer")"
+  ROLLBACK_DIR="${tmp_dir}/upgrade-rollback"
+  target="${tmp_dir}/live/state"
+  mkdir -p "$target" "$ROLLBACK_DIR"
+  printf 'old-db\n' >"${target}/witshield.db"
+  snapshot_upgrade_path "$target"
+  printf 'migrated-db\n' >"${target}/witshield.db"
+  printf 'new-file\n' >"${target}/new"
+  restore_upgrade_path "$target"
+  [[ "$(<"${target}/witshield.db")" == old-db && ! -e "${target}/new" ]] || exit 92
+	absent="${tmp_dir}/live/absent"
+	snapshot_upgrade_path "$absent"
+	mkdir -p "$absent"
+	printf 'new\n' >"${absent}/file"
+	restore_upgrade_path "$absent"
+	[[ ! -e "$absent" ]] || exit 93
+	partial="${tmp_dir}/live/untouched"
+	mkdir -p "$partial"
+	printf 'keep\n' >"${partial}/file"
+	restore_upgrade_path "$partial"
+	[[ "$(<"${partial}/file")" == keep ]] || exit 94
+) || fail 'transactional upgrade snapshot did not restore the previous state'
 
 # The Helper is otherwise heavily sandboxed, but apt/dpkg must be able to
 # restore SUID/SGID bits declared by an approved signed package. Blocking that
@@ -159,6 +203,37 @@ perl -0ne 'exit(!/if \(\(PURGE\)\); then\s+rm -rf -- \/usr\/share\/witshield/s)'
   || fail 'full shared-data removal is not restricted to explicit purge'
 grep -Fq '/usr/share/witshield/web.previous' "$uninstaller" \
   || fail 'normal uninstall does not remove replaceable Web assets'
+
+# Pending Helper-owned safety recovery must be detected before uninstall can
+# stop and remove the only process that owns its deadline.
+(
+  # The shipping script is Linux-only and uses GNU stat. Adapt just this pure
+  # helper test when the repository test is run on macOS.
+  stat() {
+    if [[ "$1" == -c && "$2" == '%u' ]]; then printf '0\n'; return; fi
+    if [[ "$(uname -s)" == Darwin ]]; then
+      if [[ "$1" == -c && "$2" == '%A' ]]; then
+        local mode
+        mode=$(command stat -f '%Sp' "$3")
+        printf '%s\n' "$mode"
+        return
+      fi
+    fi
+    command stat "$@"
+  }
+  # shellcheck disable=SC1090
+  source /dev/stdin <<<"$(sed -n '/^pending_recovery_journal() {$/,/^}$/p' "$uninstaller")"
+  recovery_dir="${tmp_dir}/process-resumes"
+  mkdir -m 0700 "$recovery_dir"
+  if pending_recovery_journal "$recovery_dir" process >/dev/null; then exit 91; fi
+  printf '{}\n' >"${recovery_dir}/process-act_test.json"
+  chmod 0600 "${recovery_dir}/process-act_test.json"
+  [[ "$(pending_recovery_journal "$recovery_dir" process)" == *'process-act_test.json' ]] || exit 92
+  rm -f -- "${recovery_dir}/process-act_test.json"
+  printf '{}\n' >"${recovery_dir}/ssh-act_test.json"
+  chmod 0600 "${recovery_dir}/ssh-act_test.json"
+  [[ "$(pending_recovery_journal "$recovery_dir" ssh)" == *'ssh-act_test.json' ]] || exit 93
+) || fail 'pending SSH/process safety journals are not detected correctly'
 
 # Source the real uninstaller and mock a loaded unit whose stop fails. The
 # function must fail closed instead of proceeding toward file deletion.

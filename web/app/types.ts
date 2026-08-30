@@ -237,6 +237,7 @@ export interface AISettings {
   keyHint: string;
   customHeaderKeys: string[];
   privacyMode: 'minimal' | 'balanced';
+  verifiedAt?: string;
 }
 
 export interface AIInvestigationPolicy {
@@ -284,6 +285,20 @@ export interface NotificationSettings {
   smtpTo: string[];
 }
 
+export interface SystemHealth {
+	status: 'ok' | 'degraded';
+	database: 'ok' | 'unavailable';
+	checkedAt: string;
+	workers: Array<{
+		name: string;
+		status: 'ok' | 'degraded' | 'stale' | 'starting';
+		lastRunAt: string;
+		lastSuccessAt: string;
+		error?: string;
+		staleAfterSeconds: number;
+	}>;
+}
+
 export interface DashboardSnapshot {
   score: number | null;
   previousScore: number;
@@ -309,7 +324,7 @@ export interface DashboardSnapshot {
   sensors: SensorHealth[];
   notifications: NotificationSettings;
   schedules: ScanSchedule[];
-  coverageIssues: Array<{
+	coverageIssues: Array<{
     deviceId: string;
     deviceName: string;
     completedChecks: number;
@@ -317,7 +332,8 @@ export interface DashboardSnapshot {
     coveragePercent: number;
     mode: string;
     errors: string[];
-  }>;
+	}>;
+	systemHealth?: SystemHealth;
 }
 
 export type Section = 'overview' | 'findings' | 'reports' | 'devices' | 'policies' | 'audit' | 'settings';

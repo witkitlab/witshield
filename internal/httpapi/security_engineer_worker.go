@@ -21,7 +21,11 @@ func (s *Server) RunSecurityEngineerWorker(ctx context.Context) error {
 	ticker := time.NewTicker(securityEngineerPollInterval)
 	defer ticker.Stop()
 	for {
-		s.runSecurityEngineerCycle(ctx)
+		// A normal investigation may hold the cycle for up to 90 seconds. Record
+		// liveness before entering it so readiness does not mistake useful work for
+		// a dead worker.
+		s.MarkWorkerHealth("security_engineer", nil)
+		s.MarkWorkerHealth("security_engineer", s.runSecurityEngineerCycle(ctx))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -30,38 +34,44 @@ func (s *Server) RunSecurityEngineerWorker(ctx context.Context) error {
 	}
 }
 
-func (s *Server) runSecurityEngineerCycle(ctx context.Context) {
+func (s *Server) runSecurityEngineerCycle(ctx context.Context) error {
 	now := s.now().UTC()
 	if _, err := s.store.RecoverStaleInvestigations(ctx, now.Add(-2*time.Minute), now); err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.log.Error("security engineer stale investigation recovery failed", "error", "investigation lease maintenance failed")
 		}
-		return
+		return err
 	}
 	if _, err := s.store.AISettings(ctx); err != nil {
-		if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, context.Canceled) {
+		if errors.Is(err, store.ErrNotFound) {
+			// AI is optional. Deterministic scanning and rule-based containment are
+			// healthy while the administrator has not configured a provider.
+			return nil
+		}
+		if !errors.Is(err, context.Canceled) {
 			s.log.Error("security engineer AI settings unavailable", "error", "stored AI configuration could not be read")
 		}
-		return
+		return err
 	}
 	policy, err := s.store.AIInvestigationPolicy(ctx)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.log.Error("security engineer investigation policy unavailable", "error", "investigation policy could not be read")
 		}
-		return
+		return err
 	}
 	incidents, err := s.store.ListIncidents(ctx, "", []domain.IncidentStatus{domain.IncidentOpen}, 20)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.log.Error("security engineer incident queue unavailable", "error", "open incidents could not be read")
 		}
-		return
+		return err
 	}
 	processed := 0
+	var cycleErrors []error
 	for _, incident := range incidents {
 		if ctx.Err() != nil || processed >= 3 {
-			return
+			break
 		}
 		if incident.LastInvestigatedAt != nil {
 			// An open incident is not a timer. Re-run only when a sensor attached
@@ -73,6 +83,7 @@ func (s *Server) runSecurityEngineerCycle(ctx context.Context) {
 		grants, grantErr := s.store.ListPolicyGrants(ctx, incident.DeviceID, now)
 		if grantErr != nil {
 			s.log.Error("security engineer policy boundary unavailable", "incidentId", incident.ID, "error", "policy grants could not be read")
+			cycleErrors = append(cycleErrors, grantErr)
 			continue
 		}
 		if !automaticInvestigationAllowed(incident, grants) {
@@ -84,8 +95,13 @@ func (s *Server) runSecurityEngineerCycle(ctx context.Context) {
 		processed++
 		if _, _, runErr := s.performIncidentInvestigation(ctx, incident.ID, "policy_grant"); runErr != nil && !errors.Is(runErr, store.ErrConflict) && !errors.Is(runErr, context.Canceled) {
 			s.log.Warn("security engineer investigation failed", "incidentId", incident.ID, "error", "investigation did not complete")
+			cycleErrors = append(cycleErrors, runErr)
 		}
 	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return errors.Join(cycleErrors...)
 }
 
 func investigationProfileAllows(profile domain.InvestigationProfile, severity domain.Severity) bool {

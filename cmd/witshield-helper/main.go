@@ -106,6 +106,7 @@ func main() {
 	stateKeyPath := flag.String("state-key-file", "/var/lib/witshield-helper/state.key", "root-only rollback-state signing key")
 	groupName := flag.String("group", "", "optional local group allowed to read the token and connect")
 	journalDir := flag.String("journal-dir", "/var/lib/witshield-helper/ssh-rollbacks", "durable SSH rollback journal directory")
+	processJournalDir := flag.String("process-journal-dir", "/var/lib/witshield-helper/process-resumes", "durable temporary-process resume journal directory")
 	receiptDir := flag.String("receipt-dir", "/var/lib/witshield-helper/receipts", "durable successful action receipt cache")
 	flag.Var(&protectedPrefixes, "protected-prefix", "additional IP prefix which temporary bans must never target (repeatable)")
 	flag.Var(&adminIPs, "admin-ip", "administrator IP which temporary bans must never target (repeatable)")
@@ -130,7 +131,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("rollback-state key setup failed: %v", err)
 	}
-	engine, err := buildEngine(*journalDir, protectedPrefixes, adminIPs, groupID, stateKey)
+	engine, err := buildEngine(*journalDir, *processJournalDir, protectedPrefixes, adminIPs, groupID, stateKey)
 	if err != nil {
 		log.Fatalf("action engine setup failed: %v", err)
 	}
@@ -161,7 +162,7 @@ func main() {
 	}
 }
 
-func buildEngine(journalDir string, protectedPrefixValues, adminIPValues []string, groupID int, stateKey []byte) (*action.Engine, error) {
+func buildEngine(journalDir, processJournalDir string, protectedPrefixValues, adminIPValues []string, groupID int, stateKey []byte) (*action.Engine, error) {
 	const (
 		aptGetPath    = "/usr/bin/apt-get"
 		dpkgQueryPath = "/usr/bin/dpkg-query"
@@ -210,7 +211,7 @@ func buildEngine(journalDir string, protectedPrefixValues, adminIPValues []strin
 	if err != nil {
 		return nil, err
 	}
-	processPlaybook, err := action.NewTemporaryProcessSuspendPlaybook(action.NewSystemProcessController())
+	processPlaybook, err := action.NewTemporaryProcessSuspendPlaybook(action.NewSystemProcessController(), processJournalDir)
 	if err != nil {
 		return nil, err
 	}

@@ -78,7 +78,7 @@ set -e
 ((hub_status != 0)) || fail '--hub without a value unexpectedly accepted'
 [[ "$hub_output" == *'--hub requires a value'* ]] || fail '--hub missing-value error missing'
 
-for unsafe_url in 'http://example.com' 'https://user:password@example.com'; do
+for unsafe_url in 'http://example.com' 'http://127.0.0.1:8080' 'https://user:password@example.com'; do
   set +e
   url_output=$(bash "$installer" --hub "$unsafe_url" 2>&1)
   url_status=$?

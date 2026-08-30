@@ -151,7 +151,7 @@ CREATE INDEX IF NOT EXISTS commands_started_action_expiry_idx ON device_commands
 CREATE TABLE IF NOT EXISTS ai_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton = 1), protocol TEXT NOT NULL, base_url TEXT NOT NULL,
   model TEXT NOT NULL, encrypted_api_key TEXT NOT NULL DEFAULT '', api_key_hint TEXT NOT NULL DEFAULT '',
-  encrypted_headers TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+  encrypted_headers TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, verified_at TEXT
 );
 CREATE TABLE IF NOT EXISTS ai_investigation_policy (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), profile TEXT NOT NULL,
@@ -454,7 +454,24 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, CURRENT_
 	if err = s.migrateInvestigationEvidenceV8(ctx); err != nil {
 		return err
 	}
-	return s.migrateRealtimeDefenseV9(ctx)
+	if err = s.migrateRealtimeDefenseV9(ctx); err != nil {
+		return err
+	}
+	return s.migrateAIVerificationV10(ctx)
+}
+
+func (s *Store) migrateAIVerificationV10(ctx context.Context) error {
+	exists, err := s.tableHasColumn(ctx, "ai_settings", "verified_at")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err = s.db.ExecContext(ctx, `ALTER TABLE ai_settings ADD COLUMN verified_at TEXT`); err != nil {
+			return fmt.Errorf("add AI verification timestamp: %w", err)
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(10,?)`, timeText(time.Now().UTC()))
+	return err
 }
 
 func (s *Store) migrateRealtimeDefenseV9(ctx context.Context) error {
@@ -804,7 +821,7 @@ func (s *Store) migrateControllerSchedules(ctx context.Context) error {
 }
 
 func (s *Store) tableHasColumn(ctx context.Context, table, column string) (bool, error) {
-	if table != "actions" && table != "device_commands" && table != "notification_outbox" && table != "devices" && table != "reports" && table != "security_event_windows" && table != "investigations" {
+	if table != "actions" && table != "device_commands" && table != "notification_outbox" && table != "devices" && table != "reports" && table != "security_event_windows" && table != "investigations" && table != "ai_settings" {
 		return false, errors.New("unsupported schema inspection table")
 	}
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)

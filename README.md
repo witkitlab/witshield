@@ -41,6 +41,8 @@ sudo bash install.sh --mode standalone
 
 安装器从 GitHub 不可变 Release 下载对应架构的发布包，校验 `SHA256SUMS` 后还会强制验证发布工作流的 Sigstore 签名；本机没有 Cosign 时，会临时下载经过内置 SHA-256 固定的验证器。已安装版本会记录在本机，安装器默认拒绝降级。
 
+升级前会在服务静止状态创建 root-only 一致性快照；若服务或后台 worker 未能完整就绪，安装器自动恢复上一版程序、配置、数据和服务状态。单机 Agent 默认通过安装器拥有的 Unix Socket 与 Controller 通信，不依赖可能被本机其他进程抢占的 loopback TCP 端口。
+
 安装完成后，默认仅监听 `127.0.0.1:8080`：
 
 ```bash
@@ -106,7 +108,7 @@ docker compose -f docker-compose.observer.yml up -d controller
 
 Controller 是周期扫描的唯一调度权威：Agent 启动时先做一次即时扫描，之后只响应 Controller schedule。Agent 的 `--interval`/`WITSHIELD_SCAN_INTERVAL` 只决定首次注册时创建的初始周期，已注册设备应在控制台修改计划，避免两套计时器产生重复任务。
 
-动作获批不等于已经修改服务器。Agent 在进入 root Helper 前还要取得最终授权，Helper 执行预检、变更和验证。SSH 加固完成变更后会先进入“等待安全确认”：管理员从第二个会话验证新连接可用并确认后才算成功；超时则由 Helper 的本机持久化计时器触发恢复。Controller 的“已触发安全回滚”状态不冒充回滚成功回执，异常时应查看设备与审计。
+动作获批不等于已经修改服务器。Agent 在进入 root Helper 前还要取得最终授权，Helper 执行预检、变更和验证。SSH 加固完成变更后会先进入“等待安全确认”：管理员从第二个会话验证新连接可用并确认后才算成功；超时则由 Helper 的本机持久化计时器触发恢复。临时进程暂停同样由 Helper 在变更前持久化期限，Controller、Agent 或 Helper 重启后仍会恢复。Controller 的“已触发安全回滚”状态不冒充回滚成功回执，异常时应查看设备与审计。
 
 设备级紧急停止会阻止新自动决策，并取消尚未进入 Helper 的策略队列；已经开始的动作不会被假装取消，已经生效的临时封禁按内核 TTL 到期或由管理员手工回滚。
 

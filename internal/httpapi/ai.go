@@ -185,15 +185,30 @@ func (s *Server) testAI(w http.ResponseWriter, r *http.Request) {
 	var client *ai.Client
 	var model string
 	var err error
+	usingStoredSettings := false
+	var verifiedSettings domain.AISettings
 	if r.ContentLength != 0 {
 		if !decodeJSON(w, r, &draft) {
 			return
 		}
 	}
 	if draft.Settings == nil {
-		client, err = s.loadAIClient(r)
-		if stored, e := s.store.AISettings(r.Context()); e == nil {
+		usingStoredSettings = true
+		stored, storedErr := s.store.AISettings(r.Context())
+		if storedErr == nil {
 			model = stored.Settings.Model
+			verifiedSettings = stored.Settings
+			var key string
+			key, err = s.vault.Decrypt(stored.EncryptedAPIKey)
+			var headers domain.Headers
+			if err == nil {
+				headers, err = decryptAIHeaders(stored.EncryptedHeaders, s.vault)
+			}
+			if err == nil {
+				client, err = ai.New(ai.Config{Protocol: stored.Settings.Protocol, BaseURL: stored.Settings.BaseURL, Model: stored.Settings.Model, APIKey: key, CustomHeaders: headers})
+			}
+		} else {
+			err = storedErr
 		}
 	} else {
 		cfg := ai.Config{Protocol: draft.Settings.Protocol, BaseURL: draft.Settings.BaseURL, Model: draft.Settings.Model, CustomHeaders: draft.Settings.CustomHeaders}
@@ -233,7 +248,16 @@ func (s *Server) testAI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 502, "ai_upstream_error", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "reply": reply, "model": model, "latencyMs": latency})
+	var verifiedAt *time.Time
+	if usingStoredSettings {
+		now := s.now().UTC()
+		if markErr := s.store.MarkAISettingsVerified(r.Context(), verifiedSettings.Protocol, verifiedSettings.BaseURL, verifiedSettings.Model, verifiedSettings.UpdatedAt, now); markErr != nil {
+			s.fail(w, markErr)
+			return
+		}
+		verifiedAt = &now
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "reply": reply, "model": model, "latencyMs": latency, "verifiedAt": verifiedAt})
 }
 func (s *Server) chatAI(w http.ResponseWriter, r *http.Request) {
 	var in struct {

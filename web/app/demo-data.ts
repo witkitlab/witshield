@@ -178,7 +178,7 @@ export const demoDashboard: DashboardSnapshot = {
   ],
   ai: {
     protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4',
-    hasKey: true, keyHint: '••••••••••••K3mP', customHeaderKeys: ['X-Organization'], privacyMode: 'minimal',
+    hasKey: true, keyHint: '••••••••••••K3mP', customHeaderKeys: ['X-Organization'], privacyMode: 'minimal', verifiedAt: '刚刚',
   },
   investigationPolicy: { profile: 'balanced', dailyTokenBudget: 60000, emergencyReserveTokens: 20000, shareNetworkIndicators: true, shareAccountNames: true, updatedAt: '今天 08:00' },
   investigationUsage: { day: '2026-08-29', regularTokensUsed: 12400, emergencyTokensUsed: 0, investigationCalls: 3, updatedAt: '10 分钟前' },

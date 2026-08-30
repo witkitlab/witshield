@@ -15,6 +15,9 @@ witshield-controller [options]
 | `--web-dir` | `WITSHIELD_WEB_DIR` | `/usr/share/witshield/web` | Web 静态资源目录 |
 | `--trusted-proxies` | `WITSHIELD_TRUSTED_PROXIES` | 空 | 允许提供转发头的反向代理 IP/CIDR，逗号分隔；仅配置真实直连代理 |
 | `--local-http-listen` | `WITSHIELD_LOCAL_HTTP_LISTEN` | 空 | 可选的独立本地 HTTP 监听；必须绑定非通配的隔离接口，并只通过宿主 loopback 发布 |
+| `--agent-unix-listen` | — | 空 | 可选的原生 Agent 专用 Unix Socket；安装器使用 `/run/witshield-controller/agent.sock`，该监听器不暴露管理员 API |
+| `--agent-unix-group` | — | 空 | Agent Unix Socket 的连接组；原生安装使用 `witshield-controller` |
+| `--upgrade-gate-file` | `WITSHIELD_UPGRADE_GATE_FILE` | 空 | 可选的 root-owned 升级事务闸门；原生安装使用 `/var/lib/witshield-upgrade/gate`，存在时仅开放健康检查并以 `503` 拒绝管理、Agent 和写请求 |
 | `--bootstrap-token` | `WITSHIELD_BOOTSTRAP_TOKEN` | 空 | 首位管理员初始化令牌 |
 | `--bootstrap-token-file` | `WITSHIELD_BOOTSTRAP_TOKEN_FILE` | 空 | 首选：从本机受限文件读取初始化令牌 |
 | `--initial-enrollment-token-file` | `WITSHIELD_INITIAL_ENROLLMENT_TOKEN_FILE` | 空 | 单机首次启动时预置一次性设备 token |
@@ -45,7 +48,7 @@ witshield-agent [options]
 
 | CLI | 环境变量 | 默认值 | 说明 |
 |---|---|---|---|
-| `--controller-url` | `WITSHIELD_CONTROLLER_URL` | — | Controller 的绝对 HTTP(S) URL |
+| `--controller-url` | `WITSHIELD_CONTROLLER_URL` | — | 原生 Agent 使用 HTTPS URL 或安装拥有的 `unix:///绝对路径`；observer-only 容器还可连接私网 HTTP 服务名 |
 | `--enrollment-token` | `WITSHIELD_ENROLLMENT_TOKEN` | — | 首次设备注册令牌 |
 | `--enrollment-token-file` | `WITSHIELD_ENROLLMENT_TOKEN_FILE` | — | 首选：首次设备注册令牌文件 |
 | `--consume-enrollment-token` | `WITSHIELD_CONSUME_ENROLLMENT_TOKEN` | `false` | 原生安装专用：长期设备凭据安全落盘后删除非 `/run/secrets/` token 文件 |
@@ -59,6 +62,8 @@ witshield-agent [options]
 | `--observer-only` | `WITSHIELD_OBSERVER_ONLY` | `false` | 禁止全部特权动作，只执行可见范围内的扫描 |
 
 systemd 安装使用 `/etc/witshield/agent.env`，指向 `/var/lib/witshield-agent/enrollment.token`；服务带 `--consume-enrollment-token`，首次注册成功后删除该文件。Agent 保存独立设备身份并停止依赖 enrollment token。不要在 URL 查询参数或普通进程参数中传递令牌。
+
+单机原生安装默认通过 `/run/witshield-controller/agent.sock` 通信。Socket 位于仅 Controller 可创建条目的受限目录内，Agent 只有连接权限，因此 Controller 短暂退出时普通本机进程不能占用其地址并伪造响应。跨机器原生 Agent 必须使用有效 HTTPS；私网明文 HTTP 例外只属于明确的 `observer-only` 容器拓扑，不能用于具备 Helper 权限的 Agent。
 
 ### 可选的增强运行时传感器
 
@@ -86,6 +91,7 @@ Helper 运行参数由 systemd unit 固定为：
 --token-file /etc/witshield/helper.token
 --group witshield-helper
 --journal-dir /var/lib/witshield-helper/ssh-rollbacks
+--process-journal-dir /var/lib/witshield-helper/process-resumes
 --receipt-dir /var/lib/witshield-helper/receipts
 ```
 
@@ -109,6 +115,8 @@ AI 凭据不使用环境变量，避免出现在 Compose、进程环境和常见
 | `apiKey` | string，可选 | 仅写；省略表示保留现有值 |
 | `clearApiKey` | boolean，可选 | 显式设为 `true` 才删除已有 Key |
 | `customHeaders` | object，可选 | 额外请求头；敏感值与设置一起加密 |
+
+保存设置会使之前的连通验证失效。只有对当前已保存的 protocol、Base URL、model 和 Key 完成一次真实提供商请求后，控制台才把 AI 连接标为已验证；仅填写 Key 或测试未保存的草稿不会满足生产就绪检查。
 
 示例（不要把真实 Key 保存进脚本或仓库）：
 

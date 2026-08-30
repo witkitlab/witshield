@@ -63,6 +63,7 @@ import {
   saveNotificationSettings,
   setEmergencyStop,
   testAISettings,
+  testSavedAISettings,
   testNotifications,
   updateSchedule,
   updateIncidentStatus,
@@ -267,6 +268,19 @@ function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
   const deviceFindings = dashboard.findings.filter((finding) => finding.deviceId === selectedDeviceId && finding.state === 'open');
   const hasScore = dashboard.score !== null;
   const selectedDevice = dashboard.devices.find((device) => device.id === selectedDeviceId);
+	const deviceCoverageIncomplete = dashboard.coverageIssues.some((item) => item.deviceId === selectedDeviceId);
+	const deviceSensors = dashboard.sensors.filter((sensor) => sensor.deviceId === selectedDeviceId);
+	const readinessItems = [
+		{ label: '控制服务与后台任务健康', ready: dashboard.systemHealth?.status === 'ok' },
+		{ label: '本机 Agent 持续在线', ready: selectedDevice?.status === 'online' },
+		{ label: '首次全量扫描已验证', ready: typeof selectedDevice?.score === 'number' && !deviceCoverageIncomplete },
+		{ label: '实时传感器没有降级', ready: deviceSensors.length > 0 && deviceSensors.every((sensor) => sensor.state === 'active' || sensor.state === 'optional') },
+		{ label: 'AI 连接已通过实际验证', ready: Boolean(dashboard.ai.verifiedAt) },
+		{ label: '告警通知已配置', ready: dashboard.notifications.configured },
+		{ label: '定期复查计划已启用', ready: dashboard.schedules.some((schedule) => schedule.deviceId === selectedDeviceId && schedule.enabled) },
+		{ label: '响应权限边界已确认', ready: dashboard.policyGrants.some((grant) => grant.deviceId === selectedDeviceId && grant.enabled && !grant.emergencyStop) },
+	];
+	const readyCount = readinessItems.filter((item) => item.ready).length;
   return (
     <div className="content-grid">
       <section className="main-column">
@@ -283,6 +297,12 @@ function Overview({ dashboard, selectedDeviceId, onFinding, onSection }: {
         </article>
 
         {dashboard.coverageIssues.length > 0 && <article className="coverage-alert" role="status"><ShieldAlert size={19} /><div><strong>{dashboard.coverageIssues.length} 台设备的检查不完整</strong><p>安全分只反映已成功运行的确定性检查，不能视为全量安全分。</p><div className="coverage-list">{dashboard.coverageIssues.map((issue) => <details key={issue.deviceId}><summary>{issue.mode === 'pending' ? `${issue.deviceName} · 等待首次扫描` : `${issue.deviceName} · ${issue.completedChecks}/${issue.checks} 项完成（${issue.coveragePercent}%）`}</summary><ul>{issue.errors.map((error) => <li key={error}>{error}</li>)}</ul></details>)}</div></div></article>}
+
+		<article className={readyCount === readinessItems.length ? 'readiness-card complete' : 'readiness-card'}>
+			<div className="readiness-heading"><div><p className="eyebrow">生产就绪检查</p><h3>{readyCount}/{readinessItems.length} 项已完成</h3></div><span>{readyCount === readinessItems.length ? '可以持续守护' : '继续完成初始化'}</span></div>
+			<div className="readiness-grid">{readinessItems.map((item) => <div key={item.label} className={item.ready ? 'ready' : ''}>{item.ready ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}<span>{item.label}</span></div>)}</div>
+			{readyCount < readinessItems.length && <button className="text-button" onClick={() => onSection('settings')}>完善模型、通知与扫描计划 <ChevronRight size={14} /></button>}
+		</article>
 
         <div className="metric-grid">
           <Metric icon={Server} label="在线设备" value={`${dashboard.devicesOnline}/${dashboard.devicesTotal}`} detail={dashboard.devicesTotal === 0 ? '尚未接入 Agent' : dashboard.devicesOnline === dashboard.devicesTotal ? '所有 Agent 工作正常' : `${dashboard.devicesTotal - dashboard.devicesOnline} 台需要检查连接`} />
@@ -917,7 +937,7 @@ function SettingsView({ settings, notifications, schedules, deviceId, onSchedule
   async function testConnection() {
     if (endpointKeyRequired) { setSettingsError('更换 API 地址后，请重新输入该地址对应的 API Key'); return; }
     setTesting(true); setTestResult(null); setSettingsError(null);
-    try { const result = await testAISettings(form); setTestResult(`连接成功 · ${result.model} · ${result.latencyMs} ms`); }
+    try { const result = await testAISettings(form); setTestResult(`草稿连接成功 · ${result.model} · ${result.latencyMs} ms（保存后会再次验证）`); }
     catch (cause) { setTestResult(cause instanceof Error ? cause.message : '连接失败'); }
     finally { setTesting(false); }
   }
@@ -927,7 +947,15 @@ function SettingsView({ settings, notifications, schedules, deviceId, onSchedule
     setSaving(true); setSettingsError(null);
     try {
       const clearBoundHeaders = endpointOriginChanged && settings.customHeaderKeys.length > 0;
-      onSaved(await saveAISettings({ ...form, ...(clearBoundHeaders ? { customHeaders: {} } : {}) }));
+			const saved = await saveAISettings({ ...form, ...(clearBoundHeaders ? { customHeaders: {} } : {}) });
+			try {
+				const verification = await testSavedAISettings();
+				onSaved({ ...saved, verifiedAt: verification.verifiedAt });
+				setTestResult(`已保存并验证 · ${verification.model} · ${verification.latencyMs} ms`);
+			} catch (cause) {
+				onSaved(saved);
+				setSettingsError(`设置已保存，但实际连接验证失败：${cause instanceof Error ? cause.message : '请检查 API 地址、模型和 Key'}`);
+			}
       setForm((current) => ({ ...current, apiKey: '' }));
     }
     catch (cause) { setSettingsError(cause instanceof Error ? cause.message : '保存 AI 设置失败'); }

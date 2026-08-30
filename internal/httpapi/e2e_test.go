@@ -233,7 +233,7 @@ func (x *testAPI) enrollMode(t *testing.T, observerOnly bool) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := agent.NewClient(x.server.URL, "")
+	client, err := agent.NewObserverClient(x.server.URL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +255,35 @@ func TestStatusExposesConfiguredBuildVersion(t *testing.T) {
 	status, body := request(t, http.DefaultClient, http.MethodGet, x.server.URL+"/api/v1/status", nil, nil)
 	if status != http.StatusOK || !strings.Contains(string(body), `"version":"v0.0.0-test"`) {
 		t.Fatalf("status=%d body=%s", status, body)
+	}
+}
+
+func TestReadinessAndAuthenticatedWorkerHealth(t *testing.T) {
+	x := newTestAPI(t)
+	for _, worker := range []string{"scheduler", "maintenance", "security_engineer", "notification_webhook", "notification_smtp"} {
+		x.api.MarkWorkerHealth(worker, nil)
+	}
+	status, body := request(t, http.DefaultClient, http.MethodGet, x.server.URL+"/readyz", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), `"status":"ok"`) {
+		t.Fatalf("ready=%d %s", status, body)
+	}
+	status, _ = request(t, http.DefaultClient, http.MethodGet, x.server.URL+"/api/v1/system/health", nil, nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated detailed health=%d", status)
+	}
+	x.bootstrapAdmin(t)
+	status, body = request(t, x.admin, http.MethodGet, x.server.URL+"/api/v1/system/health", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), `"database":"ok"`) || !strings.Contains(string(body), `"scheduler"`) {
+		t.Fatalf("system health=%d %s", status, body)
+	}
+	x.api.healthMu.Lock()
+	stale := x.api.workers["scheduler"]
+	stale.LastRunAt = time.Now().UTC().Add(-2 * time.Minute)
+	x.api.workers["scheduler"] = stale
+	x.api.healthMu.Unlock()
+	status, body = request(t, http.DefaultClient, http.MethodGet, x.server.URL+"/readyz", nil, nil)
+	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "background_workers_unhealthy") {
+		t.Fatalf("stale worker readiness=%d %s", status, body)
 	}
 }
 
@@ -388,6 +417,48 @@ func TestEndToEndAdminAgentActionAndReport(t *testing.T) {
 	status, body = request(t, x.admin, http.MethodGet, x.server.URL+"/api/v1/actions/"+actionID, nil, nil)
 	if status != http.StatusOK || !strings.Contains(string(body), `"status":"rolled_back"`) {
 		t.Fatalf("rollback state=%d %s", status, body)
+	}
+}
+
+func TestLegacyProcessSuspendReceiptQueuesImmediateSafeResume(t *testing.T) {
+	x := newTestAPI(t)
+	x.bootstrapAdmin(t)
+	deviceID, deviceToken := x.enroll(t)
+	auth := map[string]string{"Authorization": "Bearer " + deviceToken}
+	parameters := map[string]any{"pid": 88, "startTime": 991, "executable": "/tmp/legacy-process", "ttlSeconds": 120}
+	status, body := request(t, x.admin, http.MethodPost, x.server.URL+"/api/v1/actions", map[string]any{"deviceId": deviceID, "type": "temporary_process_suspend", "parameters": parameters}, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("create legacy process action=%d %s", status, body)
+	}
+	created := decodeMap(t, body)
+	actionMap := created["action"].(map[string]any)
+	actionID := actionMap["id"].(string)
+	status, body = request(t, x.admin, http.MethodPost, x.server.URL+"/api/v1/actions/"+actionID+"/approve", map[string]any{"approvalNonce": created["approvalNonce"]}, nil)
+	if status != http.StatusAccepted {
+		t.Fatalf("approve legacy process action=%d %s", status, body)
+	}
+	commandID := decodeMap(t, body)["commandId"].(string)
+	status, body = request(t, http.DefaultClient, http.MethodPost, x.server.URL+"/agent/v1/commands/"+commandID+"/start", map[string]any{}, auth)
+	if status != http.StatusOK || !strings.Contains(string(body), `"authorized":true`) {
+		t.Fatalf("start legacy process action=%d %s", status, body)
+	}
+	confirmBy := time.Now().UTC().Add(-time.Minute)
+	result := signedActionResult(t, x, deviceID, commandID, map[string]any{
+		"ok": true, "result": map[string]any{"summary": "legacy process stopped"},
+		"rollbackPayload": map[string]any{"pid": 88, "ppid": 1, "uid": 0, "startTime": 991, "executable": "/tmp/legacy-process"},
+		"auditReceipt":    map[string]any{"actionId": actionID, "type": "temporary_process_suspend", "operation": "execute", "parametersDigest": parametersDigest(t, parameters), "success": true, "confirmBy": confirmBy},
+	})
+	status, body = request(t, http.DefaultClient, http.MethodPost, x.server.URL+"/agent/v1/commands/"+commandID+"/result", result, auth)
+	if status != http.StatusNoContent {
+		t.Fatalf("legacy process result=%d %s", status, body)
+	}
+	status, body = request(t, x.admin, http.MethodGet, x.server.URL+"/api/v1/actions/"+actionID, nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), `"status":"rolling_back"`) {
+		t.Fatalf("legacy process action did not enter safe resume=%d %s", status, body)
+	}
+	status, body = request(t, http.DefaultClient, http.MethodGet, x.server.URL+"/agent/v1/sync?wait=0s", nil, auth)
+	if status != http.StatusOK || !strings.Contains(string(body), `"type":"rollback_action"`) || !strings.Contains(string(body), actionID) {
+		t.Fatalf("legacy process resume command was not queued=%d %s", status, body)
 	}
 }
 
@@ -669,6 +740,56 @@ func TestAISettingsOmissionPreservesEncryptedCustomHeaders(t *testing.T) {
 	plain, err := x.api.vault.Decrypt(stored.EncryptedHeaders)
 	if err != nil || !strings.Contains(plain, "tenant-secret") {
 		t.Fatalf("omitted custom headers were lost: plain=%q err=%v", plain, err)
+	}
+}
+
+func TestStoredAIConnectionVerificationIsPersistedAndInvalidatedOnChange(t *testing.T) {
+	x := newTestAPI(t)
+	x.bootstrapAdmin(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"OK"}}]}`)
+	}))
+	defer upstream.Close()
+	settings := map[string]any{"protocol": "openai_chat", "baseUrl": upstream.URL + "/v1", "model": "verified-model", "apiKey": "verified-provider-key"}
+	status, body := request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", settings, nil)
+	if status != http.StatusOK || strings.Contains(string(body), "verifiedAt") {
+		t.Fatalf("new settings should be unverified: %d %s", status, body)
+	}
+	status, body = request(t, x.admin, http.MethodPost, x.server.URL+"/api/v1/ai/test", nil, nil)
+	if status != http.StatusOK || !strings.Contains(string(body), "verifiedAt") {
+		t.Fatalf("stored connection verification=%d %s", status, body)
+	}
+	stored, err := x.store.AISettings(context.Background())
+	if err != nil || stored.Settings.VerifiedAt == nil {
+		t.Fatalf("verified timestamp was not persisted: settings=%+v err=%v", stored.Settings, err)
+	}
+	verifiedGeneration := stored.Settings
+	time.Sleep(time.Millisecond)
+	delete(settings, "apiKey")
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", settings, nil)
+	if status != http.StatusOK {
+		t.Fatalf("same endpoint settings update=%d %s", status, body)
+	}
+	if err = x.store.MarkAISettingsVerified(context.Background(), verifiedGeneration.Protocol, verifiedGeneration.BaseURL, verifiedGeneration.Model, verifiedGeneration.UpdatedAt, time.Now().UTC()); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("stale settings generation marked a newer secret/header generation verified: %v", err)
+	}
+	stored, err = x.store.AISettings(context.Background())
+	if err != nil || stored.Settings.VerifiedAt != nil {
+		t.Fatalf("same endpoint save retained stale verification: settings=%+v err=%v", stored.Settings, err)
+	}
+	status, body = request(t, x.admin, http.MethodPost, x.server.URL+"/api/v1/ai/test", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("reverify current settings generation=%d %s", status, body)
+	}
+	settings["model"] = "changed-model"
+	status, body = request(t, x.admin, http.MethodPut, x.server.URL+"/api/v1/ai/settings", settings, nil)
+	if status != http.StatusOK {
+		t.Fatalf("change settings=%d %s", status, body)
+	}
+	stored, err = x.store.AISettings(context.Background())
+	if err != nil || stored.Settings.VerifiedAt != nil {
+		t.Fatalf("settings change retained stale verification: settings=%+v err=%v", stored.Settings, err)
 	}
 }
 

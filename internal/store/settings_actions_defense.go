@@ -18,13 +18,14 @@ type StoredAISettings struct {
 }
 
 func (s *Store) PutAISettings(ctx context.Context, x StoredAISettings) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO ai_settings(singleton,protocol,base_url,model,encrypted_api_key,api_key_hint,encrypted_headers,updated_at) VALUES(1,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET protocol=excluded.protocol,base_url=excluded.base_url,model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,api_key_hint=excluded.api_key_hint,encrypted_headers=excluded.encrypted_headers,updated_at=excluded.updated_at`, string(x.Settings.Protocol), x.Settings.BaseURL, x.Settings.Model, x.EncryptedAPIKey, x.Settings.APIKeyHint, x.EncryptedHeaders, timeText(x.Settings.UpdatedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO ai_settings(singleton,protocol,base_url,model,encrypted_api_key,api_key_hint,encrypted_headers,updated_at,verified_at) VALUES(1,?,?,?,?,?,?,?,NULL) ON CONFLICT(singleton) DO UPDATE SET protocol=excluded.protocol,base_url=excluded.base_url,model=excluded.model,encrypted_api_key=excluded.encrypted_api_key,api_key_hint=excluded.api_key_hint,encrypted_headers=excluded.encrypted_headers,updated_at=excluded.updated_at,verified_at=NULL`, string(x.Settings.Protocol), x.Settings.BaseURL, x.Settings.Model, x.EncryptedAPIKey, x.Settings.APIKeyHint, x.EncryptedHeaders, timeText(x.Settings.UpdatedAt))
 	return err
 }
 func (s *Store) AISettings(ctx context.Context) (StoredAISettings, error) {
 	var x StoredAISettings
 	var updated string
-	err := s.db.QueryRowContext(ctx, `SELECT protocol,base_url,model,encrypted_api_key,api_key_hint,encrypted_headers,updated_at FROM ai_settings WHERE singleton=1`).Scan(&x.Settings.Protocol, &x.Settings.BaseURL, &x.Settings.Model, &x.EncryptedAPIKey, &x.Settings.APIKeyHint, &x.EncryptedHeaders, &updated)
+	var verified sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT protocol,base_url,model,encrypted_api_key,api_key_hint,encrypted_headers,updated_at,verified_at FROM ai_settings WHERE singleton=1`).Scan(&x.Settings.Protocol, &x.Settings.BaseURL, &x.Settings.Model, &x.EncryptedAPIKey, &x.Settings.APIKeyHint, &x.EncryptedHeaders, &updated, &verified)
 	if errors.Is(err, sql.ErrNoRows) {
 		return x, ErrNotFound
 	}
@@ -33,7 +34,28 @@ func (s *Store) AISettings(ctx context.Context) (StoredAISettings, error) {
 	}
 	x.Settings.UpdatedAt, err = parseTime(updated)
 	x.Settings.KeyConfigured = x.EncryptedAPIKey != ""
+	if err == nil && verified.Valid {
+		var value time.Time
+		value, err = parseTime(verified.String)
+		if err == nil {
+			x.Settings.VerifiedAt = &value
+		}
+	}
 	return x, err
+}
+
+func (s *Store) MarkAISettingsVerified(ctx context.Context, protocol domain.AIProtocol, baseURL, model string, settingsUpdatedAt, at time.Time) error {
+	// The updated_at generation binds verification to the exact stored secret and
+	// custom-header ciphertext as well as the visible endpoint fields. A settings
+	// save that races an in-flight provider test therefore stays unverified.
+	result, err := s.db.ExecContext(ctx, `UPDATE ai_settings SET verified_at=? WHERE singleton=1 AND protocol=? AND base_url=? AND model=? AND updated_at=? AND encrypted_api_key<>''`, timeText(at), string(protocol), baseURL, model, timeText(settingsUpdatedAt))
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) CreateAction(ctx context.Context, x domain.Action, nonceHash, actor string) error {

@@ -22,6 +22,7 @@ type Scheduler struct {
 	interval time.Duration
 	log      *slog.Logger
 	now      func() time.Time
+	observer func(error)
 }
 
 func New(st Store, log *slog.Logger) *Scheduler {
@@ -30,11 +31,16 @@ func New(st Store, log *slog.Logger) *Scheduler {
 	}
 	return &Scheduler{store: st, interval: 15 * time.Second, log: log, now: time.Now}
 }
+func (s *Scheduler) SetObserver(observer func(error)) { s.observer = observer }
 func (s *Scheduler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
-		if err := s.Tick(ctx); err != nil {
+		err := s.Tick(ctx)
+		if s.observer != nil {
+			s.observer(err)
+		}
+		if err != nil {
 			s.log.Error("schedule tick failed", "error", err)
 		}
 		select {

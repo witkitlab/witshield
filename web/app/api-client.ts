@@ -21,6 +21,7 @@ import type {
   SecurityObservation,
   SensorHealth,
   Severity,
+	SystemHealth,
 } from './types';
 
 export const demoMode = process.env.NEXT_PUBLIC_WITSHIELD_DEMO !== 'false';
@@ -208,6 +209,7 @@ interface RawAISettings {
   keyConfigured?: boolean;
   apiKeyHint?: string;
   customHeaders?: Record<string, string>;
+  verifiedAt?: string;
 }
 
 interface RawNotificationSettings {
@@ -328,6 +330,7 @@ export interface LiveSnapshot {
   schedules: ScanSchedule[];
   coverageIssues: DashboardSnapshot['coverageIssues'];
   checks: number;
+  systemHealth?: SystemHealth;
 }
 
 async function requestCurrentFindingsForDevices(devices: RawDevice[]): Promise<RawFinding[]> {
@@ -401,10 +404,14 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       schedules: structuredClone(demoDashboard.schedules),
       coverageIssues: structuredClone(demoDashboard.coverageIssues),
       checks: demoDashboard.checks,
+		systemHealth: { status: 'ok', database: 'ok', checkedAt: new Date().toISOString(), workers: [
+			{ name: 'scheduler', status: 'ok', lastRunAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), staleAfterSeconds: 60 },
+			{ name: 'security_engineer', status: 'ok', lastRunAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), staleAfterSeconds: 30 },
+		] },
     };
   }
   const rawDevices = await requestItems<RawDevice>('/devices');
-  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawInvestigation, rawSensors, rawNotifications, rawSchedules, rawIncidents, policyResults, grantResults] = await Promise.all([
+  const [rawFindings, reportHistory, rawAudit, rawSecurityEvents, rawActions, rawAI, rawInvestigation, rawSensors, rawNotifications, rawSchedules, rawIncidents, rawSystemHealth, policyResults, grantResults] = await Promise.all([
     requestCurrentFindingsForDevices(rawDevices),
     requestLatestReportsForDevices(rawDevices),
     requestItems<RawAudit>('/audit?limit=200'),
@@ -416,6 +423,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     request<RawNotificationSettings>('/notifications/settings'),
     requestItems<RawSchedule>('/schedules'),
     requestItems<RawIncident>('/incidents?limit=200'),
+		request<SystemHealth>('/system/health').catch(() => undefined),
     Promise.all(rawDevices.map((device) =>
       request<RawDefensePolicy>(`/devices/${encodeURIComponent(device.id)}/defense-policy`).catch(() => null),
     )),
@@ -514,7 +522,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     policies: policyResults.filter((item): item is RawDefensePolicy => Boolean(item)).map(mapDefense),
     incidents: rawIncidents.map(mapIncident),
     policyGrants: grantResults.flat().map((item) => ({ ...item, updatedAt: dateText(item.updatedAt) })),
-    ai: {
+      ai: {
       protocol: rawAI.protocol ?? 'openai_responses',
       baseUrl: rawAI.baseUrl ?? 'https://api.openai.com/v1',
       model: rawAI.model ?? '',
@@ -522,6 +530,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
       keyHint: rawAI.apiKeyHint ?? '',
       customHeaderKeys: Object.keys(rawAI.customHeaders ?? {}).sort(),
       privacyMode: 'minimal',
+      verifiedAt: rawAI.verifiedAt,
     },
     investigationPolicy: { ...rawInvestigation.policy, updatedAt: dateText(rawInvestigation.policy.updatedAt) },
     investigationUsage: { ...rawInvestigation.usage, updatedAt: dateText(rawInvestigation.usage.updatedAt) },
@@ -530,6 +539,7 @@ export async function loadSnapshot(): Promise<LiveSnapshot> {
     schedules: rawSchedules.map(mapSchedule),
     coverageIssues,
     checks,
+		systemHealth: rawSystemHealth,
   };
 }
 
@@ -779,6 +789,7 @@ export async function saveAISettings(input: AISettings & { apiKey?: string; cust
     keyHint: result.apiKeyHint ?? '',
     customHeaderKeys: Object.keys(result.customHeaders ?? {}).sort(),
     privacyMode: input.privacyMode,
+    verifiedAt: result.verifiedAt,
   };
 }
 
@@ -791,6 +802,14 @@ export async function testAISettings(input: AISettings & { apiKey?: string }): P
     method: 'POST',
     body: JSON.stringify({ settings: { protocol: input.protocol, baseUrl: input.baseUrl, model: input.model, ...(input.apiKey ? { apiKey: input.apiKey } : {}) } }),
   });
+}
+
+export async function testSavedAISettings(): Promise<{ ok: boolean; latencyMs: number; model: string; verifiedAt: string }> {
+  if (demoMode) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    return { ok: true, latencyMs: 438, model: 'demo-model', verifiedAt: new Date().toISOString() };
+  }
+  return request('/ai/test', { method: 'POST' });
 }
 
 export async function chatAI(message: string, deviceId?: string, findingIds: string[] = []): Promise<string> {

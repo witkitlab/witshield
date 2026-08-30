@@ -115,6 +115,7 @@ type AISettings struct {
 	KeyConfigured bool       `json:"keyConfigured"`
 	CustomHeaders Headers    `json:"customHeaders,omitempty"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
+	VerifiedAt    *time.Time `json:"verifiedAt,omitempty"`
 }
 
 type InvestigationProfile string
