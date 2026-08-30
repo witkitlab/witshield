@@ -107,7 +107,7 @@ func TestConcurrentEnrollmentRequestsRemainUnauthenticated(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := NewClient(server.URL, "")
+	client, err := NewObserverClient(server.URL, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestConcurrentEnrollmentPublishesAtomicCredentialSnapshots(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client, err := NewClient(server.URL, oldCredential.token)
+	client, err := NewObserverClient(server.URL, oldCredential.token)
 	if err != nil {
 		t.Fatal(err)
 	}

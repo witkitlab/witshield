@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,17 +66,45 @@ type ipResolver interface {
 type dialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 func NewClient(rawURL, token string) (*Client, error) {
+	return newClient(rawURL, token, false)
+}
+
+// NewObserverClient keeps private-network HTTP available only for the
+// explicitly read-only Docker observer. Native Agents can reach the privileged
+// Helper, so they must use HTTPS or the installation-owned Unix socket.
+func NewObserverClient(rawURL, token string) (*Client, error) {
+	return newClient(rawURL, token, true)
+}
+
+func newClient(rawURL, token string, observerOnly bool) (*Client, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("invalid controller URL")
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, errors.New("controller URL must use http or https")
+	if u.Scheme == "unix" {
+		if u.Host != "" || !filepath.IsAbs(u.Path) || filepath.Clean(u.Path) != u.Path {
+			return nil, errors.New("unix controller URL must contain one absolute socket path")
+		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		socketPath := u.Path
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+			return dialer.DialContext(ctx, "unix", socketPath)
+		}
+		base, _ := url.Parse("http://witshield-controller")
+		return &Client{base: base, credentials: clientCredentials{token: token}, http: controllerHTTPClient(transport)}, nil
+	}
+	if u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return nil, errors.New("controller URL must use https, unix, or observer-only http")
 	}
 	if u.Scheme == "http" {
+		if !observerOnly {
+			return nil, errors.New("native controller connections must use HTTPS or the installation-owned Unix socket")
+		}
 		ip := net.ParseIP(u.Hostname())
 		if ip != nil && !ip.IsLoopback() && !ip.IsPrivate() {
-			return nil, errors.New("plain HTTP controller URL is only allowed on local/private networks")
+			return nil, errors.New("observer-only HTTP controller URL is only allowed on local/private networks")
 		}
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -91,7 +120,11 @@ func NewClient(rawURL, token string) (*Client, error) {
 	} else {
 		transport.Proxy = http.ProxyFromEnvironment
 	}
-	return &Client{base: u, credentials: clientCredentials{token: token}, http: &http.Client{Transport: transport, Timeout: 40 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("controller redirects are disabled") }}}, nil
+	return &Client{base: u, credentials: clientCredentials{token: token}, http: controllerHTTPClient(transport)}, nil
+}
+
+func controllerHTTPClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{Transport: transport, Timeout: 40 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("controller redirects are disabled") }}
 }
 
 func privateControllerDialContext(controllerHost string, resolver ipResolver, dial dialContextFunc) dialContextFunc {

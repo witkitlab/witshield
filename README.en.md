@@ -46,6 +46,12 @@ release-workflow Sigstore identity, and bootstraps a checksum-pinned Cosign
 verifier when the host does not already provide one. It records the installed
 version and refuses implicit downgrades.
 
+Upgrades take a root-only consistent snapshot while services are quiesced and
+automatically restore the previous application, configuration, data, and unit
+state when full readiness fails. In standalone mode, the native Agent uses an
+installation-owned Unix socket instead of a loopback TCP endpoint that another
+local process could occupy while the Controller is down.
+
 The controller listens on `127.0.0.1:8080` by default. Docker is supported only as a constrained read-only observer; native systemd installation is required for remediation.
 
 Licensed under [Apache-2.0](LICENSE).

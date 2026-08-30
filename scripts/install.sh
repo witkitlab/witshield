@@ -17,6 +17,8 @@ readonly SYSTEMD_DIR="/etc/systemd/system"
 readonly INSTALLED_VERSION_FILE="${SHARE_DIR}/VERSION"
 readonly PENDING_VERSION_FILE="${SHARE_DIR}/VERSION.pending"
 readonly INSTALL_LOCK_FILE="/run/witshield-install.lock"
+readonly UPGRADE_STATE_DIR="/var/lib/witshield-upgrade"
+readonly UPGRADE_GATE_FILE="${UPGRADE_STATE_DIR}/gate"
 readonly COSIGN_VERSION="v3.1.3"
 readonly COSIGN_AMD64_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 readonly COSIGN_ARM64_SHA256="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
@@ -37,6 +39,9 @@ ALLOW_DOWNGRADE=0
 START_SERVICES=1
 TMP_DIR=""
 COSIGN_BIN=""
+ROLLBACK_DIR=""
+UPGRADE_TRANSACTION_ACTIVE=0
+PRESERVE_ROLLBACK=0
 
 # Do not leak a one-time token to curl, tar, systemctl or other child processes.
 unset WITSHIELD_ENROLLMENT_TOKEN
@@ -74,8 +79,39 @@ cleanup() {
   if [[ -n "${TMP_DIR}" && -d "${TMP_DIR}" ]]; then
     rm -rf -- "${TMP_DIR}"
   fi
+  if [[ -n "${ROLLBACK_DIR}" && -d "${ROLLBACK_DIR}" && "$PRESERVE_ROLLBACK" -eq 0 ]]; then
+    rm -rf -- "${ROLLBACK_DIR}"
+  fi
 }
-trap cleanup EXIT
+
+clear_upgrade_gate() {
+	local owner permissions
+	[[ -e "$UPGRADE_GATE_FILE" || -L "$UPGRADE_GATE_FILE" ]] || return 0
+	[[ -f "$UPGRADE_GATE_FILE" && ! -L "$UPGRADE_GATE_FILE" ]] || die "refusing unsafe upgrade gate: $UPGRADE_GATE_FILE"
+	owner=$(stat -c '%u' "$UPGRADE_GATE_FILE") || die "could not inspect upgrade gate owner"
+	permissions=$(stat -c '%A' "$UPGRADE_GATE_FILE") || die "could not inspect upgrade gate permissions"
+	[[ "$owner" == "0" && "${permissions:5:1}" != "w" && "${permissions:8:1}" != "w" ]] \
+		|| die "upgrade gate must be root-owned and not group/world writable"
+	rm -f -- "$UPGRADE_GATE_FILE"
+	rmdir "$UPGRADE_STATE_DIR" 2>/dev/null || true
+}
+
+on_exit() {
+  local status="$1"
+  trap - EXIT
+  set +e
+  if ((status != 0 && UPGRADE_TRANSACTION_ACTIVE)); then
+    rollback_upgrade_transaction
+    local rollback_status=$?
+    if ((rollback_status != 0)); then
+      PRESERVE_ROLLBACK=1
+      printf '[witshield] CRITICAL: automatic upgrade rollback was incomplete; preserved snapshot: %s\n' "$ROLLBACK_DIR" >&2
+    fi
+  fi
+  cleanup
+  exit "$status"
+}
+trap 'on_exit $?' EXIT
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
@@ -109,16 +145,14 @@ wait_unit_active() {
 }
 
 wait_controller_ready() {
-  if ((CONTROLLER_FIRST_INSTALL)); then
-    for _ in {1..30}; do
-      if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
-        return 0
-      fi
-      sleep 1
-    done
-    die "Controller did not become healthy; the Agent enrollment secret was preserved"
-  fi
-  wait_unit_active witshield-controller.service Controller
+	for _ in {1..30}; do
+		if systemctl is-active --quiet witshield-controller.service \
+			&& curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then
+			return 0
+		fi
+		sleep 1
+	done
+	die "Controller did not become ready; inspect journalctl -u witshield-controller (the Agent enrollment secret was preserved)"
 }
 
 wait_helper_ready() {
@@ -145,6 +179,182 @@ wait_agent_ready() {
     sleep 1
   done
   die "Agent did not become ready or complete enrollment; inspect journalctl -u witshield-agent"
+}
+
+unit_loaded() {
+  [[ "$(systemctl show --property=LoadState --value "$1" 2>/dev/null)" != "not-found" ]]
+}
+
+record_unit_state() {
+  local unit="$1" state_dir="${ROLLBACK_DIR}/units"
+  mkdir -p "$state_dir"
+  if unit_loaded "$unit"; then
+    printf 'loaded\n' >"${state_dir}/${unit}.loaded"
+    if systemctl is-active --quiet "$unit"; then
+      printf 'active\n' >"${state_dir}/${unit}.active"
+    fi
+    if systemctl is-enabled --quiet "$unit"; then
+      printf 'enabled\n' >"${state_dir}/${unit}.enabled"
+    fi
+  fi
+}
+
+snapshot_upgrade_path() {
+	local target="$1" destination marker
+	destination="${ROLLBACK_DIR}/rootfs${target}"
+	marker="${ROLLBACK_DIR}/manifest${target}"
+	mkdir -p "$(dirname "$marker")"
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ ! -L "$target" ]] || die "refusing upgrade transaction through symlink: $target"
+    mkdir -p "$(dirname "$destination")"
+    cp -a -- "$target" "$destination"
+		touch "${marker}.present"
+	else
+		touch "${marker}.absent"
+  fi
+}
+
+upgrade_transaction_paths() {
+  printf '%s\n' \
+    /usr/local/sbin/witshield-uninstall \
+    /usr/share/witshield \
+    /usr/share/licenses/witshield \
+    /etc/witshield
+  if [[ "$MODE" == "standalone" || "$MODE" == "controller" ]]; then
+    printf '%s\n' /usr/local/bin/witshield-controller /etc/systemd/system/witshield-controller.service /var/lib/witshield /var/lib/witshield-upgrade
+  fi
+  if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
+    printf '%s\n' /usr/local/bin/witshield-agent /usr/libexec/witshield /etc/systemd/system/witshield-agent.service /etc/systemd/system/witshield-helper.service /var/lib/witshield-agent /var/lib/witshield-helper
+  fi
+}
+
+upgrade_transaction_units_stop_order() {
+  if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
+    printf '%s\n' witshield-agent.service witshield-helper.service
+  fi
+  if [[ "$MODE" == "standalone" || "$MODE" == "controller" ]]; then
+    printf '%s\n' witshield-controller.service
+  fi
+}
+
+upgrade_transaction_units_start_order() {
+  if [[ "$MODE" == "standalone" || "$MODE" == "controller" ]]; then
+    printf '%s\n' witshield-controller.service
+  fi
+  if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
+    printf '%s\n' witshield-helper.service witshield-agent.service
+  fi
+}
+
+pending_recovery_journal() {
+	local directory="$1" prefix="$2" owner permissions candidate
+	[[ -e "$directory" || -L "$directory" ]] || return 1
+	[[ -d "$directory" && ! -L "$directory" ]] || die "unsafe recovery journal path: $directory"
+	owner=$(stat -c '%u' "$directory") || die "could not inspect recovery journal owner: $directory"
+	permissions=$(stat -c '%A' "$directory") || die "could not inspect recovery journal permissions: $directory"
+	[[ "$owner" == "0" && "${permissions:5:1}" != "w" && "${permissions:8:1}" != "w" ]] \
+		|| die "recovery journal directory must be root-owned and not group/world writable: $directory"
+	candidate=$(find -P "$directory" -mindepth 1 -maxdepth 1 -name "${prefix}-*.json" -print -quit) \
+		|| die "could not inspect recovery journals: $directory"
+	[[ -n "$candidate" ]] || return 1
+	printf '%s\n' "$candidate"
+}
+
+first_pending_recovery_journal() {
+	local candidate
+	if candidate=$(pending_recovery_journal /var/lib/witshield-helper/ssh-rollbacks ssh); then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	if candidate=$(pending_recovery_journal /var/lib/witshield-helper/process-resumes process); then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	return 1
+}
+
+prepare_upgrade_transaction() {
+	local target unit pending
+  # A first install has no prior application state to restore. An upgrade is
+  # detected from the committed/pending version floor before any mutation.
+  [[ -n "$VERSION_FLOOR" ]] || return 0
+  ROLLBACK_DIR=$(mktemp -d -p /var/tmp witshield-upgrade-rollback.XXXXXXXX)
+  chmod 0700 "$ROLLBACK_DIR"
+  while IFS= read -r unit; do
+    record_unit_state "$unit"
+  done < <(upgrade_transaction_units_stop_order)
+	# From this point the EXIT trap can restore original unit state even if
+	# quiescing or snapshot creation itself fails. Paths without a completed
+	# manifest marker are left untouched by rollback.
+	UPGRADE_TRANSACTION_ACTIVE=1
+  while IFS= read -r unit; do
+    if unit_loaded "$unit"; then
+      systemctl stop "$unit" >/dev/null || die "could not quiesce $unit before the upgrade snapshot"
+      ! systemctl is-active --quiet "$unit" || die "$unit remained active before the upgrade snapshot"
+    fi
+  done < <(upgrade_transaction_units_stop_order)
+	if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
+		if pending=$(first_pending_recovery_journal); then
+			die "automatic safety recovery is pending at $pending; the original services will be restored instead of upgrading"
+		fi
+	fi
+  while IFS= read -r target; do
+    snapshot_upgrade_path "$target"
+  done < <(upgrade_transaction_paths)
+  sync
+	if [[ "$MODE" == "standalone" || "$MODE" == "controller" ]]; then
+		printf '%s\n' "$ROLLBACK_DIR" >"${ROLLBACK_DIR}/upgrade-gate"
+		install -d -o root -g root -m 0755 "$UPGRADE_STATE_DIR"
+		install -o root -g root -m 0600 "${ROLLBACK_DIR}/upgrade-gate" "$UPGRADE_GATE_FILE"
+	fi
+  log "created a consistent automatic rollback snapshot for the existing installation"
+}
+
+restore_upgrade_path() {
+	local target="$1" snapshot marker
+	snapshot="${ROLLBACK_DIR}/rootfs${target}"
+	marker="${ROLLBACK_DIR}/manifest${target}"
+	if [[ ! -f "${marker}.present" && ! -f "${marker}.absent" ]]; then
+		return 0
+	fi
+  rm -rf -- "$target"
+	if [[ -f "${marker}.present" ]]; then
+		[[ -e "$snapshot" || -L "$snapshot" ]] || return 1
+    mkdir -p "$(dirname "$target")"
+    cp -a -- "$snapshot" "$target"
+  fi
+}
+
+rollback_upgrade_transaction() {
+  local target unit failed=0
+  log "upgrade failed; restoring the previous verified installation"
+  while IFS= read -r unit; do
+    systemctl stop "$unit" >/dev/null 2>&1 || true
+  done < <(upgrade_transaction_units_stop_order)
+  while IFS= read -r target; do
+    restore_upgrade_path "$target" || failed=1
+  done < <(upgrade_transaction_paths)
+  systemctl daemon-reload >/dev/null 2>&1 || failed=1
+	if [[ "$MODE" == "standalone" || "$MODE" == "controller" ]]; then
+		rm -f -- "$UPGRADE_GATE_FILE" || failed=1
+	fi
+  while IFS= read -r unit; do
+    if [[ -f "${ROLLBACK_DIR}/units/${unit}.enabled" ]]; then
+      systemctl enable "$unit" >/dev/null 2>&1 || failed=1
+    elif unit_loaded "$unit"; then
+      systemctl disable "$unit" >/dev/null 2>&1 || failed=1
+    fi
+    if [[ -f "${ROLLBACK_DIR}/units/${unit}.active" ]]; then
+      systemctl start "$unit" >/dev/null 2>&1 || failed=1
+    fi
+  done < <(upgrade_transaction_units_start_order)
+  sync
+  if ((failed)); then
+    return 1
+  fi
+  UPGRADE_TRANSACTION_ACTIVE=0
+  log "previous installation restored after failed upgrade"
+  return 0
 }
 
 verify_service_account() {
@@ -340,16 +550,11 @@ resolve_cosign() {
 }
 
 validate_url() {
-  [[ "$1" =~ ^https?://[^[:space:]]+$ ]] || die "controller URL must be an absolute http(s) URL"
+	[[ "$1" =~ ^https://[^[:space:]]+$ ]] || die "controller URL for a native Agent must be an absolute HTTPS URL"
   [[ "$1" != *'?'* && "$1" != *'#'* ]] || die "controller URL must not contain a query or fragment"
   local authority="${1#*://}"
   authority="${authority%%/*}"
   [[ "$authority" != *'@'* ]] || die "controller URL must not contain embedded credentials"
-  if [[ "$1" == http://* ]]; then
-    local host="${authority%%:*}"
-    [[ "$host" == "127.0.0.1" || "$host" == "localhost" || "$authority" == \[::1\]* ]] \
-      || die "remote controller URLs must use HTTPS"
-  fi
 }
 
 quote_env_value() {
@@ -378,6 +583,22 @@ write_new_env_file() {
     shift
   done
   install -o root -g root -m 0600 "$staged" "$target"
+}
+
+migrate_standalone_controller_transport() {
+	local target="${CONFIG_DIR}/agent.env" old='WITSHIELD_CONTROLLER_URL=http://127.0.0.1:8080'
+	local old_quoted='WITSHIELD_CONTROLLER_URL="http://127.0.0.1:8080"'
+	local replacement='WITSHIELD_CONTROLLER_URL="unix:///run/witshield-controller/agent.sock"' count staged
+	[[ -f "$target" && ! -L "$target" ]] || return 0
+	count=$(( $(grep -Fxc "$old" "$target" || true) + $(grep -Fxc "$old_quoted" "$target" || true) ))
+	if [[ "$count" == "0" ]]; then
+		return 0
+	fi
+	[[ "$count" == "1" ]] || die "legacy standalone Controller URL is duplicated in $target"
+	staged="${TMP_DIR}/agent.env.migrated"
+	awk -v old="$old" -v old_quoted="$old_quoted" -v replacement="$replacement" '{ if ($0 == old || $0 == old_quoted) print replacement; else print }' "$target" >"$staged"
+	install -o root -g root -m 0600 "$staged" "$target"
+	log "migrated the local native Agent from plaintext TCP to the installation-owned Unix socket"
 }
 
 read_enrollment_token() {
@@ -463,6 +684,8 @@ need_command useradd
 need_command usermod
 need_command flock
 need_command mv
+need_command cp
+need_command sync
 case "$(uname -m)" in
   x86_64|amd64) ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
@@ -470,6 +693,9 @@ case "$(uname -m)" in
 esac
 
 acquire_install_lock "$INSTALL_LOCK_FILE"
+if [[ -e "$UPGRADE_GATE_FILE" || -L "$UPGRADE_GATE_FILE" ]]; then
+	die "a previous upgrade gate is still present at $UPGRADE_GATE_FILE; inspect the preserved rollback snapshot before retrying"
+fi
 
 if [[ "$RELEASE_VERSION" == "latest" ]]; then
   log "resolving latest release"
@@ -594,7 +820,7 @@ elif [[ "$MODE" == "agent" && "$AGENT_CONFIG_MISSING" -eq 1 ]]; then
   [[ -n "$CONTROLLER_URL" ]] || die "--controller-url is required to reconstruct missing Agent configuration"
   validate_url "$CONTROLLER_URL"
 elif [[ "$MODE" == "standalone" && "$AGENT_CONFIG_MISSING" -eq 1 ]]; then
-  CONTROLLER_URL="http://127.0.0.1:8080"
+	CONTROLLER_URL="unix:///run/witshield-controller/agent.sock"
 fi
 # Keep a web one-liner's short-lived value only as long as a fresh Agent needs
 # it. This shell variable is not exported to apt, user-management or systemd.
@@ -604,6 +830,7 @@ ENROLLMENT_TOKEN_FROM_ENV=""
 # package, account, file, or service mutation.  If any later step fails, the
 # pending marker prevents an older installer from overwriting partially
 # upgraded binaries or data.  The global flock serializes this transaction.
+prepare_upgrade_transaction
 stage_pending_version
 
 # Typed firewall defense calls the distribution-owned nft binary by its fixed
@@ -642,18 +869,30 @@ if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
   if id witshield-agent >/dev/null 2>&1; then
     # Validate an existing identity before granting any new group membership.
     verify_service_account witshield-agent witshield-agent
-    verify_account_groups witshield-agent witshield-agent witshield-helper adm systemd-journal
-    usermod -a -G witshield-helper witshield-agent
-  else
-    useradd --system --gid witshield-agent --groups witshield-helper --home-dir "$AGENT_DATA_DIR" --no-create-home --shell /usr/sbin/nologin witshield-agent
-  fi
-  verify_service_account witshield-agent witshield-agent
+	if [[ "$MODE" == "standalone" ]]; then
+		verify_account_groups witshield-agent witshield-agent witshield-helper witshield-controller adm systemd-journal
+		usermod -a -G witshield-helper,witshield-controller witshield-agent
+	else
+		verify_account_groups witshield-agent witshield-agent witshield-helper adm systemd-journal
+		usermod -a -G witshield-helper witshield-agent
+	fi
+	else
+		useradd --system --gid witshield-agent --groups witshield-helper --home-dir "$AGENT_DATA_DIR" --no-create-home --shell /usr/sbin/nologin witshield-agent
+	fi
+	verify_service_account witshield-agent witshield-agent
+	if [[ "$MODE" == "standalone" ]]; then
+		usermod -a -G witshield-controller witshield-agent
+	fi
   for log_group in adm systemd-journal; do
     if getent group "$log_group" >/dev/null; then
       usermod -a -G "$log_group" witshield-agent
     fi
   done
-  verify_account_groups witshield-agent witshield-agent witshield-helper adm systemd-journal
+	if [[ "$MODE" == "standalone" ]]; then
+		verify_account_groups witshield-agent witshield-agent witshield-helper witshield-controller adm systemd-journal
+	else
+		verify_account_groups witshield-agent witshield-agent witshield-helper adm systemd-journal
+	fi
   install -d -o root -g witshield-helper -m 0750 "$CONFIG_DIR"
 else
   install -d -o root -g root -m 0750 "$CONFIG_DIR"
@@ -710,7 +949,7 @@ if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
     if [[ "$MODE" == "agent" ]]; then
       [[ -n "$ENROLLMENT_TOKEN" ]] || die "the validated enrollment token was unexpectedly unavailable"
     else
-      CONTROLLER_URL="http://127.0.0.1:8080"
+      CONTROLLER_URL="unix:///run/witshield-controller/agent.sock"
       # Bootstrap and device enrollment are deliberately separate secrets.
       ENROLLMENT_TOKEN=$(random_hex)
     fi
@@ -741,6 +980,9 @@ if [[ "$MODE" == "standalone" || "$MODE" == "agent" ]]; then
       agent_lines+=("WITSHIELD_ENROLLMENT_TOKEN_FILE=${TOKEN_PATH}")
     fi
     write_new_env_file "${CONFIG_DIR}/agent.env" "${agent_lines[@]}"
+  fi
+  if [[ "$MODE" == "standalone" ]]; then
+    migrate_standalone_controller_transport
   fi
 fi
 
@@ -773,6 +1015,10 @@ if ((START_SERVICES)); then
 fi
 
 commit_pending_version
+if [[ "$MODE" == "standalone" || "$MODE" == "controller" ]]; then
+	clear_upgrade_gate
+fi
+UPGRADE_TRANSACTION_ACTIVE=0
 log "WitShield AI ${RELEASE_VERSION} installed in ${MODE} mode"
 if [[ ( "$MODE" == "standalone" || "$MODE" == "controller" ) && "$CONTROLLER_FIRST_INSTALL" -eq 1 ]]; then
   cat >&2 <<EOF

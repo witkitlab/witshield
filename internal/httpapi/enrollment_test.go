@@ -30,7 +30,7 @@ func createEnrollmentCredential(t *testing.T, api *testAPI, suffix string) strin
 
 func newEnrollmentClient(t *testing.T, api *testAPI) *agent.Client {
 	t.Helper()
-	client, err := agent.NewClient(api.server.URL, "")
+	client, err := agent.NewObserverClient(api.server.URL, "")
 	if err != nil {
 		t.Fatal(err)
 	}

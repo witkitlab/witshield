@@ -55,6 +55,8 @@
 - 只把 Controller 请求映射到 Helper 已编译的强类型 Playbook，不接受任意命令、可执行路径或 shell；
 - 保存设备身份、最近任务和恢复所需状态。
 
+单机原生拓扑中，Agent 不通过可被重新占用的 loopback TCP 端口接收 Controller 指令，而是连接安装器拥有的 `/run/witshield-controller/agent.sock`。该 Socket 监听器只开放 Agent API 与通用存活检查，不开放管理员 API。跨机器原生 Agent 只接受 HTTPS；私网 HTTP 仅保留给没有 Helper 权限的 observer-only 容器。
+
 ### 事件关联与 AI 调查层
 
 - 支持用户指定的 OpenAI/Anthropic 兼容接口；
@@ -84,12 +86,12 @@ Helper 仍是高价值边界：它不连接 AI/Controller，也不接受任意 s
 
 ### 单机模式
 
-Controller 与 Agent 同机运行，Agent 连接 loopback Controller。Controller 使用 `/var/lib/witshield`，Agent 使用 `/var/lib/witshield-agent`，二者的配置和权限独立。
+Controller 与 Agent 同机运行，浏览器从 loopback HTTP 访问管理界面，Agent 通过受限 Unix Socket 连接 Controller。Controller 使用 `/var/lib/witshield`，Agent 使用 `/var/lib/witshield-agent`，二者的配置和权限独立。
 
 ```text
 localhost:8080 ← Browser through SSH tunnel
       ▲
- Controller ← Agent → local host
+ Controller ← /run/witshield-controller/agent.sock ← Agent → local host
 ```
 
 适合一台服务器、开发或希望保持本地优先的用户。未配置外部集成时，规则扫描和人工修复流程不需要业务出站；管理员启用 AI、Webhook/SMTP 时 Controller 会连接相应端点，软件包升级 Playbook 也可能通过系统包管理器访问已配置的软件源。
@@ -178,6 +180,8 @@ succeeded / failed（存在回滚材料） ──────────→ rol
 Agent API 对来源与设备凭据设置有界请求速率，并对报告、事件、结果按请求体和条目数计算工作预算；SQLite 写入与命令长轮询也有独立并发闸门。报告、安全事件、当前 Finding 投影、未完成动作、请求 nonce 与完成命令墓碑均按设备或全局设置固定数量/字节上限；短期注册 challenge 同时受身份、注册令牌、来源与全局边界约束。高成本历史压缩只在启动和每 6 小时运行，常规维护不做全表排名。上述限制不是身份验证的替代，而是避免一个已失陷设备拖垮单连接 SQLite 控制台。
 
 SSH 加固是额外的失联保护流程：Helper 在修改前持久化原配置并启动本机耐重启的回滚计时器；只有用户在安全窗口内确认新连接可用、Agent 执行确认命令成功后，动作才成为 `succeeded`。窗口过期时 Controller 的 `cancelled` 表示 Helper 安全回滚已被触发，不等同于 Controller 已收到“回滚成功”回执；应通过设备状态和审计复核。首版没有单独的 `verified` 状态，Helper 执行回执和后续扫描共同用于确认效果。
+
+临时进程暂停采用同一条原则，但不依赖 Controller 或 Agent 在线续约：Helper 在发送 `SIGSTOP` 前先 fsync 一份绑定 Action ID、参数摘要、PID、启动时间、可执行路径和恢复期限的本机日志，并由 Helper 自己调度 `SIGCONT`。Helper 重启会重载未完成日志；PID 已退出、复用或身份改变时安全地不作用于新进程。人工提前回滚会恢复并删除日志。旧版带 Controller 确认期限的成功回执在升级后会立即排入兼容回滚，而不是丢弃恢复材料。
 
 ## 分级授权与自动防御
 

@@ -70,19 +70,95 @@ verify_purge_account() {
   esac
 }
 
+pending_recovery_journal() {
+	local directory="$1" prefix="$2" owner permissions candidate
+	[[ -e "$directory" || -L "$directory" ]] || return 1
+	[[ -d "$directory" && ! -L "$directory" ]] \
+		|| die "recovery journal path is unsafe; no services were stopped: $directory"
+	owner=$(stat -c '%u' "$directory") || die "could not inspect recovery journal owner: $directory"
+	permissions=$(stat -c '%A' "$directory") || die "could not inspect recovery journal permissions: $directory"
+	[[ "$owner" == "0" && "${permissions:5:1}" != "w" && "${permissions:8:1}" != "w" ]] \
+		|| die "recovery journal directory must be root-owned and not group/world writable: $directory"
+	candidate=$(find -P "$directory" -mindepth 1 -maxdepth 1 -name "${prefix}-*.json" -print -quit) \
+		|| die "could not inspect recovery journals: $directory"
+	[[ -n "$candidate" ]] || return 1
+	printf '%s\n' "$candidate"
+}
+
+first_pending_recovery_journal() {
+	local candidate
+	if candidate=$(pending_recovery_journal /var/lib/witshield-helper/ssh-rollbacks ssh); then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	if candidate=$(pending_recovery_journal /var/lib/witshield-helper/process-resumes process); then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+	return 1
+}
+
 stop_installed_units() {
-  local unit load_state
-  for unit in witshield-agent.service witshield-helper.service witshield-controller.service; do
-    load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null) \
-      || die "could not inspect $unit; no files were removed"
-    [[ -n "$load_state" && "$load_state" != "not-found" ]] || continue
-    systemctl stop "$unit" >/dev/null \
-      || die "failed to stop $unit; no files were removed"
-    ! systemctl is-active --quiet "$unit" \
-      || die "$unit is still active; no files were removed"
-    systemctl disable "$unit" >/dev/null \
-      || die "failed to disable $unit; no files were removed"
-  done
+	local unit load_state pending agent_was_active=0 helper_was_active=0
+	local -a loaded_units=()
+	for unit in witshield-agent.service witshield-helper.service witshield-controller.service; do
+		load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null) \
+			|| die "could not inspect $unit; no files were removed"
+		[[ -n "$load_state" && "$load_state" != "not-found" ]] && loaded_units+=("$unit")
+	done
+
+	if [[ " ${loaded_units[*]} " == *" witshield-agent.service "* ]]; then
+		if systemctl is-active --quiet witshield-agent.service; then
+			agent_was_active=1
+		fi
+		systemctl stop witshield-agent.service >/dev/null \
+			|| die "failed to stop witshield-agent.service; no files were removed"
+		! systemctl is-active --quiet witshield-agent.service \
+			|| die "witshield-agent.service is still active; no files were removed"
+	fi
+	if pending=$(first_pending_recovery_journal); then
+		if ((agent_was_active)); then
+			systemctl start witshield-agent.service >/dev/null || true
+		fi
+		die "automatic safety recovery is still pending at $pending; wait for it or explicitly confirm/roll it back before uninstalling"
+	fi
+
+	if [[ " ${loaded_units[*]} " == *" witshield-helper.service "* ]]; then
+		if systemctl is-active --quiet witshield-helper.service; then
+			helper_was_active=1
+		fi
+		if ! systemctl stop witshield-helper.service >/dev/null; then
+			if ((agent_was_active)); then
+				systemctl start witshield-agent.service >/dev/null || true
+			fi
+			die "failed to stop witshield-helper.service; no files were removed"
+		fi
+		! systemctl is-active --quiet witshield-helper.service \
+			|| die "witshield-helper.service is still active; no files were removed"
+	fi
+	# Close the race between stopping the Agent and the Helper. If a request had
+	# already crossed the socket, restore both services so the durable timer keeps
+	# owning recovery and refuse to remove any file.
+	if pending=$(first_pending_recovery_journal); then
+		if ((helper_was_active)); then
+			systemctl start witshield-helper.service >/dev/null || true
+		fi
+		if ((agent_was_active)); then
+			systemctl start witshield-agent.service >/dev/null || true
+		fi
+		die "automatic safety recovery became pending at $pending; services were restored and uninstall was cancelled"
+	fi
+
+	if [[ " ${loaded_units[*]} " == *" witshield-controller.service "* ]]; then
+		systemctl stop witshield-controller.service >/dev/null \
+			|| die "failed to stop witshield-controller.service; no files were removed"
+		! systemctl is-active --quiet witshield-controller.service \
+			|| die "witshield-controller.service is still active; no files were removed"
+	fi
+	for unit in "${loaded_units[@]}"; do
+		systemctl disable "$unit" >/dev/null \
+			|| die "failed to disable $unit; no files were removed"
+	done
 }
 
 ensure_no_service_processes() {

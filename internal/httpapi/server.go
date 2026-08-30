@@ -64,6 +64,8 @@ type Server struct {
 	notifyObserver         func(domain.NotificationEvent)
 	trustedProxies         []netip.Prefix
 	inlineScripts          []string
+	healthMu               sync.RWMutex
+	workers                map[string]workerHealth
 }
 
 type localHTTPTransportKey struct{}
@@ -96,7 +98,13 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{store: cfg.Store, vault: cfg.Vault, version: cfg.Version, bootstrapToken: cfg.BootstrapToken, webDir: cfg.WebDir, log: cfg.Logger, sessionTTL: cfg.SessionTTL, dummyHash: dummy, now: time.Now, limiter: newLoginLimiter(), agentSourceLimiter: newWindowLimiter(time.Minute, 20_000), agentRequestLimiter: newWeightedWindowLimiter(time.Minute, 20_000), agentWorkLimiter: newWeightedWindowLimiter(time.Minute, 20_000), enrollChallengeLimiter: newWindowLimiter(10*time.Minute, 10_000), enrollFinalizeLimiter: newWindowLimiter(10*time.Minute, 10_000), agentWrites: make(chan struct{}, 8), syncs: newSyncGate(16), mux: http.NewServeMux(), notifyWebhookWake: make(chan struct{}, 1), notifySMTPWake: make(chan struct{}, 1), trustedProxies: trusted, inlineScripts: inlineScripts}
+	s := &Server{store: cfg.Store, vault: cfg.Vault, version: cfg.Version, bootstrapToken: cfg.BootstrapToken, webDir: cfg.WebDir, log: cfg.Logger, sessionTTL: cfg.SessionTTL, dummyHash: dummy, now: time.Now, limiter: newLoginLimiter(), agentSourceLimiter: newWindowLimiter(time.Minute, 20_000), agentRequestLimiter: newWeightedWindowLimiter(time.Minute, 20_000), agentWorkLimiter: newWeightedWindowLimiter(time.Minute, 20_000), enrollChallengeLimiter: newWindowLimiter(10*time.Minute, 10_000), enrollFinalizeLimiter: newWindowLimiter(10*time.Minute, 10_000), agentWrites: make(chan struct{}, 8), syncs: newSyncGate(16), mux: http.NewServeMux(), notifyWebhookWake: make(chan struct{}, 1), notifySMTPWake: make(chan struct{}, 1), trustedProxies: trusted, inlineScripts: inlineScripts, workers: map[string]workerHealth{
+		"scheduler":            {StaleAfter: time.Minute},
+		"maintenance":          {StaleAfter: 3 * time.Minute},
+		"security_engineer":    {StaleAfter: 2 * time.Minute},
+		"notification_webhook": {StaleAfter: 30 * time.Second},
+		"notification_smtp":    {StaleAfter: 30 * time.Second},
+	}}
 	s.routes()
 	return s, nil
 }
@@ -116,11 +124,13 @@ func (s *Server) LocalHTTPHandler() http.Handler {
 }
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
+	s.mux.HandleFunc("GET /readyz", s.ready)
 	s.mux.HandleFunc("GET /api/v1/status", s.status)
 	s.mux.HandleFunc("POST /api/v1/admin/bootstrap", s.bootstrap)
 	s.mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	s.mux.Handle("POST /api/v1/auth/logout", s.requireAdmin(http.HandlerFunc(s.logout)))
 	s.mux.Handle("GET /api/v1/auth/me", s.requireAdmin(http.HandlerFunc(s.me)))
+	s.mux.Handle("GET /api/v1/system/health", s.requireAdmin(http.HandlerFunc(s.systemHealth)))
 	s.mux.Handle("GET /api/v1/enrollment-tokens", s.requireAdmin(http.HandlerFunc(s.listEnrollmentTokens)))
 	s.mux.Handle("POST /api/v1/enrollment-tokens", s.requireAdmin(http.HandlerFunc(s.createEnrollmentToken)))
 	s.mux.Handle("DELETE /api/v1/enrollment-tokens/{id}", s.requireAdmin(http.HandlerFunc(s.revokeEnrollmentToken)))

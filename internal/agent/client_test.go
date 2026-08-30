@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func authenticatedTestClient(t *testing.T, rawURL, token string) *Client {
 	t.Helper()
-	client, err := NewClient(rawURL, token)
+	client, err := NewObserverClient(rawURL, token)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,12 +35,56 @@ func (r fixedResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, erro
 	return r.addresses, r.err
 }
 
-func TestNewClientAllowsPrivateServiceNameButRejectsPublicLiteral(t *testing.T) {
-	if _, err := NewClient("http://controller:8080", "token"); err != nil {
+func TestNativeClientRequiresAuthenticatedTransport(t *testing.T) {
+	if _, err := NewClient("http://controller:8080", "token"); err == nil {
+		t.Fatal("native client accepted private-network plaintext HTTP")
+	}
+	if _, err := NewClient("http://127.0.0.1:8080", "token"); err == nil {
+		t.Fatal("native client accepted loopback plaintext HTTP")
+	}
+	if _, err := NewClient("unix:///run/witshield-controller/agent.sock", "token"); err != nil {
+		t.Fatalf("installation-owned Unix socket: %v", err)
+	}
+}
+
+func TestObserverClientAllowsPrivateServiceNameButRejectsPublicLiteral(t *testing.T) {
+	if _, err := NewObserverClient("http://controller:8080", "token"); err != nil {
 		t.Fatalf("private service name: %v", err)
 	}
-	if _, err := NewClient("http://8.8.8.8", "token"); err == nil {
+	if _, err := NewObserverClient("http://8.8.8.8", "token"); err == nil {
 		t.Fatal("public HTTP literal was accepted")
+	}
+}
+
+func TestNativeClientUsesUnixSocketTransport(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "witshield-agent-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "controller.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/v1/test" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})}
+	go server.Serve(listener)
+	defer server.Close()
+	client, err := NewClient("unix://"+path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output struct {
+		OK bool `json:"ok"`
+	}
+	if err = client.doUnauthenticated(context.Background(), http.MethodGet, "/agent/v1/test", nil, &output); err != nil || !output.OK {
+		t.Fatalf("output=%+v err=%v", output, err)
 	}
 }
 

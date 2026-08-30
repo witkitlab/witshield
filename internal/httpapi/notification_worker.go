@@ -60,18 +60,21 @@ func (s *Server) runNotificationChannel(ctx context.Context, channel domain.Noti
 		now := s.now().UTC()
 		delivery, err := s.store.ClaimNotificationDelivery(ctx, channel, now, notificationDeliveryLease)
 		if errors.Is(err, store.ErrNotFound) {
+			s.MarkWorkerHealth("notification_"+string(channel), nil)
 			if !waitForNotificationWork(ctx, wake) {
 				return
 			}
 			continue
 		}
 		if err != nil {
+			s.MarkWorkerHealth("notification_"+string(channel), err)
 			s.log.Error("claim notification outbox delivery", "channel", channel, "error", "notification outbox unavailable")
 			if !waitForNotificationWork(ctx, wake) {
 				return
 			}
 			continue
 		}
+		s.MarkWorkerHealth("notification_"+string(channel), nil)
 		s.deliverNotification(ctx, delivery)
 	}
 }
