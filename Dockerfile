@@ -5,7 +5,7 @@
 # The Web output is architecture-independent.  Build and test it once on the
 # native builder instead of re-running browser-like tests under QEMU for every
 # target architecture.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS web-build
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS web-build
 ARG COMMIT=unknown
 ENV WITSHIELD_BUILD_ID=${COMMIT}
 WORKDIR /src/web
