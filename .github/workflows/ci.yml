@@ -164,8 +164,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - name: Set up QEMU for the arm64 smoke test
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: false
@@ -184,3 +188,35 @@ jobs:
             echo 'Docker observer image must not contain the privileged helper'
             exit 1
           fi
+      # Load each architecture separately; the default Docker store cannot load a multi-platform index.
+      - name: Build the arm64 observer image without publishing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: witshield:arm64-test
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=ci
+      - name: Smoke-test the arm64 controller and SQLite under QEMU
+        run: |
+          test "$(docker image inspect witshield:arm64-test --format '{{.Architecture}}')" = 'arm64'
+          test "$(docker image inspect witshield:arm64-test --format '{{.Config.User}}')" = '65532:65532'
+          docker run --rm --platform linux/arm64 --entrypoint /usr/local/bin/witshield-agent witshield:arm64-test --version
+          trap 'docker rm --force witshield-arm64-ci >/dev/null 2>&1 || true' EXIT
+          docker run --detach --platform linux/arm64 --name witshield-arm64-ci \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /data/controller:rw,noexec,nosuid,uid=65532,gid=65532,mode=0700 \
+            --publish 127.0.0.1:18080:8080 witshield:arm64-test
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:18080/readyz; then
+              exit 0
+            fi
+            printf 'arm64 readiness attempt %s/30 failed\n' "$attempt"
+            sleep 2
+          done
+          docker logs witshield-arm64-ci
+          exit 1
