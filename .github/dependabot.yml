@@ -23,6 +23,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # init, autobuild and analyze share versioned configuration during a job.
+      codeql:
+        patterns: ["github/codeql-action/*"]
   - package-ecosystem: docker
     directory: /
     schedule:

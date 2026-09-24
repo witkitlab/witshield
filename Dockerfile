@@ -5,7 +5,7 @@
 # The Web output is architecture-independent.  Build and test it once on the
 # native builder instead of re-running browser-like tests under QEMU for every
 # target architecture.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS web-build
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS web-build
 ARG COMMIT=unknown
 ENV WITSHIELD_BUILD_ID=${COMMIT}
 WORKDIR /src/web
@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run typecheck && npm run test && npm run build:embedded
 
-FROM --platform=$BUILDPLATFORM golang:1.26.7-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-build
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
