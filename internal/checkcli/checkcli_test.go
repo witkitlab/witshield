@@ -224,3 +224,29 @@ func TestAIPromptCarriesOnlySummaries(t *testing.T) {
 		t.Fatalf("unexpected prompt: %#v", m)
 	}
 }
+
+func TestRootPolicyAdviceDoesNotClaimPasswordsWorkWhenGloballyDisabled(t *testing.T) {
+	// The scanner emits this finding for PermitRootLogin yes independently
+	// of PasswordAuthentication; a key-only host retains the same finding.
+	finding := domain.Finding{
+		Severity: domain.SeverityHigh, Category: "ssh", Title: "Direct root SSH login is enabled",
+		Evidence: "PermitRootLogin yes; PasswordAuthentication no",
+	}
+	r := report(80, finding)
+	var terminal bytes.Buffer
+	Render(&terminal, r, Host{IsRoot: true}, false)
+	j := ToJSON(r)
+	prompt := AIPrompt(r)
+	for _, text := range []string{terminal.String(), j.Findings[0].TitleZH + j.Findings[0].Why, prompt[1].Content} {
+		if !strings.Contains(text, "SSH 的 root 登录策略过宽") || strings.Contains(text, "允许 root 直接用密码登录 SSH") {
+			t.Fatalf("root policy advice misstates the available authentication method: %s", text)
+		}
+	}
+	a := AdviceFor(finding)
+	if !strings.Contains(a.Why, "当前允许的认证方式") || !strings.Contains(a.Why, "还取决于全局认证配置") || !strings.Contains(strings.Join(a.Manual, "\n"), "确认普通账号能登录并 sudo 后") {
+		t.Fatalf("root policy advice omits authentication or access prerequisites: %#v", a)
+	}
+	if r.Score != 80 || j.Score != 80 || j.Findings[0].Severity != domain.SeverityHigh || j.Findings[0].Title != finding.Title || j.Findings[0].Fixable {
+		t.Fatalf("presentation correction changed the scanner result: %#v", j)
+	}
+}

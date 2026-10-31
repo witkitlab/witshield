@@ -39,11 +39,11 @@ var catalog = map[string]Advice{
 		Fix: FixSSHPassword,
 	},
 	"Direct root SSH login is enabled": {
-		Title: "允许 root 直接用密码登录 SSH",
-		Why:   "root 是攻击者最先猜的用户名，一旦登录成功就拥有全部权限。建议用普通用户登录，需要时再 sudo。",
+		Title: "SSH 的 root 登录策略过宽",
+		Why:   "PermitRootLogin yes 允许 root 使用服务器当前允许的认证方式直接登录。密码认证是否可用还取决于全局认证配置。root 凭据一旦泄露，影响就是整台服务器。建议用普通账号登录，需要时再 sudo，并至少限制 root 的密码登录。",
 		Manual: []string{
 			"先建一个普通用户并加入 sudo 组：sudo adduser 用户名 && sudo usermod -aG sudo 用户名",
-			"编辑 /etc/ssh/sshd_config，设置 PermitRootLogin prohibit-password（或 no）",
+			"确认普通账号能登录并 sudo 后，编辑 /etc/ssh/sshd_config，设置 PermitRootLogin prohibit-password（禁止 root 密码登录，保留密钥登录）或 no（关闭 root 直接登录）",
 			"sudo sshd -t && sudo systemctl reload ssh",
 		},
 	},
