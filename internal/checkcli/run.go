@@ -42,6 +42,7 @@ type runDependencies struct {
 	runner      action.Runner
 	scan        func(context.Context) (domain.Report, func(context.Context) ([]string, error), error)
 	buildEngine func(string) (*action.Engine, error)
+	sshFailures func(context.Context) SSHFailures
 }
 
 // Run executes `witshield check`: 0 for score >=60, 1 below, 2 on errors.
@@ -51,6 +52,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		readOS:      func() ([]byte, error) { return os.ReadFile("/etc/os-release") },
 		runner:      action.NewExecRunner(systemctlPath),
 		buildEngine: buildEngine,
+		sshFailures: CollectSSHFailures,
 		scan: func(ctx context.Context) (domain.Report, func(context.Context) ([]string, error), error) {
 			host, err := scanner.NewSystemHost("/")
 			if err != nil {
@@ -113,6 +115,9 @@ func runWithDependencies(ctx context.Context, args []string, stdin io.Reader, st
 		return 2
 	}
 
+	if deps.sshFailures != nil {
+		h.SSHFailures = deps.sshFailures(ctx)
+	}
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -127,7 +132,7 @@ func runWithDependencies(ctx context.Context, args []string, stdin io.Reader, st
 			fmt.Fprintln(stderr, aiHelp)
 		} else {
 			fmt.Fprintln(stderr, "正在请模型解读……")
-			text, err := Explain(ctx, cfg, report)
+			text, err := Explain(ctx, cfg, report, h.SSHFailures)
 			if err != nil {
 				fmt.Fprintf(stderr, "模型调用失败：%v\n", err)
 			} else {
