@@ -59,19 +59,21 @@ for test_script in scripts/tests/*.sh; do "$test_script"; done
 
 本次真实签名发布、公开资产的 SHA-256、Sigstore 身份和 provenance 验证，以及 Ubuntu/Debian、amd64/arm64 真实主机矩阵仍待完成，不得宣称已验收。实机验证出现失败时应阻断发布，保留证据并排查，不能用实验性标识或 CI 通过代替修复和复验。
 
-Gitee 仓库和发布令牌尚未配置，镜像实测暂缓。只有将仓库变量 `GITEE_MIRROR_ENABLED` 设为 `true` 才调度镜像任务；默认直接跳过，不进入 `release` Environment 的审批，也不影响 GitHub 发布。将来启用前，先创建 Gitee 的 `witkitlab/witshield` 仓库及 `main` 分支，在 GitHub 的 `release` Environment 配置仅有目标仓库权限的 `GITEE_TOKEN` secret，再把上述仓库变量设为 `true`。启用后仍会检查令牌，缺少可用令牌时跳过上传并记录摘要。
+Gitee 仓库和发布令牌尚未配置，镜像实测暂缓。只有将仓库变量 `GITEE_MIRROR_ENABLED` 设为 `true` 才调度镜像任务；默认直接跳过，不进入 `release` Environment，也不影响 GitHub 发布。将来启用前，先创建 Gitee 的 `witkitlab/witshield` 仓库及 `main` 分支，在 GitHub 的 `release` Environment 配置仅有目标仓库权限的 `GITEE_TOKEN` secret，再把上述仓库变量设为 `true`。启用后仍会检查令牌，缺少可用令牌时跳过上传并记录摘要。
 
 DeepSeek 因缺少获授权的 API Key 尚未实测，配置示例不代表已验证可用；它是可选解读服务，不作为本地体检的依赖。
 
 ## 版本流程
+
+2026-10-31 规则变更：按用户要求，常规发布在 preflight 全部通过后自动继续，不再要求额外人工审批；确有必要的特殊风险操作按用户要求单独确认。`release` Environment 继续用于发布权限和 secrets 隔离，签名标签、主分支来源、完整 CI、SHA-256、Sigstore、provenance 与失败阻断均保留。此变更不影响 Controller 的动作授权或 CLI `--fix` 的逐项确认。
 
 1. 合并经 CI 和审查通过的变更；
 2. 更新 README 状态、兼容性和迁移说明；
 3. 创建受保护的、带签名的 annotated 语义化版本标签；
 4. 推送标签触发 Release workflow；
 5. 只读 `preflight` job 验证标签、`GITHUB_SHA` 与 `main` 的关系，重新运行完整测试，从标签源码构建归档、SBOM 和未发布的 Docker 烟测镜像；
-6. 只有 preflight 全部通过后，`publish` job 才进入 `release` Environment 等待人工批准；
-7. 批准后重新核对源码身份，下载 preflight 的短期制品，再登录 GHCR；
+6. 只有 preflight 全部通过后，`publish` job 才进入 `release` Environment 自动继续；
+7. 随后重新核对源码身份，下载 preflight 的短期制品，再登录 GHCR；
 8. 多架构镜像先按不可变 digest 推送且不附加公开版本标签，随后用 GitHub OIDC 和 Cosign 完成 keyless 签名；
 9. 把镜像 digest 写入 `CONTAINER_IMAGE.txt`，为安装器、归档、SBOM 和 digest 清单生成统一校验表并签名；
 10. 生成并存储 release archive 的 build provenance；
@@ -93,21 +95,20 @@ workflow 使用 keyless 制品签名，不保存长期 Cosign 私钥。只有 `p
 
 仓库维护者必须在 GitHub 设置中额外完成以下一次性保护；workflow 文件本身不能代替仓库规则：
 
-- 建立名为 `release` 的 Environment，配置至少一名 required reviewer，并禁止管理员绕过；
+- 保留名为 `release` 的 Environment 隔离发布权限和 secrets，移除常规发布的 required reviewers；
 - 用 repository ruleset 保护 `v*` tag，只允许受控发布角色创建或更新；
 - 保护发布来源分支并要求 CI、代码审查和线性历史；
 - 启用 GitHub Immutable Releases，使已发布资产与关联 tag 无法被替换；
 - 确认 `witshield` Container package 为 Public；workflow 会在公开 Release 前以匿名身份复验，私有包会中止发布；
-- 限制 Actions workflow 修改权限，并定期复核具有仓库写权限和 Environment 审批权的人员。
+- 限制 Actions workflow 修改权限，并定期复核具有仓库写权限和 Environment 管理权限的人员。
 
 发布者还必须在 GitHub 账号中登记 Git/GPG/SSH 签名公钥，并用对应私钥创建 annotated tag；这与 Cosign keyless 制品签名是两条独立信任链。workflow 不会创建、注册或托管维护者的长期签名密钥。
 
-若这些设置尚未在实际仓库启用，不得宣称发布“需要维护者批准”或“受标签保护”；应先配置并用测试标签验证规则。
+标签和发布保护以实际仓库设置为准；若尚未启用，不得宣称发布“受标签保护”，应先配置并用测试标签验证规则。`release` Environment 不作为常规发布的人工审批关卡。
 
 ### 发布失败恢复
 
 - preflight 失败：修复代码并重新走合并流程；不要移动或复用已经推送的版本 tag，应提升版本号。
-- Environment 未批准：不会登录 GHCR，也不会产生 Release 或制品签名，可直接取消 workflow。
 - publish 在草稿创建前失败：可能留下无版本标签的不可变镜像 digest/签名，不会成为 `latest`；保留日志后按新版本重新发布。
 - publish 在草稿阶段失败：workflow 会删除由本次运行创建的草稿；仍需人工确认 GHCR 没有同名版本标签。
 - 最终提升阶段失败：停止重跑，先比较远端标签 digest、Release 状态和本次日志；不得覆盖已有版本标签。
