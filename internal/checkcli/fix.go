@@ -34,6 +34,8 @@ type Fixer struct {
 	FullHelperActive bool
 	// SSHUnavailable disables repairs when no SSH service was found.
 	SSHUnavailable bool
+	// RecoverSSH restores a protected journal when an uncertain receipt lacks state.
+	RecoverSSH func(context.Context, string, io.Writer) error
 	// SSHConfirmWindow is how long the user has to prove a new SSH login works.
 	SSHConfirmWindow time.Duration
 	// PendingUpdates lists upgradable packages (apt-get -s upgrade).
@@ -128,6 +130,10 @@ func (x *Fixer) fixSSH(ctx context.Context) bool {
 	x.printSteps(receipt)
 	if !receipt.Success {
 		x.printFailure(receipt)
+		if len(receipt.State) > 0 || receipt.ConfirmBy != nil || receipt.Indeterminate {
+			fmt.Fprintln(x.Out, "  修改没有完成，正在恢复原来的 SSH 配置……")
+			x.restoreSSH(id, params, receipt.State)
+		}
 		return false
 	}
 	if receipt.ConfirmBy == nil {
@@ -158,15 +164,32 @@ func (x *Fixer) fixSSH(ctx context.Context) bool {
 	if err != nil {
 		fmt.Fprintln(x.Out, "  没有收到确认。")
 	}
+	x.restoreSSH(id, params, receipt.State)
+	return false
+}
+
+func (x *Fixer) restoreSSH(id string, params, state json.RawMessage) {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	r := x.Engine.Run(rollbackCtx, action.Request{ActionID: id, Actor: "witshield-cli", Type: action.TypeSSHPasswordHardening, Operation: action.OperationRollback, Parameters: params, State: receipt.State})
-	if r.Success {
-		fmt.Fprintln(x.Out, "  已恢复原来的 SSH 配置，密码登录仍然可用。")
+	var restoreErr string
+	if len(state) > 0 {
+		r := x.Engine.Run(rollbackCtx, action.Request{ActionID: id, Actor: "witshield-cli", Type: action.TypeSSHPasswordHardening, Operation: action.OperationRollback, Parameters: params, State: state})
+		if r.Success {
+			fmt.Fprintln(x.Out, "  已恢复原来的 SSH 配置，密码登录仍然可用。")
+			return
+		}
+		restoreErr = r.Error
+	} else if x.RecoverSSH != nil {
+		if err := x.RecoverSSH(rollbackCtx, id, x.Out); err == nil {
+			fmt.Fprintln(x.Out, "  已恢复原来的 SSH 配置，密码登录仍然可用。")
+			return
+		} else {
+			restoreErr = err.Error()
+		}
 	} else {
-		fmt.Fprintf(x.Out, "  主动恢复没有成功（%s）。原配置的备份记录在 /var/lib/witshield-cli/ssh-rollbacks，下次运行 witshield 时会继续恢复。\n", r.Error)
+		restoreErr = "没有可验证的恢复状态"
 	}
-	return false
+	fmt.Fprintf(x.Out, "  主动恢复没有成功（%s）。请立即手动检查 SSH；保留在 /var/lib/witshield-cli/ssh-rollbacks 的备份记录会在下次运行 witshield 时继续恢复。\n", restoreErr)
 }
 
 func (x *Fixer) fixShadow(ctx context.Context) bool {

@@ -213,6 +213,9 @@ type recoveryRunner struct {
 }
 
 func (r *recoveryRunner) Run(ctx context.Context, c action.Command) (action.CommandResult, error) {
+	if err := ctx.Err(); err != nil {
+		return action.CommandResult{}, err
+	}
 	if c.Path == systemctlPath && len(c.Args) > 0 && c.Args[0] == "show" {
 		return r.systemRunner.Run(ctx, c)
 	}
@@ -255,7 +258,9 @@ func TestStartupRecoveryCompletesBeforeReturning(t *testing.T) {
 		t.Fatal("fixture not changed")
 	}
 	var out bytes.Buffer
-	if err := recoverSSHJournals(context.Background(), &out, runner, cfg); err != nil {
+	startupCtx, startupCancel := context.WithCancel(context.Background())
+	startupCancel()
+	if err := recoverSSHJournals(startupCtx, &out, runner, cfg); err != nil {
 		t.Fatal(err)
 	}
 	restored, _ := os.ReadFile(configPath)
