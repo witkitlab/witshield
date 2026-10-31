@@ -226,6 +226,7 @@ jobs:
             cp packaging/systemd/*.service "$stage/packaging/systemd/"
             cp scripts/uninstall.sh "$stage/scripts/"
             cp docs/*.md "$stage/docs/"
+            if [[ -d docs/demo ]]; then cp -a docs/demo "$stage/docs/"; fi
             cp docker/README.md "$stage/docker/"
             cp LICENSE README.md README.en.md "$stage/"
             archive="dist/witshield_${version_number}_linux_${arch}.tar.gz"
