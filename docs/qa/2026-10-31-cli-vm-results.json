@@ -1,0 +1,463 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-31",
+  "scope": "Disposable full-system QEMU TCG guests, real guest kernel/systemd/sshd/APT; source-built development binaries, not signed release assets or native cloud-host installation.",
+  "caseTiming": "Whole scenario including SSH connection, CLI execution and reconnect verification; not signal-to-restoration latency.",
+  "records": [
+    {
+      "id": "debian12-amd64",
+      "accelerator": "TCG",
+      "memoryMiB": 512,
+      "binarySHA256": "c6175de872ee349ac970d95e0e5ea0d4a6adf602ca4d222ffca5cca33757ff55",
+      "cases": {
+        "confirm": {
+          "status": "PASS",
+          "seconds": 6.32
+        },
+        "timeout30": {
+          "status": "PASS",
+          "seconds": 29.04
+        },
+        "sigint": {
+          "status": "PASS",
+          "seconds": 7.59
+        },
+        "kill9Version": {
+          "status": "PASS",
+          "seconds": 9.29
+        },
+        "noAuthorizedKeys": {
+          "status": "PASS",
+          "seconds": 3.52
+        },
+        "shadow": {
+          "status": "PASS",
+          "seconds": 3.0
+        },
+        "nonrootCheck": {
+          "status": "PASS",
+          "score": 76,
+          "coveragePercent": 87
+        },
+        "rootCheck": {
+          "status": "PASS",
+          "score": 76,
+          "coveragePercent": 87
+        }
+      },
+      "officialImage": {
+        "url": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+        "manifest": "https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS",
+        "algorithm": "sha512",
+        "digest": "0464b5d4ae3aa4f658468d88da83af7857b71548b30d46dcb6282770955a747fb95a983476db90d25afd0653af607224c7ebd05122ab71faa106fd712aaad652",
+        "bytes": 349831168,
+        "status": "PASS"
+      },
+      "guestMetadata": [
+        "Debian GNU/Linux 12 (bookworm)",
+        "x86_64",
+        "6.1.0-54-cloud-amd64",
+        "systemd 252 (252.39-1~deb12u2)"
+      ],
+      "fixtureBaselinePasswordMethod": {
+        "status": "PASS",
+        "method": "password"
+      },
+      "binaryVCSRevision": "dfa093f35f7d569071ef83fa58907c3b0597e956",
+      "binaryVCSModified": false,
+      "apt": {
+        "status": "PASS",
+        "cases": {
+          "normal": {
+            "exitCode": 0,
+            "seconds": 9.307,
+            "upgradeApprovals": 1,
+            "successMessage": true,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {
+              "witshield-smoke-fixture:amd64": {
+                "before": {
+                  "version": "1.0",
+                  "status": "ii "
+                },
+                "after": {
+                  "version": "1.1",
+                  "status": "ii "
+                }
+              }
+            },
+            "status": "PASS"
+          },
+          "lock": {
+            "exitCode": 0,
+            "seconds": 4.817,
+            "upgradeApprovals": 1,
+            "successMessage": false,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {},
+            "realPOSIXLockHeldThroughoutCLI": true,
+            "status": "PASS"
+          }
+        },
+        "temporaryAPTDropinRestored": true,
+        "fixturePurged": true,
+        "finalPackageChangesFromOriginal": {}
+      }
+    },
+    {
+      "id": "ubuntu2404-amd64",
+      "accelerator": "TCG",
+      "memoryMiB": 512,
+      "binarySHA256": "c6175de872ee349ac970d95e0e5ea0d4a6adf602ca4d222ffca5cca33757ff55",
+      "cases": {
+        "nonrootCheck": {
+          "status": "PASS",
+          "score": 79,
+          "coveragePercent": 87
+        },
+        "rootCheck": {
+          "status": "PASS",
+          "score": 61,
+          "coveragePercent": 100
+        },
+        "confirm": {
+          "status": "PASS",
+          "seconds": 17.06
+        },
+        "timeout30": {
+          "status": "PASS",
+          "seconds": 32.86
+        },
+        "sigint": {
+          "status": "PASS",
+          "seconds": 12.16
+        },
+        "kill9Version": {
+          "status": "PASS",
+          "seconds": 18.79
+        },
+        "noAuthorizedKeys": {
+          "status": "PASS",
+          "seconds": 7.87,
+          "probeBudgetSeconds": 20
+        },
+        "shadow": {
+          "status": "PASS",
+          "seconds": 6.44
+        }
+      },
+      "officialImage": {
+        "url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img",
+        "manifest": "https://cloud-images.ubuntu.com/noble/current/SHA256SUMS",
+        "algorithm": "sha256",
+        "digest": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
+        "bytes": 621284352,
+        "status": "PASS"
+      },
+      "guestMetadata": [
+        "Ubuntu 24.04.5 LTS",
+        "x86_64",
+        "6.8.0-147-generic",
+        "systemd",
+        "systemd 255 (255.4-1ubuntu8.18)",
+        "witshield v0.4.0-dev (commit unknown, built unknown)"
+      ],
+      "fixtureBaselinePasswordMethod": {
+        "status": "PASS",
+        "method": "password"
+      },
+      "binaryVCSRevision": "dfa093f35f7d569071ef83fa58907c3b0597e956",
+      "binaryVCSModified": false,
+      "apt": {
+        "status": "PASS",
+        "cases": {
+          "normal": {
+            "exitCode": 1,
+            "seconds": 23.814,
+            "upgradeApprovals": 1,
+            "successMessage": true,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {
+              "witshield-smoke-fixture:amd64": {
+                "before": {
+                  "version": "1.0",
+                  "status": "ii "
+                },
+                "after": {
+                  "version": "1.1",
+                  "status": "ii "
+                }
+              }
+            },
+            "status": "PASS"
+          },
+          "lock": {
+            "exitCode": 1,
+            "seconds": 7.094,
+            "upgradeApprovals": 1,
+            "successMessage": false,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {},
+            "realPOSIXLockHeldThroughoutCLI": true,
+            "status": "PASS"
+          }
+        },
+        "temporaryAPTDropinRestored": true,
+        "fixturePurged": true,
+        "finalPackageChangesFromOriginal": {}
+      }
+    },
+    {
+      "id": "ubuntu2204-amd64",
+      "accelerator": "TCG",
+      "memoryMiB": 1024,
+      "binarySHA256": "c6175de872ee349ac970d95e0e5ea0d4a6adf602ca4d222ffca5cca33757ff55",
+      "cases": {
+        "nonrootCheck": {
+          "status": "PASS",
+          "score": 75,
+          "coveragePercent": 75
+        },
+        "rootCheck": {
+          "status": "PASS",
+          "score": 61,
+          "coveragePercent": 87
+        },
+        "confirm": {
+          "status": "PASS",
+          "seconds": 10.92
+        },
+        "timeout30": {
+          "status": "PASS",
+          "seconds": 33.24
+        },
+        "sigint": {
+          "status": "PASS",
+          "seconds": 10.97
+        },
+        "kill9Version": {
+          "status": "PASS",
+          "seconds": 17.39
+        },
+        "noAuthorizedKeys": {
+          "status": "PASS",
+          "seconds": 7.2
+        },
+        "shadow": {
+          "status": "PASS",
+          "seconds": 6.59
+        }
+      },
+      "officialImage": {
+        "url": "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img",
+        "manifest": "https://cloud-images.ubuntu.com/jammy/current/SHA256SUMS",
+        "algorithm": "sha256",
+        "digest": "58be26aa7452f3005a4f7370a43928bfb33a7f35a77a8f3b264bf00266a17ca0",
+        "bytes": 728218624,
+        "status": "PASS"
+      },
+      "guestMetadata": [
+        "Ubuntu 22.04.5 LTS",
+        "x86_64",
+        "5.15.0-198-generic",
+        "systemd",
+        "systemd 249 (249.11-0ubuntu3.23)",
+        "witshield v0.4.0-dev (commit unknown, built unknown)"
+      ],
+      "fixtureBaselinePasswordMethod": {
+        "status": "PASS",
+        "method": "password"
+      },
+      "binaryVCSRevision": "dfa093f35f7d569071ef83fa58907c3b0597e956",
+      "binaryVCSModified": false,
+      "apt": {
+        "status": "PASS",
+        "cases": {
+          "normal": {
+            "exitCode": 1,
+            "seconds": 18.569,
+            "upgradeApprovals": 1,
+            "successMessage": true,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {
+              "witshield-smoke-fixture:amd64": {
+                "before": {
+                  "version": "1.0",
+                  "status": "ii "
+                },
+                "after": {
+                  "version": "1.1",
+                  "status": "ii "
+                }
+              }
+            },
+            "status": "PASS"
+          },
+          "lock": {
+            "exitCode": 1,
+            "seconds": 6.273,
+            "upgradeApprovals": 1,
+            "successMessage": false,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {},
+            "realPOSIXLockHeldThroughoutCLI": true,
+            "status": "PASS"
+          }
+        },
+        "temporaryAPTDropinRestored": true,
+        "fixturePurged": true,
+        "finalPackageChangesFromOriginal": {}
+      }
+    },
+    {
+      "id": "debian12-arm64",
+      "accelerator": "TCG",
+      "memoryMiB": 1024,
+      "binarySHA256": "8a8bc171c004e57ec5b775a2e72467451ac84c18a7cd15e4bf49aff0b7ced0d2",
+      "cases": {
+        "nonrootCheck": {
+          "status": "PASS",
+          "score": 76,
+          "coveragePercent": 87
+        },
+        "rootCheck": {
+          "status": "PASS",
+          "score": 76,
+          "coveragePercent": 87
+        },
+        "confirm": {
+          "status": "PASS",
+          "seconds": 7.78
+        },
+        "timeout30": {
+          "status": "PASS",
+          "seconds": 29.94
+        },
+        "sigint": {
+          "status": "PASS",
+          "seconds": 8.69
+        },
+        "kill9Version": {
+          "status": "PASS",
+          "seconds": 12.13
+        },
+        "noAuthorizedKeys": {
+          "status": "PASS",
+          "seconds": 3.68
+        },
+        "shadow": {
+          "status": "PASS",
+          "seconds": 3.49
+        }
+      },
+      "officialImage": {
+        "url": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2",
+        "manifest": "https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS",
+        "algorithm": "sha512",
+        "digest": "f42866fe22b4baf9f0ed4f81d620064f2a4b86b18b92bfe3aaaa40babf6819d39cbf0caaaad13f4ae3e7c9f82cbd78b0c8cabadd8bc737ce13578e61fa86970c",
+        "bytes": 346030080,
+        "status": "PASS"
+      },
+      "guestMetadata": [
+        "Debian GNU/Linux 12 (bookworm)",
+        "aarch64",
+        "6.1.0-54-cloud-arm64",
+        "systemd",
+        "systemd 252 (252.39-1~deb12u2)",
+        "witshield dev (commit unknown, built unknown)"
+      ],
+      "fixtureBaselinePasswordMethod": {
+        "status": "PASS",
+        "method": "password"
+      },
+      "binaryVCSRevision": "4f8b998459dd6dd2d6a270b35e8add7e94d22ec4",
+      "binaryVCSModified": false,
+      "apt": {
+        "status": "PASS",
+        "cases": {
+          "normal": {
+            "exitCode": 0,
+            "seconds": 13.654,
+            "upgradeApprovals": 1,
+            "successMessage": true,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {
+              "witshield-smoke-fixture:arm64": {
+                "before": {
+                  "version": "1.0",
+                  "status": "ii "
+                },
+                "after": {
+                  "version": "1.1",
+                  "status": "ii "
+                }
+              }
+            },
+            "status": "PASS"
+          },
+          "lock": {
+            "exitCode": 0,
+            "seconds": 7.168,
+            "upgradeApprovals": 1,
+            "successMessage": false,
+            "note": "CLI exit code describes the pre-repair score, not the repair result.",
+            "packageChanges": {},
+            "realPOSIXLockHeldThroughoutCLI": true,
+            "status": "PASS"
+          }
+        },
+        "temporaryAPTDropinRestored": true,
+        "fixturePurged": true,
+        "finalPackageChangesFromOriginal": {}
+      }
+    }
+  ],
+  "builds": {
+    "amd64": {
+      "binarySHA256": "c6175de872ee349ac970d95e0e5ea0d4a6adf602ca4d222ffca5cca33757ff55",
+      "binaryVCSRevision": "dfa093f35f7d569071ef83fa58907c3b0597e956",
+      "binaryVCSModified": false,
+      "goVersion": "go1.27.3",
+      "GOOS": "linux",
+      "GOARCH": "amd64",
+      "CGO_ENABLED": "0",
+      "evidence": "actual go version -m for the tested binary"
+    },
+    "arm64": {
+      "binarySHA256": "8a8bc171c004e57ec5b775a2e72467451ac84c18a7cd15e4bf49aff0b7ced0d2",
+      "binaryVCSRevision": "4f8b998459dd6dd2d6a270b35e8add7e94d22ec4",
+      "binaryVCSModified": false,
+      "goVersion": "go1.27.3",
+      "GOOS": "linux",
+      "GOARCH": "arm64",
+      "CGO_ENABLED": "0",
+      "evidence": "actual go version -m for the tested binary"
+    }
+  },
+  "discardedAttempts": [
+    {
+      "id": "debian12-amd64-initial-password-probe",
+      "status": "INVALID",
+      "reason": "Askpass helper on noexec fixture filesystem; password-dependent conclusions discarded and full corrected rerun used."
+    },
+    {
+      "id": "ubuntu2404-amd64-initial-no-key-probe",
+      "status": "BLOCKED",
+      "reason": "External probe exceeded 8-second budget; same guest revalidated with bounded 20-second probe, unchanged authentication assertions and product settings."
+    },
+    {
+      "id": "debian12-arm64-initial-transfer",
+      "status": "BLOCKED",
+      "reason": "Initial SCP returned nonzero before product execution; precise cause unknown because initial stderr was not retained. One controlled retry succeeded; installed binary hash, owner and mode verified before all product cases."
+    }
+  ],
+  "notCovered": [
+    "Default 180-second full wait",
+    "Native cloud-host installation/kernel/network topology and native ARM hardware performance",
+    "Real vendor package maintainer-script effects or rollback",
+    "Real-machine dependency-add/remove counterexamples",
+    "Public signed release verification and post-release full-stack host smoke",
+    "Live DeepSeek API",
+    "Live Gitee mirror and domestic timing"
+  ]
+}

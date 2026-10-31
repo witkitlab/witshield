@@ -6,14 +6,14 @@
 
 勾选代表执行者已经实际观察到预期结果。未执行写 `NOT RUN`，执行后写 `PASS` 或 `FAIL`，并记录版本、架构、耗时和脱敏后的证据。模拟 runner、单元测试、Docker 只读体检都不能代替真实 SSH 重连和虚拟机修复演练。
 
-初始登记日期为 2026-10-31。本文件交付时，下表所有整机项目均为 `NOT RUN`，不代表任何平台已经验收通过。执行后把填写完整的记录贴到发布 PR；发现失败先停止发布并保留现场。
+登记日期为 2026-10-31。本轮由 Agent 操作的一次性全系统虚拟机演练见[验证记录](qa/2026-10-31-cli-phase1.md)，与下面供维护者复用的手工勾选步骤分开记录。QEMU 客体内核和真实 systemd/SSH 结果不等于原生云主机、真实签名制品安装或全部手工清单已验收；未执行的部分继续写 `NOT RUN`。执行后把填写完整的记录贴到发布 PR；发现失败先停止发布并保留现场。
 
 | 环境 | 非 root / root 体检 | SSH 四种恢复路径及无公钥 | shadow | APT 正常 / 锁冲突 / 包集合 | 证据链接、执行者、日期 |
 | --- | --- | --- | --- | --- | --- |
-| Ubuntu 22.04 x86_64 | NOT RUN | NOT RUN | NOT RUN | NOT RUN | 待提供干净虚拟机 |
-| Ubuntu 24.04 x86_64 | NOT RUN | NOT RUN | NOT RUN | NOT RUN | 待提供干净虚拟机 |
-| Debian 12 x86_64 | NOT RUN | NOT RUN | NOT RUN | NOT RUN | 待提供干净虚拟机 |
-| 至少一台上述系统的 arm64 虚拟机，填写发行版 | NOT RUN | NOT RUN | NOT RUN | NOT RUN | 待提供原生 ARM64 虚拟机 |
+| Ubuntu 22.04.5 x86_64 | PASS | 确认 / 30 秒超时 / Ctrl-C / kill -9 后 root version 恢复 / 无公钥拒绝 PASS | PASS | 单包正常升级 / POSIX 锁冲突 PASS；变更依赖反例 NOT RUN | [Agent，2026-10-31，QEMU TCG](qa/2026-10-31-cli-phase1.md) |
+| Ubuntu 24.04.5 x86_64 | PASS | 确认 / 30 秒超时 / Ctrl-C / kill -9 后 root version 恢复 / 无公钥拒绝 PASS | PASS | 单包正常升级 / POSIX 锁冲突 PASS；变更依赖反例 NOT RUN | [Agent，2026-10-31，QEMU TCG](qa/2026-10-31-cli-phase1.md) |
+| Debian 12.15 x86_64 | PASS | 确认 / 30 秒超时 / Ctrl-C / kill -9 后 root version 恢复 / 无公钥拒绝 PASS | PASS | 单包正常升级 / POSIX 锁冲突 PASS；变更依赖反例 NOT RUN | [Agent，2026-10-31，QEMU TCG](qa/2026-10-31-cli-phase1.md) |
+| Debian 12 arm64 | PASS | 确认 / 30 秒超时 / Ctrl-C / kill -9 后 root version 恢复 / 无公钥拒绝 PASS | PASS | 单包正常升级 / POSIX 锁冲突 PASS；变更依赖反例 NOT RUN | [Agent，2026-10-31，QEMU TCG；原生硬件性能未测](qa/2026-10-31-cli-phase1.md) |
 
 | 跨环境项目 | 状态 | 证据链接、执行者、日期 |
 | --- | --- | --- |
