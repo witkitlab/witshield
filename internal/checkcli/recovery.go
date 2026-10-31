@@ -33,10 +33,20 @@ type recoveryJournal struct {
 // The existing typed playbook validates its protected journal again and owns
 // all SSH changes. The CLI never interprets snapshot content or executes it.
 func RecoverInterruptedSSH(ctx context.Context, out io.Writer) error {
+	return recoverSSH(ctx, "", out)
+}
+
+func recoverSSH(ctx context.Context, actionID string, out io.Writer) error {
 	if os.Geteuid() != 0 {
+		if actionID != "" {
+			return errors.New("恢复 SSH 修改需要 root 权限")
+		}
 		return nil
 	}
 	if _, err := os.Lstat(sshJournalDir); errors.Is(err, os.ErrNotExist) {
+		if actionID != "" {
+			return errors.New("没有找到受保护的 SSH 恢复日志，无法确认已恢复")
+		}
 		return nil
 	} else if err != nil {
 		return err
@@ -44,10 +54,10 @@ func RecoverInterruptedSSH(ctx context.Context, out io.Writer) error {
 	if err := privateRecoveryPath(StateDir, true); err != nil {
 		return err
 	}
-	return recoverSSHJournals(ctx, out, action.NewExecRunner(sshdPath, systemctlPath), action.SSHHardeningConfig{
+	return recoverSSHJournalsForAction(ctx, out, action.NewExecRunner(sshdPath, systemctlPath), action.SSHHardeningConfig{
 		SSHDPath: sshdPath, SystemctlPath: systemctlPath, ConfigPath: "/etc/ssh/sshd_config", JournalDir: sshJournalDir,
 		DefaultRollbackDelay: 3 * time.Minute,
-	})
+	}, actionID)
 }
 
 func privateRecoveryPath(path string, directory bool) error {
@@ -145,11 +155,33 @@ func recoveryParameters(digest string) (json.RawMessage, error) {
 }
 
 func recoverSSHJournals(ctx context.Context, out io.Writer, runner action.Runner, config action.SSHHardeningConfig) error {
+	return recoverSSHJournalsForAction(ctx, out, runner, config, "")
+}
+
+func recoverSSHJournalsForAction(_ context.Context, out io.Writer, runner action.Runner, config action.SSHHardeningConfig, actionID string) error {
 	journals, err := readRecoveryJournals(config.JournalDir)
-	if err != nil || len(journals) == 0 {
+	if err != nil {
 		return err
 	}
-	service := detectSSHService(ctx, runner)
+	if actionID != "" {
+		found := false
+		for _, journal := range journals {
+			if journal.ActionID == actionID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("没有找到本次修改的受保护 SSH 恢复日志，无法确认已恢复")
+		}
+	}
+	if len(journals) == 0 {
+		return nil
+	}
+	// Discovery is part of the safety rollback and must survive Ctrl-C too.
+	recoveryCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	service := detectSSHService(recoveryCtx, runner)
 	if service == "" {
 		return errors.New("未找到 SSH 服务，无法自动恢复；请手动检查 SSH 配置和恢复日志")
 	}
@@ -159,17 +191,12 @@ func recoverSSHJournals(ctx context.Context, out io.Writer, runner action.Runner
 		return err
 	}
 	fmt.Fprintln(out, "发现上次中断的 SSH 修改，正在恢复原来的 SSH 配置……")
-	// Recovery must finish even when this invocation receives Ctrl-C.
-	recoveryCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
 	for _, journal := range journals {
 		params, _ := recoveryParameters(journal.ParametersDigest)
 		_, err := playbook.Rollback(recoveryCtx, action.Invocation{ActionID: journal.ActionID, Actor: "witshield-cli", Parameters: params, State: journal.State})
 		if err != nil {
-			// An already-expired timer may have completed the same rollback.
-			if _, statErr := os.Lstat(filepath.Join(config.JournalDir, "ssh-"+journal.ActionID+".json")); !errors.Is(statErr, os.ErrNotExist) {
-				return err
-			}
+			// File absence alone cannot prove that the live service was restored.
+			return err
 		}
 	}
 	fmt.Fprintln(out, "已恢复原来的 SSH 配置。")
