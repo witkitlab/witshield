@@ -90,6 +90,10 @@ func runWithDependencies(ctx context.Context, args []string, stdin io.Reader, st
 		fmt.Fprintln(stderr, "修复需要 root 权限，请用：sudo witshield check --fix")
 		return 2
 	}
+	if *useAI && *asJSON {
+		fmt.Fprintln(stderr, "--ai 的解读是文字输出，不能和 --json 一起用；请分别运行。")
+		return 2
+	}
 	if *fix && *asJSON {
 		fmt.Fprintln(stderr, "--fix 是交互式的，不能和 --json 一起用")
 		return 2
@@ -144,7 +148,7 @@ func runWithDependencies(ctx context.Context, args []string, stdin io.Reader, st
 		}
 		(&Fixer{
 			Engine: engine, In: NewLineReader(stdin), Out: stdout, Color: color,
-			FullHelperActive: fullHelperActive(ctx, deps.runner), SSHUnavailable: service == "",
+			FullHelperActive: fullHelperActive(ctx, deps.runner), SSHUnavailable: service == "", RecoverSSH: recoverSSH,
 			SSHConfirmWindow: time.Duration(*confirmSeconds) * time.Second,
 			PendingUpdates:   pendingUpdates,
 			ShadowGID:        ShadowGID, KeyLoginReady: KeyLoginReady("/"), Now: time.Now,
