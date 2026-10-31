@@ -36,6 +36,7 @@ unexpected=$(find "$tmp_dir" ! -type f ! -type d -print -quit)
 }
 
 required_files=(
+  witshield
   witshield-controller
   witshield-agent
   witshield-helper
@@ -58,6 +59,7 @@ for path in "${required_files[@]}"; do
   }
 done
 
+[[ -x "${tmp_dir}/witshield" ]] || { printf 'witshield is not executable\n' >&2; exit 1; }
 [[ -x "${tmp_dir}/witshield-controller" ]] || { printf 'controller is not executable\n' >&2; exit 1; }
 [[ -x "${tmp_dir}/witshield-agent" ]] || { printf 'agent is not executable\n' >&2; exit 1; }
 [[ -x "${tmp_dir}/witshield-helper" ]] || { printf 'helper is not executable\n' >&2; exit 1; }
