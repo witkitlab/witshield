@@ -62,7 +62,7 @@ IFS=';'
 exclusion_rules="${exclusions[*]}"
 unset IFS
 
-exec go run github.com/securego/gosec/v2/cmd/gosec@v2.28.0 \
+exec go run github.com/securego/gosec/v2/cmd/gosec@v2.30.0 \
   -exclude-generated \
   -nosec-require-justification \
   -nosec-require-rules \
