@@ -97,7 +97,7 @@ export TMPDIR="${test_dir}/work"
 reset_release() {
   local directory arch
   rm -rf -- "${test_dir}/http/"* "${test_dir}/installed/"*
-  for directory in mirror/v0.4.0 github/releases/download/v0.4.0; do
+  for directory in mirror/v0.4.0 github/releases/download/v0.4.0 gitee/releases/download/v0.4.0; do
     mkdir -p "${test_dir}/http/${directory}"
     for arch in amd64 arm64; do
       cp "${test_dir}/binary" "${test_dir}/http/${directory}/witshield_0.4.0_linux_${arch}"
@@ -107,6 +107,8 @@ reset_release() {
       sha256sum witshield_0.4.0_linux_amd64 witshield_0.4.0_linux_arm64 >SHA256SUMS
       printf 'valid-bundle\n' >SHA256SUMS.bundle
     )
+    cp "${test_dir}/cosign" "${test_dir}/http/${directory}/cosign-linux-amd64"
+    cp "${test_dir}/cosign" "${test_dir}/http/${directory}/cosign-linux-arm64"
   done
   mkdir -p "${test_dir}/http/cosign/v3.1.3" "${test_dir}/http/github/releases/tag"
   cp "${test_dir}/cosign" "${test_dir}/http/cosign/v3.1.3/cosign-linux-amd64"
@@ -114,6 +116,8 @@ reset_release() {
   touch "${test_dir}/http/github/releases/tag/v0.4.0"
   printf '302\n' >"${test_dir}/http/github-latest-status"
   printf '/github/releases/tag/v0.4.0\n' >"${test_dir}/http/github-latest-redirect"
+  printf '200\n' >"${test_dir}/http/gitee-latest-status"
+  printf '{"tag_name":"v0.4.0"}\n' >"${test_dir}/http/gitee-latest.json"
   TEST_MANIFEST_HASH=$(sha256sum "${test_dir}/http/mirror/v0.4.0/SHA256SUMS" | awk '{print $1}')
   TEST_BINARY_STATUS=0
   TEST_ARCH=x86_64
@@ -123,7 +127,23 @@ reset_release() {
 
 run_check() {
   local user="$1"
+  local -a runner=(bash "${test_dir}/check.sh")
   shift
+  if [[ "${TEST_PARSER:-auto}" != auto ]]; then
+    # Hide parser discovery only. The HTTP fixture still uses real Python,
+    # while the actual downloader parser and dependency handling run unchanged.
+    # shellcheck disable=SC2016
+    runner=(bash -c '
+      source "$1"
+      shift
+      command() {
+        if [[ "$1" == -v && "${2:-}" == python3 ]]; then return 1; fi
+        if [[ "$TEST_PARSER" == none && "$1" == -v && "${2:-}" == jq ]]; then return 1; fi
+        builtin command "$@"
+      }
+      main "$@"
+    ' check-fixture "${test_dir}/check.sh")
+  fi
   : >"$TEST_CURL_LOG"
   : >"$TEST_EXEC_LOG"
   : >"$TEST_EXEC_PATH"
@@ -131,9 +151,9 @@ run_check() {
   chmod 0666 "$TEST_CURL_LOG" "$TEST_EXEC_LOG" "$TEST_EXEC_PATH" "$TEST_COSIGN_LOG"
   set +e
   if [[ "$user" == nonroot ]] && ((EUID == 0)); then
-    output=$(setpriv --reuid 65534 --regid 65534 --clear-groups bash "${test_dir}/check.sh" "$@" 2>&1)
+    output=$(setpriv --reuid 65534 --regid 65534 --clear-groups "${runner[@]}" "$@" 2>&1)
   else
-    output=$(bash "${test_dir}/check.sh" "$@" 2>&1)
+    output=$("${runner[@]}" "$@" 2>&1)
   fi
   status=$?
   set -e
@@ -296,5 +316,86 @@ printf '/github/releases/download/v0.4.0/SHA256SUMS\n' >"${test_dir}/http/github
 run_check default
 assert_failure
 [[ "$output" == *'跳转地址异常'* ]] || fail 'unexpected latest redirect accepted'
+
+reset_release
+unset WITSHIELD_DOWNLOAD_BASE
+# GitHub is unavailable: mirror metadata, program and verifier must all remain
+# on Gitee. The signature stub still checks the exact GitHub publisher identity.
+printf '503\n' >"${test_dir}/http/github-latest-status"
+run_check default --mirror gitee --json
+((status == 0)) || fail "Gitee latest failed: $output"
+[[ "$(<"$TEST_CURL_LOG")" == *'https://gitee.com/api/v5/repos/witkitlab/witshield/releases/latest'* \
+  && "$(<"$TEST_CURL_LOG")" == *'https://gitee.com/witkitlab/witshield/releases/download/v0.4.0/cosign-linux-amd64'* \
+  && "$(<"$TEST_CURL_LOG")" != *'github.com'* ]] || fail 'Gitee mirror depended on GitHub transport'
+
+for parser in auto jq; do
+  if [[ "$parser" == jq ]] && ! command -v jq >/dev/null; then continue; fi
+  export TEST_PARSER="$parser"
+  run_check default --mirror gitee
+  ((status == 0)) || fail "$parser parser rejected valid Gitee JSON: $output"
+  for invalid in '{}' '[]' 'not-json' '{"tag_name":null}' '{"tag_name":4}' \
+    '{"tag_name":"v0.4.0-rc.1"}' '{"tag_name":"../v0.4.0"}' '{"tag_name":"v1x2y3"}' \
+    '{"tag_name":"v0.4.0\n"}' '{"tag_name":"v0.4.0\u0000"}' \
+    '{"tag_name":"v1234567890.2.3"}' '{"tag_name":"v0.4.0"} {"tag_name":"v0.4.0"}'; do
+    printf '%s\n' "$invalid" >"${test_dir}/http/gitee-latest.json"
+    run_check default --mirror gitee
+    assert_failure
+  done
+  printf '{"tag_name":"v0.4.0\0"}\n' >"${test_dir}/http/gitee-latest.json"
+  run_check default --mirror gitee
+  assert_failure
+  printf '{"tag_name":"v0.4.0"}\n' >"${test_dir}/http/gitee-latest.json"
+done
+export TEST_PARSER=none
+run_check default --mirror gitee
+assert_failure
+[[ "$output" == *'需要 python3 或 jq'* && ! -s "$TEST_CURL_LOG" ]] || fail 'missing JSON parser did not fail before download'
+run_check default --mirror gitee --version v0.4.0
+((status == 0)) || fail 'explicit Gitee version unexpectedly required a JSON parser'
+[[ "$(<"$TEST_CURL_LOG")" != *'/api/v5/'* && "$(<"$TEST_CURL_LOG")" != *'github.com'* ]] || fail 'explicit mirror version queried latest or GitHub'
+unset TEST_PARSER
+
+run_check default --mirror
+assert_failure
+run_check default --mirror unknown
+assert_failure
+[[ ! -s "$TEST_CURL_LOG" ]] || fail 'unknown mirror reached network'
+printf '503\n' >"${test_dir}/http/gitee-latest-status"
+run_check default --mirror gitee
+assert_failure
+[[ "$output" == *'无法查询 Gitee 最新版本'* ]] || fail 'Gitee latest HTTP failure lacks guidance'
+printf '200\n' >"${test_dir}/http/gitee-latest-status"
+python3 - "${test_dir}/http/gitee-latest.json" <<'PY'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_text('{"tag_name":"v0.4.0","padding":"' + 'a' * 1048576 + '"}')
+PY
+run_check default --mirror gitee
+assert_failure
+[[ "$output" == *'Gitee 最新版本'* ]] || fail 'oversized Gitee response lacked guidance'
+
+reset_release
+unset WITSHIELD_DOWNLOAD_BASE
+printf 'tampered\n' >>"${test_dir}/http/gitee/releases/download/v0.4.0/witshield_0.4.0_linux_amd64"
+run_check default --mirror gitee --version v0.4.0
+assert_failure
+[[ "$output" == *'SHA-256 不匹配'* ]] || fail 'tampered Gitee binary accepted'
+reset_release
+unset WITSHIELD_DOWNLOAD_BASE
+printf 'tampered\n' >>"${test_dir}/http/gitee/releases/download/v0.4.0/cosign-linux-amd64"
+run_check default --mirror gitee --version v0.4.0
+assert_failure
+[[ "$output" == *'Cosign 校验器的 SHA-256 不匹配'* ]] || fail 'tampered Gitee verifier accepted'
+reset_release
+unset WITSHIELD_DOWNLOAD_BASE
+printf 'bad-bundle\n' >"${test_dir}/http/gitee/releases/download/v0.4.0/SHA256SUMS.bundle"
+run_check default --mirror gitee --version v0.4.0
+assert_failure
+[[ "$output" == *'发布签名校验失败'* ]] || fail 'bad Gitee signature accepted'
+reset_release
+run_check default --mirror gitee --version v0.4.0
+((status == 0)) || fail 'custom asset base did not override mirror transport'
+[[ "$(<"$TEST_CURL_LOG")" == *"${TEST_ORIGIN}/mirror/v0.4.0/cosign-linux-amd64"* \
+  && "$(<"$TEST_CURL_LOG")" != *'github.com'* ]] || fail 'custom mirrored verifier escaped configured base'
 
 printf 'check downloader HTTP, verification and execution contracts verified\n'
