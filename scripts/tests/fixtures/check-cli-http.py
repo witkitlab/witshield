@@ -27,6 +27,19 @@ def serve(root, ready):
                 return
             super().do_HEAD()
 
+        def do_GET(self):
+            if self.path == "/gitee-api/latest":
+                self.send_response(int(Path(root, "gitee-latest-status").read_text()))
+                self.send_header("Content-Type", "application/json")
+                # Omit Content-Length to exercise the streaming size cap too.
+                self.end_headers()
+                try:
+                    self.wfile.write(Path(root, "gitee-latest.json").read_bytes())
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+            super().do_GET()
+
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     Path(ready).write_text(f"http://127.0.0.1:{server.server_port}")
     server.serve_forever()
