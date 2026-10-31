@@ -34,7 +34,7 @@ lint:
 audit:
 	cd web && npm audit --audit-level=high
 	go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 $(GO_PACKAGES)
-	go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 $(GO_PACKAGES)
+	go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 $(GO_PACKAGES)
 	scripts/run-gosec.sh $(GO_PACKAGES)
 
 clean:
