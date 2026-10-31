@@ -545,7 +545,8 @@ jobs:
   mirror-gitee:
     name: Mirror authenticated CLI assets to Gitee
     needs: publish
-    if: github.repository == 'witkitlab/witshield'
+    # Evaluate opt-in before requesting approval for the release environment.
+    if: github.repository == 'witkitlab/witshield' && vars.GITEE_MIRROR_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     continue-on-error: true

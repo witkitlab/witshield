@@ -59,7 +59,9 @@ for test_script in scripts/tests/*.sh; do "$test_script"; done
 
 本次真实签名发布、公开资产的 SHA-256、Sigstore 身份和 provenance 验证，以及 Ubuntu/Debian、amd64/arm64 真实主机矩阵仍待完成，不得宣称已验收。实机验证出现失败时应阻断发布，保留证据并排查，不能用实验性标识或 CI 通过代替修复和复验。
 
-Gitee 仓库和发布令牌尚未配置，镜像实测暂缓；没有可用令牌时镜像任务跳过，不影响 GitHub 发布。DeepSeek 因缺少获授权的 API Key 尚未实测，配置示例不代表已验证可用；它是可选解读服务，不作为本地体检的依赖。
+Gitee 仓库和发布令牌尚未配置，镜像实测暂缓。只有将仓库变量 `GITEE_MIRROR_ENABLED` 设为 `true` 才调度镜像任务；默认直接跳过，不进入 `release` Environment 的审批，也不影响 GitHub 发布。将来启用前，先创建 Gitee 的 `witkitlab/witshield` 仓库及 `main` 分支，在 GitHub 的 `release` Environment 配置仅有目标仓库权限的 `GITEE_TOKEN` secret，再把上述仓库变量设为 `true`。启用后仍会检查令牌，缺少可用令牌时跳过上传并记录摘要。
+
+DeepSeek 因缺少获授权的 API Key 尚未实测，配置示例不代表已验证可用；它是可选解读服务，不作为本地体检的依赖。
 
 ## 版本流程
 
