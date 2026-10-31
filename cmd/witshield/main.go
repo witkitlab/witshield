@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,7 +21,7 @@ var buildDate = "unknown"
 const help = `妙计巡御 witshield %s
 
   witshield check          体检这台服务器（建议 sudo 运行，结果更完整）
-  sudo witshield check --fix   体检后逐项修复，每一步先预览、确认后才改、失败自动恢复
+  sudo witshield check --fix   体检后逐项修复，每一步先预览、确认后才改；SSH 和文件权限修复失败会恢复
   witshield check --help   查看全部选项
   witshield version        查看版本
 
@@ -28,7 +29,16 @@ const help = `妙计巡御 witshield %s
 `
 
 func main() {
-	args := os.Args[1:]
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, checkcli.RecoverInterruptedSSH))
+}
+
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, recoverSSH func(context.Context, io.Writer) error) int {
+	if err := recoverSSH(ctx, stderr); err != nil {
+		fmt.Fprintf(stderr, "未能恢复上次中断的 SSH 修改：%v。请检查 /var/lib/witshield-cli/ssh-rollbacks，恢复前不会继续。\n", err)
+		return 2
+	}
 	if len(args) == 0 {
 		args = []string{"check"}
 	}
@@ -36,25 +46,23 @@ func main() {
 	case "apt-plan-guard":
 		// Invoked by APT during `check --fix` package upgrades, never by users.
 		if len(args) != 2 || os.Geteuid() != 0 {
-			fmt.Fprintln(os.Stderr, "witshield apt plan guard requires one transaction directory and root")
-			os.Exit(2)
+			fmt.Fprintln(stderr, "witshield apt plan guard requires one transaction directory and root")
+			return 2
 		}
-		if err := action.RunPackagePlanGuard(os.Stdin, args[1], checkcli.PackagePlanBase); err != nil {
-			fmt.Fprintf(os.Stderr, "witshield rejected the locked APT plan: %v\n", err)
-			os.Exit(1)
+		if err := action.RunPackagePlanGuard(stdin, args[1], checkcli.PackagePlanBase); err != nil {
+			fmt.Fprintf(stderr, "witshield rejected the locked APT plan: %v\n", err)
+			return 1
 		}
 	case "check":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		code := checkcli.Run(ctx, args[1:], os.Stdin, os.Stdout, os.Stderr)
-		stop()
-		os.Exit(code)
+		return checkcli.Run(ctx, args[1:], stdin, stdout, stderr)
 	case "version", "--version", "-v":
-		fmt.Printf("witshield %s (commit %s, built %s)\n", version, commit, buildDate)
+		fmt.Fprintf(stdout, "witshield %s (commit %s, built %s)\n", version, commit, buildDate)
 	case "help", "--help", "-h":
-		fmt.Printf(help, version)
+		fmt.Fprintf(stdout, help, version)
 	default:
-		fmt.Fprintf(os.Stderr, "未知命令：%s\n\n", args[0])
-		fmt.Fprintf(os.Stderr, help, version)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "未知命令：%s\n\n", args[0])
+		fmt.Fprintf(stderr, help, version)
+		return 2
 	}
+	return 0
 }

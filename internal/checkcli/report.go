@@ -28,9 +28,11 @@ func parseSummary(r domain.Report) Summary {
 
 // Host describes the machine in the report header.
 type Host struct {
-	Name   string
-	OS     string
-	IsRoot bool
+	Name           string
+	OS             string
+	IsRoot         bool
+	SSHUnavailable bool
+	UntestedOS     bool
 }
 
 type style struct{ color bool }
@@ -93,6 +95,9 @@ func Render(w io.Writer, r domain.Report, h Host, color bool) {
 
 	fmt.Fprintf(w, "\n%s  %s\n", s.bold("妙计巡御 · 服务器体检"), s.dim(strings.TrimSpace(h.Name+"  "+h.OS)))
 	fmt.Fprintln(w, s.dim(strings.Repeat("─", 48)))
+	if h.UntestedOS {
+		fmt.Fprintln(w, "  目前只对 Ubuntu/Debian 做过完整测试。")
+	}
 	fmt.Fprintf(w, "  安全分  %s  %s", s.score(r.Score, fmt.Sprintf("%d / 100", r.Score)), s.score(r.Score, Grade(r.Score)))
 	if sum.Checks > 0 {
 		fmt.Fprintf(w, "    %s", s.dim(fmt.Sprintf("完成检查 %d/%d 项", sum.CompletedChecks, sum.Checks)))
@@ -124,39 +129,42 @@ func Render(w io.Writer, r domain.Report, h Host, color bool) {
 	if len(top) > 0 {
 		fmt.Fprintf(w, "\n%s\n", s.bold("最该先处理的 "+fmt.Sprint(len(top))+" 件事"))
 		for i, f := range top {
-			renderFinding(w, s, i+1, f, true)
+			renderFinding(w, s, i+1, f, true, h)
 		}
 	}
 	if len(findings) > 3 {
 		fmt.Fprintf(w, "\n%s\n", s.bold("其余问题"))
 		for i, f := range findings[3:] {
-			renderFinding(w, s, i+4, f, false)
+			renderFinding(w, s, i+4, f, false, h)
 		}
 	}
 
 	fixable := 0
 	for _, f := range findings {
-		if AdviceFor(f).Fix != FixNone {
+		if reportAdvice(f, h.SSHUnavailable).Fix != FixNone {
 			fixable++
 		}
 	}
 	fmt.Fprintf(w, "\n%s\n", s.bold("下一步"))
 	if fixable > 0 {
-		fmt.Fprintf(w, "  %s   逐项修复 %d 个可一键修复的问题：每一步先预览，确认后才改；改完自动验证，失败自动恢复\n", s.bold("sudo witshield check --fix"), fixable)
+		fmt.Fprintf(w, "  %s   逐项修复 %d 个可一键修复的问题：先预览、确认后修改并验证；SSH 和文件权限支持恢复，软件包升级前建议做快照\n", s.bold("sudo witshield check --fix"), fixable)
 	}
 	fmt.Fprintf(w, "  %s        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\n", s.bold("witshield check --ai"))
 	fmt.Fprintf(w, "  %s      输出 JSON，方便接入脚本或其他 AI 工具\n", s.bold("witshield check --json"))
 	fmt.Fprintf(w, "\n%s\n\n", s.dim(fmt.Sprintf("分享：我的服务器安全分 %d/100（%s），用妙计巡御体检 → github.com/witkitlab/witshield", r.Score, Grade(r.Score))))
 }
 
-func renderFinding(w io.Writer, s style, n int, f domain.Finding, detailed bool) {
-	a := AdviceFor(f)
+func renderFinding(w io.Writer, s style, n int, f domain.Finding, detailed bool, h Host) {
+	a := reportAdvice(f, h.SSHUnavailable)
 	tag := s.sev(f.Severity, "["+severityLabel[f.Severity]+"]")
 	fix := ""
 	if a.Fix != FixNone {
 		fix = "  " + s.wrap("32", "可一键修复")
 	}
 	fmt.Fprintf(w, "  %d. %s %s%s\n", n, tag, s.bold(a.Title), fix)
+	if h.SSHUnavailable && AdviceFor(f).Fix == FixSSHPassword {
+		fmt.Fprintln(w, "     本机无法自动修复，请按命令手动处理。")
+	}
 	if !detailed {
 		return
 	}
@@ -186,6 +194,7 @@ type JSONReport struct {
 	Grade    string        `json:"grade"`
 	Summary  Summary       `json:"summary"`
 	Findings []JSONFinding `json:"findings"`
+	Warnings []string      `json:"warnings,omitempty"`
 }
 
 type JSONFinding struct {
@@ -199,11 +208,26 @@ type JSONFinding struct {
 	Fixable  bool            `json:"fixable"`
 }
 
-func ToJSON(r domain.Report) JSONReport {
+func ToJSON(r domain.Report, hosts ...Host) JSONReport {
+	var h Host
+	if len(hosts) > 0 {
+		h = hosts[0]
+	}
 	out := JSONReport{Score: r.Score, Grade: Grade(r.Score), Summary: parseSummary(r), Findings: []JSONFinding{}}
+	if h.UntestedOS {
+		out.Warnings = append(out.Warnings, "目前只对 Ubuntu/Debian 做过完整测试")
+	}
 	for _, f := range Sorted(r.Findings) {
-		a := AdviceFor(f)
+		a := reportAdvice(f, h.SSHUnavailable)
 		out.Findings = append(out.Findings, JSONFinding{Severity: f.Severity, Category: f.Category, Title: f.Title, TitleZH: a.Title, Why: a.Why, Evidence: f.Evidence, Manual: a.Manual, Fixable: a.Fix != FixNone})
 	}
 	return out
+}
+
+func reportAdvice(f domain.Finding, sshUnavailable bool) Advice {
+	a := AdviceFor(f)
+	if sshUnavailable && a.Fix == FixSSHPassword {
+		a.Fix = FixNone
+	}
+	return a
 }

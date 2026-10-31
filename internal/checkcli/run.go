@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/witkitlab/witshield/internal/action"
+	"github.com/witkitlab/witshield/internal/domain"
 	"github.com/witkitlab/witshield/internal/scanner"
 )
 
@@ -25,7 +26,7 @@ const (
 
 const usage = `用法：witshield check [选项]
 
-  一次性体检这台服务器：不安装服务、不开端口、不联网（--ai 除外）。
+  一次性体检这台服务器：不安装服务、不开端口。普通体检不联网；--ai 和软件包升级需要联网。
 
 选项：
   --fix                 体检后逐项修复可一键修复的问题（需要 sudo）
@@ -35,9 +36,36 @@ const usage = `用法：witshield check [选项]
   --ssh-confirm-seconds 修复 SSH 后等待你确认新登录的秒数（默认 180，范围 30–600）
 `
 
-// Run executes `witshield check`. It returns the process exit code:
-// 0 when the score is 60 or more, 1 below that, 2 on usage or runtime errors.
+type runDependencies struct {
+	isRoot      func() bool
+	readOS      func() ([]byte, error)
+	runner      action.Runner
+	scan        func(context.Context) (domain.Report, func(context.Context) ([]string, error), error)
+	buildEngine func(string) (*action.Engine, error)
+}
+
+// Run executes `witshield check`: 0 for score >=60, 1 below, 2 on errors.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runWithDependencies(ctx, args, stdin, stdout, stderr, runDependencies{
+		isRoot:      func() bool { return os.Geteuid() == 0 },
+		readOS:      func() ([]byte, error) { return os.ReadFile("/etc/os-release") },
+		runner:      action.NewExecRunner(systemctlPath),
+		buildEngine: buildEngine,
+		scan: func(ctx context.Context) (domain.Report, func(context.Context) ([]string, error), error) {
+			host, err := scanner.NewSystemHost("/")
+			if err != nil {
+				return domain.Report{}, nil, err
+			}
+			report, err := scanner.NewWithHost(host, false).Scan(ctx, "local")
+			return report, func(ctx context.Context) ([]string, error) {
+				out, err := host.Probe(ctx, scanner.ProbeUpdates)
+				return ParseAptSimulate(out), err
+			}, err
+		},
+	})
+}
+
+func runWithDependencies(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, deps runDependencies) int {
 	fl := flag.NewFlagSet("check", flag.ContinueOnError)
 	fl.SetOutput(stderr)
 	fl.Usage = func() { fmt.Fprint(stderr, usage) }
@@ -49,11 +77,15 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
+	if fl.NArg() != 0 {
+		fmt.Fprintln(stderr, "check 不接受位置参数")
+		return 2
+	}
 	if *confirmSeconds < 30 || *confirmSeconds > 600 {
 		fmt.Fprintln(stderr, "--ssh-confirm-seconds 需要在 30 到 600 之间")
 		return 2
 	}
-	isRoot := os.Geteuid() == 0
+	isRoot := deps.isRoot()
 	if *fix && !isRoot {
 		fmt.Fprintln(stderr, "修复需要 root 权限，请用：sudo witshield check --fix")
 		return 2
@@ -64,15 +96,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	color := !*noColor && !*asJSON && os.Getenv("NO_COLOR") == "" && isTerminal(stdout)
 
-	host, err := scanner.NewSystemHost("/")
-	if err != nil {
-		fmt.Fprintf(stderr, "无法读取本机：%v\n", err)
+	osData, _ := deps.readOS()
+	osInfo := ParseOSRelease(osData)
+	if *fix && !osInfo.Debian {
+		fmt.Fprintln(stderr, "目前只对 Ubuntu/Debian 做过完整测试；无法确认这是 Debian 系统，已拒绝自动修复。请按报告中的命令手动处理。")
 		return 2
 	}
+	service := detectSSHService(ctx, deps.runner)
+	h := Host{Name: hostname(), OS: osInfo.Name, IsRoot: isRoot, SSHUnavailable: service == "", UntestedOS: !osInfo.Debian}
 	if !*asJSON {
 		fmt.Fprintln(stderr, "正在体检，通常需要 10–30 秒……")
 	}
-	report, err := scanner.NewWithHost(host, false).Scan(ctx, "local")
+	report, pendingUpdates, err := deps.scan(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "体检中断：%v\n", err)
 		return 2
@@ -81,9 +116,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(ToJSON(report))
+		_ = enc.Encode(ToJSON(report, h))
 	} else {
-		Render(stdout, report, Host{Name: hostname(), OS: osName(), IsRoot: isRoot}, color)
+		Render(stdout, report, h, color)
 	}
 
 	if *useAI {
@@ -102,19 +137,17 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 
 	if *fix {
-		engine, err := buildEngine()
+		engine, err := deps.buildEngine(service)
 		if err != nil {
 			fmt.Fprintf(stderr, "无法准备修复环境：%v\n", err)
 			return 2
 		}
 		(&Fixer{
 			Engine: engine, In: NewLineReader(stdin), Out: stdout, Color: color,
+			FullHelperActive: fullHelperActive(ctx, deps.runner), SSHUnavailable: service == "",
 			SSHConfirmWindow: time.Duration(*confirmSeconds) * time.Second,
-			PendingUpdates: func(ctx context.Context) ([]string, error) {
-				out, err := host.Probe(ctx, scanner.ProbeUpdates)
-				return ParseAptSimulate(out), err
-			},
-			ShadowGID: ShadowGID, KeyLoginReady: KeyLoginReady("/"), Now: time.Now,
+			PendingUpdates:   pendingUpdates,
+			ShadowGID:        ShadowGID, KeyLoginReady: KeyLoginReady("/"), Now: time.Now,
 		}).FixAll(ctx, report.Findings)
 	}
 	if report.Score < 60 {
@@ -125,14 +158,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 // buildEngine wires the same typed playbooks the native Helper uses, with the
 // CLI's own state directory. Only the three repairs the CLI offers are loaded.
-func buildEngine() (*action.Engine, error) {
-	const (
-		aptGetPath    = "/usr/bin/apt-get"
-		dpkgQueryPath = "/usr/bin/dpkg-query"
-		sshdPath      = "/usr/sbin/sshd"
-		systemctlPath = "/usr/bin/systemctl"
-	)
+func buildEngine(service string) (*action.Engine, error) {
 	if err := os.MkdirAll(StateDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := privateRecoveryPath(StateDir, true); err != nil {
 		return nil, err
 	}
 	runner := action.NewExecRunner(aptGetPath, dpkgQueryPath, sshdPath, systemctlPath)
@@ -142,10 +172,10 @@ func buildEngine() (*action.Engine, error) {
 			playbooks = append(playbooks, p)
 		}
 	}
-	if _, err := os.Stat(sshdPath); err == nil {
+	if _, err := os.Stat(sshdPath); err == nil && service != "" {
 		p, err := action.NewSSHPasswordHardeningPlaybook(action.SSHHardeningConfig{
 			Runner: runner, SSHDPath: sshdPath, SystemctlPath: systemctlPath,
-			ConfigPath: "/etc/ssh/sshd_config", ServiceName: "ssh", JournalDir: sshJournalDir,
+			ConfigPath: "/etc/ssh/sshd_config", ServiceName: service, JournalDir: sshJournalDir,
 			DefaultRollbackDelay: 3 * time.Minute,
 		})
 		if err != nil {
@@ -180,17 +210,4 @@ func isTerminal(w io.Writer) bool {
 func hostname() string {
 	h, _ := os.Hostname()
 	return h
-}
-
-func osName() string {
-	b, err := os.ReadFile("/etc/os-release")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(line, "PRETTY_NAME="); ok {
-			return strings.Trim(v, `"`)
-		}
-	}
-	return ""
 }
