@@ -43,15 +43,25 @@ const aiHelp = `还没有配置大模型。巡御不内置任何密钥，用你�
   witshield check --ai
 
 通义千问、豆包、Kimi 等 OpenAI 兼容接口同理；Anthropic 接口另设 WITSHIELD_AI_PROTOCOL=anthropic_messages。
-发送给模型的只有问题标题、等级和简短证据，不包含密码、密钥或文件内容。`
+发送给模型的只有安全分、检查覆盖率、问题等级与中文标题、SSH 登录失败次数和来源数量；不发送 IP、证据原文、主机名、日志或文件内容。`
 
 // AIPrompt builds the minimal, redacted context sent to the model.
-func AIPrompt(r domain.Report) []ai.Message {
+func AIPrompt(r domain.Report, failures ...SSHFailures) []ai.Message {
 	var b strings.Builder
-	fmt.Fprintf(&b, "安全分 %d/100。发现的问题：\n", r.Score)
+	fmt.Fprintf(&b, "安全分 %d/100，已完成检查 %d/%d 项。\n", r.Score, parseSummary(r).CompletedChecks, parseSummary(r).Checks)
+	if len(failures) > 0 && failures[0].Available && failures[0].Total != nil && failures[0].UniqueIPs != nil {
+		fmt.Fprintf(&b, "过去 24 小时 SSH 登录失败 %d 次，来源 IP 数量 %d。\n", *failures[0].Total, *failures[0].UniqueIPs)
+	} else {
+		b.WriteString("没有读到 SSH 日志，失败次数未知。\n")
+	}
+	b.WriteString("发现的问题：\n")
 	for _, f := range Sorted(r.Findings) {
-		a := AdviceFor(f)
-		fmt.Fprintf(&b, "- [%s] %s（证据：%s）\n", severityLabel[f.Severity], a.Title, truncate(f.Evidence, 160))
+		a, known := catalog[f.Title]
+		title := "其他检查发现的问题"
+		if known {
+			title = a.Title
+		}
+		fmt.Fprintf(&b, "- [%s] %s\n", severityLabel[f.Severity], title)
 	}
 	if len(r.Findings) == 0 {
 		b.WriteString("- 无\n")
@@ -63,12 +73,12 @@ func AIPrompt(r domain.Report) []ai.Message {
 }
 
 // Explain asks the user's model to explain the report.
-func Explain(ctx context.Context, cfg ai.Config, r domain.Report) (string, error) {
+func Explain(ctx context.Context, cfg ai.Config, r domain.Report, failures ...SSHFailures) (string, error) {
 	client, err := ai.New(cfg)
 	if err != nil {
 		return "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	return client.ChatWithOutputLimit(ctx, AIPrompt(r), 1200)
+	return client.ChatWithOutputLimit(ctx, AIPrompt(r, failures...), 1200)
 }

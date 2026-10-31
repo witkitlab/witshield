@@ -33,6 +33,7 @@ type Host struct {
 	IsRoot         bool
 	SSHUnavailable bool
 	UntestedOS     bool
+	SSHFailures    SSHFailures
 }
 
 type style struct{ color bool }
@@ -103,6 +104,7 @@ func Render(w io.Writer, r domain.Report, h Host, color bool) {
 		fmt.Fprintf(w, "    %s", s.dim(fmt.Sprintf("完成检查 %d/%d 项", sum.CompletedChecks, sum.Checks)))
 	}
 	fmt.Fprintln(w)
+	renderSSHFailures(w, h.SSHFailures)
 	if len(findings) == 0 {
 		fmt.Fprintln(w, "  没有发现问题。")
 	} else {
@@ -155,7 +157,7 @@ func Render(w io.Writer, r domain.Report, h Host, color bool) {
 }
 
 func renderFinding(w io.Writer, s style, n int, f domain.Finding, detailed bool, h Host) {
-	a := reportAdvice(f, h.SSHUnavailable)
+	a := reportAdvice(f, h.SSHUnavailable, h.SSHFailures)
 	tag := s.sev(f.Severity, "["+severityLabel[f.Severity]+"]")
 	fix := ""
 	if a.Fix != FixNone {
@@ -190,11 +192,12 @@ func truncate(s string, n int) string {
 
 // JSONReport is the --json shape: the scanner report plus the Chinese advice.
 type JSONReport struct {
-	Score    int           `json:"score"`
-	Grade    string        `json:"grade"`
-	Summary  Summary       `json:"summary"`
-	Findings []JSONFinding `json:"findings"`
-	Warnings []string      `json:"warnings,omitempty"`
+	Score       int           `json:"score"`
+	Grade       string        `json:"grade"`
+	Summary     Summary       `json:"summary"`
+	Findings    []JSONFinding `json:"findings"`
+	Warnings    []string      `json:"warnings,omitempty"`
+	SSHFailures SSHFailures   `json:"sshFailures"`
 }
 
 type JSONFinding struct {
@@ -213,21 +216,42 @@ func ToJSON(r domain.Report, hosts ...Host) JSONReport {
 	if len(hosts) > 0 {
 		h = hosts[0]
 	}
-	out := JSONReport{Score: r.Score, Grade: Grade(r.Score), Summary: parseSummary(r), Findings: []JSONFinding{}}
+	out := JSONReport{Score: r.Score, Grade: Grade(r.Score), Summary: parseSummary(r), Findings: []JSONFinding{}, SSHFailures: h.SSHFailures}
 	if h.UntestedOS {
 		out.Warnings = append(out.Warnings, "目前只对 Ubuntu/Debian 做过完整测试")
 	}
 	for _, f := range Sorted(r.Findings) {
-		a := reportAdvice(f, h.SSHUnavailable)
+		a := reportAdvice(f, h.SSHUnavailable, h.SSHFailures)
 		out.Findings = append(out.Findings, JSONFinding{Severity: f.Severity, Category: f.Category, Title: f.Title, TitleZH: a.Title, Why: a.Why, Evidence: f.Evidence, Manual: a.Manual, Fixable: a.Fix != FixNone})
 	}
 	return out
 }
 
-func reportAdvice(f domain.Finding, sshUnavailable bool) Advice {
+func reportAdvice(f domain.Finding, sshUnavailable bool, stats ...SSHFailures) Advice {
 	a := AdviceFor(f)
+	if a.Fix == FixSSHPassword && len(stats) > 0 && stats[0].Available && stats[0].Total != nil && stats[0].UniqueIPs != nil {
+		a.Why = fmt.Sprintf("过去 24 小时已记录 %s 次 SSH 登录失败，来自 %s 个 IP。", formatCount(*stats[0].Total), formatCount(*stats[0].UniqueIPs)) + a.Why
+	}
 	if sshUnavailable && a.Fix == FixSSHPassword {
 		a.Fix = FixNone
 	}
 	return a
+}
+
+func renderSSHFailures(w io.Writer, stats SSHFailures) {
+	if !stats.Available || stats.Total == nil || stats.UniqueIPs == nil {
+		fmt.Fprintln(w, "  没有读到 SSH 日志。")
+		return
+	}
+	fmt.Fprintf(w, "  过去 24 小时：SSH 登录失败 %s 次，来自 %s 个 IP\n", formatCount(*stats.Total), formatCount(*stats.UniqueIPs))
+	if len(stats.TopIPs) > 0 {
+		fmt.Fprint(w, "  失败最多的来源：")
+		for i, source := range stats.TopIPs {
+			if i > 0 {
+				fmt.Fprint(w, "；")
+			}
+			fmt.Fprintf(w, "%s（%s 次）", source.IP, formatCount(source.Count))
+		}
+		fmt.Fprintln(w)
+	}
 }
