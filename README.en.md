@@ -35,7 +35,7 @@ witshield check --json
 witshield version
 ```
 
-Check exit codes: `0` for a score of at least 60, `1` below 60, `2` for usage or runtime errors. Inspect JSON `summary` for incomplete coverage. Scan again after repairs for a new score.
+Check exit codes: `0` for a score of at least 60, `1` below 60, `2` for usage or runtime errors. Inspect JSON `summary` for incomplete coverage. `--fix` still returns according to the score before repairs; exit code `0` does not mean every repair succeeded. Inspect each repair result and scan again for a new score.
 
 ## Why allow repairs?
 
