@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "scope": "Isolated Ubuntu 24.04.5 amd64 container; demo-vps; real sshd reloaded with SIGHUP by a test systemctl adapter; no systemd or cloud VM.",
+    "sourceCommit": "c661430",
+    "binarySHA256": "fa73627d032529d8c9a0f310779706400efffc4999ce543bb3fffda0f7aaf986",
+    "terminalInputEcho": false,
+    "repairElapsedSeconds": 0.277,
+    "redaction": "Sources already use demo-vps. IP literals, if present, are replaced with <redacted-ip>; no credentials or key files were read for this artifact.",
+    "sourceSHA256": {
+      "before.stdout": "ee86b59c720909e98fa9ac98331cb11d4d8e4c9f4aca53d69f35b4aac8d0594e",
+      "01-confirm-and-shadow.chunks.json": "06c2bc8e50dfaed8d9aacf33a98241bfa414f3b495f0e33c513e9350e04afba3",
+      "01-confirm-and-shadow.stdout": "a47825b43c7ead2cf06f0de8a083d23ea377f139f25bcdc9ace134eb30b40e40",
+      "01-confirm-and-shadow.metadata.json": "dc0eaa39c9c600968b22486b23426bc14e20270a4325eab4519a169efe790fae",
+      "after.stdout": "53a45fdbd731a43d083eb0b1ee6f495670b314b520c7fac6b13a21ccee52ec71"
+    }
+  },
+  "before": {
+    "stdout": "\n妙计巡御 · 服务器体检  demo-vps  Ubuntu 24.04.5 LTS\n────────────────────────────────────────────────\n  安全分  27 / 100  危险    完成检查 7/8 项\n  没有读到 SSH 日志。\n  发现 6 个问题：严重 0 · 高危 3 · 中危 2 · 低危 1 · 提示 0\n\n  ！有检查没能完成，分数只代表已完成的部分：\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\nexec: \"nft\": executable file not found in $PATH\n\n最该先处理的 3 件事\n  1. [高危] SSH 允许密码登录  可一键修复\n     为什么危险：公网上的服务器每天都会被自动脚本反复猜密码，只要密码被猜中一次，服务器就归别人了。改成只用密钥登录后，这类攻击基本无效。\n     证据：PasswordAuthentication yes\n     怎么修：\n       先确认自己能用密钥登录（ssh-copy-id 用户名@服务器）\n       编辑 /etc/ssh/sshd_config，设置 PasswordAuthentication no\n       sudo sshd -t && sudo systemctl reload ssh\n  2. [高危] /etc/shadow 权限过宽  可一键修复\n     为什么危险：这个文件保存所有用户的密码哈希，普通用户能读到就能离线暴力破解密码。\n     证据：mode 0644\n     怎么修：\n       sudo chown root:shadow /etc/shadow && sudo chmod 640 /etc/shadow\n  3. [高危] SSH 的 root 登录策略过宽\n     为什么危险：PermitRootLogin yes 允许 root 使用服务器当前允许的认证方式直接登录。密码认证是否可用还取决于全局认证配置。root 凭据一旦泄露，影响就是整台服务器。建议用普通账号登录，需要时再 sudo，并至少限制 root 的密码登录。\n     证据：PermitRootLogin yes\n     怎么修：\n       先建一个普通用户并加入 sudo 组：sudo adduser 用户名 && sudo usermod -aG sudo 用户名\n       确认普通账号能登录并 sudo 后，编辑 /etc/ssh/sshd_config，设置 PermitRootLogin prohibit-password（禁止 root 密码登录，保留密钥登录）或 no（关闭 root 直接登录）\n       sudo sshd -t && sudo systemctl reload ssh\n\n其余问题\n  4. [中危] 硬链接保护没有开启\n  5. [中危] 符号链接保护没有开启\n  6. [低危] 内核指针地址没有隐藏\n\n下一步\n  sudo witshield check --fix   逐项修复 2 个可一键修复的问题：先预览、确认后修改并验证；SSH 和文件权限支持恢复，软件包升级前建议做快照\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\n\n分享：我的服务器安全分 27/100（危险），用妙计巡御体检 → github.com/witkitlab/witshield\n\n",
+    "score": 27,
+    "coveragePercent": 87,
+    "completedChecks": 7,
+    "checks": 8
+  },
+  "repair": {
+    "chunks": [
+      {
+        "at": 0.005,
+        "data": "正在体检，通常需要 10–30 秒……\r\n"
+      },
+      {
+        "at": 0.032,
+        "data": "\r\n妙计巡御 · 服务器体检  demo-vps  Ubuntu 24.04.5 LTS\r\n────────────────────────────────────────────────\r\n"
+      },
+      {
+        "at": 0.032,
+        "data": "  安全分  27 / 100  危险    完成检查 7/8 项\r\n  没有读到 SSH 日志。\r\n  发现 6 个问题：严重 0 · 高危 3 · 中危 2 · 低危 1 · 提示 0\r\n\r\n  ！有检查没能完成，分数只代表已完成的部分：\r\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\r\nexec: \"nft\": executable file not found in $PATH\r\n\r\n最该先处理的 3 件事\r\n  1. [高危] SSH 允许密码登录  可一键修复\r\n     为什么危险：公网上的服务器每天都会被自动脚本反复猜密码，只要密码被猜中一次，服务器就归别人了。改成只用密钥登录后，这类攻击基本无效。\r\n     证据：PasswordAuthentication yes\r\n     怎么修：\r\n       先确认自己能用密钥登录（ssh-copy-id 用户名@服务器）\r\n       编辑 /etc/ssh/sshd_config，设置 PasswordAuthentication no\r\n       sudo sshd -t && sudo systemctl reload ssh\r\n  2. [高危] /etc/shadow 权限过宽  可一键修复\r\n     为什么危险：这个文件保存所有用户的密码哈希，普通用户能读到就能离线暴力破解密码。\r\n     证据：mode 0644\r\n     怎么修：\r\n       sudo chown root:shadow /etc/shadow && sudo chmod 640 /etc/shadow\r\n  3. [高危] SSH 的 root 登录策略过宽\r\n     为什么危险：PermitRootLogin yes 允许 root 使用服务器当前允许的认证方式直接登录。密码认证是否可用还取决于全局认证配置。root 凭据一旦泄露，影响就是整台服务器。建议用普通账号登录，需要时再 sudo，并至少限制 root 的密码登录。\r\n     证据：PermitRootLogin yes\r\n     怎么修：\r\n       先建一个普通用户并加入 sudo 组：sudo adduser 用户名 && sudo usermod -aG sudo 用户名\r\n       确认普通账号能登录并 sudo 后，编辑 /etc/ssh/sshd_config，设置 PermitRootLogin prohibit-password（禁止 root 密码登录，保留密钥登录）或 no（关闭 root 直接登录）\r\n       sudo sshd -t && sudo systemctl reload ssh\r\n\r\n其余问题\r\n  4. [中危] 硬链接保护没有开启\r\n  5. [中危] 符号链接保护没有开启\r\n  6. [低危] 内核指针地址没有隐藏\r\n\r\n下一步\r\n  sudo witshield check --fix   逐项修复 2 个可一键修复的问题：先预览、确认后修改并验证；SSH 和文件权限支持恢复，软件包升级前建议做快照\r\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\r\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\r\n\r\n分享：我的服务器安全分 27/100（危险），用妙计巡御体检 → github.com/witkitlab/witshield\r\n\r\n"
+      },
+      {
+        "at": 0.033,
+        "data": "\r\n开始逐项修复，共 2 项。每一项都会先告诉你要改什么，你输入 y 才会动手。\r\n"
+      },
+      {
+        "at": 0.033,
+        "data": "\r\n[1/2] SSH 允许密码登录\r\n"
+      },
+      {
+        "at": 0.033,
+        "data": "  已找到可以用密钥登录的账号：root\r\n"
+      },
+      {
+        "at": 0.033,
+        "data": "  会做的事：\r\n"
+      },
+      {
+        "at": 0.033,
+        "data": "    1. 备份 /etc/ssh/sshd_config，把 PasswordAuthentication 改成 no\r\n    2. 用 sshd -t 校验配置，通过后重新加载 SSH（已经连着的窗口不会断）\r\n"
+      },
+      {
+        "at": 0.034,
+        "data": "    3. 等你新开一个窗口确认还能登录；60 秒内没有确认，自动恢复原配置\r\n"
+      },
+      {
+        "at": 0.037,
+        "data": "  预检通过。\r\n  现在修改？ [y/N] "
+      },
+      {
+        "at": 0.064,
+        "data": "  预检 ✓  →  预览 ✓  →  修改 ✓  →  验证 ✓\r\n\r\n  请不要关闭这个窗口。\r\n  现在新开一个终端，用密钥登录这台服务器（ssh 用户名@服务器）。\r\n  能登录的话，回到这里输入 yes 并回车。12:20:30 前没有确认，会自动恢复原配置。\r\n  新窗口能登录吗？输入 yes 确认，其他任意内容恢复原配置："
+      },
+      {
+        "at": 0.265,
+        "data": "\r\n"
+      },
+      {
+        "at": 0.275,
+        "data": "  完成：SSH 已改为只允许密钥登录，自动恢复已取消。\r\n\r\n[2/2] /etc/shadow 权限过宽\r\n"
+      },
+      {
+        "at": 0.275,
+        "data": "  会做的事：把 /etc/shadow 的属主和权限改回系统默认的 root:shadow 0640，改完立即检查。\r\n  预检通过。\r\n"
+      },
+      {
+        "at": 0.275,
+        "data": "  现在修改？ [y/N] "
+      },
+      {
+        "at": 0.276,
+        "data": "  预检 ✓  →  预览 ✓  →  修改 ✓  →  验证 ✓\r\n  完成：/etc/shadow 权限已恢复。\r\n\r\n修复结束：完成 2 项，共 2 项。\r\n再运行一次 sudo witshield check 看看新的分数。\r\n\r\n"
+      }
+    ],
+    "exitCode": 1,
+    "sshApproved": true,
+    "shadowApproved": true,
+    "confirmationKeyProbe": {
+      "kind": "key",
+      "success": true,
+      "exitCode": 0,
+      "connection": "fresh TCP loopback SSH, ControlMaster=no, ControlPath=none"
+    },
+    "afterKeyProbe": {
+      "kind": "key",
+      "success": true,
+      "exitCode": 0,
+      "connection": "fresh TCP loopback SSH, ControlMaster=no, ControlPath=none"
+    },
+    "afterPasswordProbe": {
+      "kind": "password",
+      "success": false,
+      "exitCode": 255,
+      "connection": "fresh TCP loopback SSH, ControlMaster=no, ControlPath=none"
+    },
+    "pendingJournalsAfter": []
+  },
+  "after": {
+    "stdout": "\n妙计巡御 · 服务器体检  demo-vps  Ubuntu 24.04.5 LTS\n────────────────────────────────────────────────\n  安全分  63 / 100  及格    完成检查 7/8 项\n  没有读到 SSH 日志。\n  发现 4 个问题：严重 0 · 高危 1 · 中危 2 · 低危 1 · 提示 0\n\n  ！有检查没能完成，分数只代表已完成的部分：\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\nexec: \"nft\": executable file not found in $PATH\n\n最该先处理的 3 件事\n  1. [高危] SSH 的 root 登录策略过宽\n     为什么危险：PermitRootLogin yes 允许 root 使用服务器当前允许的认证方式直接登录。密码认证是否可用还取决于全局认证配置。root 凭据一旦泄露，影响就是整台服务器。建议用普通账号登录，需要时再 sudo，并至少限制 root 的密码登录。\n     证据：PermitRootLogin yes\n     怎么修：\n       先建一个普通用户并加入 sudo 组：sudo adduser 用户名 && sudo usermod -aG sudo 用户名\n       确认普通账号能登录并 sudo 后，编辑 /etc/ssh/sshd_config，设置 PermitRootLogin prohibit-password（禁止 root 密码登录，保留密钥登录）或 no（关闭 root 直接登录）\n       sudo sshd -t && sudo systemctl reload ssh\n  2. [中危] 硬链接保护没有开启\n     为什么危险：普通用户可能借硬链接绕过文件权限。\n     证据：fs/protected_hardlinks=0\n     怎么修：\n       echo 'fs.protected_hardlinks = 1' | sudo tee -a /etc/sysctl.d/90-witshield.conf && sudo sysctl --system\n  3. [中危] 符号链接保护没有开启\n     为什么危险：公共可写目录（如 /tmp）里更容易发生符号链接攻击。\n     证据：fs/protected_symlinks=0\n     怎么修：\n       echo 'fs.protected_symlinks = 1' | sudo tee -a /etc/sysctl.d/90-witshield.conf && sudo sysctl --system\n\n其余问题\n  4. [低危] 内核指针地址没有隐藏\n\n下一步\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\n\n分享：我的服务器安全分 63/100（及格），用妙计巡御体检 → github.com/witkitlab/witshield\n\n",
+    "score": 63,
+    "coveragePercent": 87,
+    "completedChecks": 7,
+    "checks": 8
+  }
+}
