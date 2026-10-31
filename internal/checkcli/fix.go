@@ -30,6 +30,10 @@ type Fixer struct {
 	In     *LineReader
 	Out    io.Writer
 	Color  bool
+	// FullHelperActive requires an additional approval before CLI repairs.
+	FullHelperActive bool
+	// SSHUnavailable disables repairs when no SSH service was found.
+	SSHUnavailable bool
 	// SSHConfirmWindow is how long the user has to prove a new SSH login works.
 	SSHConfirmWindow time.Duration
 	// PendingUpdates lists upgradable packages (apt-get -s upgrade).
@@ -46,13 +50,20 @@ func (x *Fixer) FixAll(ctx context.Context, findings []domain.Finding) {
 	s := style{x.Color}
 	var todo []domain.Finding
 	for _, f := range Sorted(findings) {
-		if AdviceFor(f).Fix != FixNone {
+		if AdviceFor(f).Fix != FixNone && !(x.SSHUnavailable && AdviceFor(f).Fix == FixSSHPassword) {
 			todo = append(todo, f)
 		}
 	}
 	if len(todo) == 0 {
 		fmt.Fprintln(x.Out, "\n没有可以一键修复的问题。其余问题请按报告里的「怎么修」手动处理。")
 		return
+	}
+	if x.FullHelperActive {
+		fmt.Fprintln(x.Out, "\n这台服务器已经安装了完整版，建议在控制台里修复。")
+		if !x.ask(ctx, "仍然使用命令行修复？") {
+			fmt.Fprintln(x.Out, "  已取消命令行修复。")
+			return
+		}
 	}
 	fmt.Fprintf(x.Out, "\n%s\n", s.bold(fmt.Sprintf("开始逐项修复，共 %d 项。每一项都会先告诉你要改什么，你输入 y 才会动手。", len(todo))))
 	done := 0
@@ -82,9 +93,9 @@ func (x *Fixer) actionID(kind string) string {
 	return fmt.Sprintf("cli-%s-%d", kind, x.Now().UnixNano())
 }
 
-func (x *Fixer) ask(question string) bool {
+func (x *Fixer) ask(ctx context.Context, question string) bool {
 	fmt.Fprintf(x.Out, "  %s [y/N] ", question)
-	line, err := x.In.ReadLine(0)
+	line, err := x.In.ReadLineContext(ctx, 0)
 	if err != nil {
 		fmt.Fprintln(x.Out)
 		return false
@@ -109,7 +120,7 @@ func (x *Fixer) fixSSH(ctx context.Context) bool {
 	fmt.Fprintln(x.Out, "    2. 用 sshd -t 校验配置，通过后重新加载 SSH（已经连着的窗口不会断）")
 	fmt.Fprintf(x.Out, "    3. 等你新开一个窗口确认还能登录；%d 秒内没有确认，自动恢复原配置\n", int(window/time.Second))
 	id := x.actionID("ssh")
-	if !x.preview(ctx, id, action.TypeSSHPasswordHardening, params) || !x.ask("现在修改？") {
+	if !x.preview(ctx, id, action.TypeSSHPasswordHardening, params) || !x.ask(ctx, "现在修改？") {
 		fmt.Fprintln(x.Out, "  已跳过。")
 		return false
 	}
@@ -133,22 +144,23 @@ func (x *Fixer) fixSSH(ctx context.Context) bool {
 	if wait < time.Second {
 		wait = time.Second
 	}
-	line, err := x.In.ReadLine(wait)
+	line, err := x.In.ReadLineContext(ctx, wait)
 	answer := strings.ToLower(strings.TrimSpace(line))
 	fmt.Fprintln(x.Out)
-	if err == nil && (answer == "yes" || answer == "y" || answer == "是" || answer == "确认") {
+	if err == nil && ctx.Err() == nil && (answer == "yes" || answer == "y" || answer == "是" || answer == "确认") {
 		c := x.Engine.Run(ctx, action.Request{ActionID: id, Actor: "witshield-cli", Type: action.TypeSSHPasswordHardening, Operation: action.OperationConfirm, Parameters: params, State: receipt.State})
 		if c.Success {
 			fmt.Fprintln(x.Out, s.wrap("32", "  完成：SSH 已改为只允许密钥登录，自动恢复已取消。"))
 			return true
 		}
-		fmt.Fprintf(x.Out, "  确认没有成功（%s），配置会在期限到达时自动恢复。\n", c.Error)
-		return false
+		fmt.Fprintf(x.Out, "  确认没有成功（%s），正在恢复原配置。\n", c.Error)
 	}
 	if err != nil {
 		fmt.Fprintln(x.Out, "  没有收到确认。")
 	}
-	r := x.Engine.Run(context.Background(), action.Request{ActionID: id, Actor: "witshield-cli", Type: action.TypeSSHPasswordHardening, Operation: action.OperationRollback, Parameters: params, State: receipt.State})
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	r := x.Engine.Run(rollbackCtx, action.Request{ActionID: id, Actor: "witshield-cli", Type: action.TypeSSHPasswordHardening, Operation: action.OperationRollback, Parameters: params, State: receipt.State})
 	if r.Success {
 		fmt.Fprintln(x.Out, "  已恢复原来的 SSH 配置，密码登录仍然可用。")
 	} else {
@@ -167,7 +179,7 @@ func (x *Fixer) fixShadow(ctx context.Context) bool {
 	params, _ := json.Marshal(action.FilePermissionRepairParams{Path: "/etc/shadow", Mode: mode, UID: &uid, GID: &gidValue})
 	fmt.Fprintf(x.Out, "  会做的事：把 /etc/shadow 的属主和权限改回系统默认的 %s，改完立即检查。\n", desc)
 	id := x.actionID("shadow")
-	if !x.preview(ctx, id, action.TypeFilePermissionRepair, params) || !x.ask("现在修改？") {
+	if !x.preview(ctx, id, action.TypeFilePermissionRepair, params) || !x.ask(ctx, "现在修改？") {
 		fmt.Fprintln(x.Out, "  已跳过。")
 		return false
 	}
@@ -193,7 +205,7 @@ func (x *Fixer) fixUpdates(ctx context.Context) bool {
 	}
 	fmt.Fprintln(x.Out, "  提示：重要服务器建议先做快照。升级可能需要几分钟。")
 	id := x.actionID("updates")
-	if !x.preview(ctx, id, action.TypePackageSecurityUpgrade, params) || !x.ask("现在升级？") {
+	if !x.preview(ctx, id, action.TypePackageSecurityUpgrade, params) || !x.ask(ctx, "现在升级？") {
 		fmt.Fprintln(x.Out, "  已跳过。")
 		return false
 	}
@@ -248,7 +260,7 @@ func (x *Fixer) printFailure(r action.Receipt) {
 		fmt.Fprintf(x.Out, "  没有成功，而且无法确认服务器当前状态，请手动检查：%s\n", r.Error)
 		return
 	}
-	fmt.Fprintf(x.Out, "  没有成功，服务器保持原样：%s\n", r.Error)
+	fmt.Fprintf(x.Out, "  没有成功，请核对下面的原因和服务器当前状态：%s\n", r.Error)
 }
 
 // LineReader reads answers from the terminal, optionally with a deadline.
@@ -262,15 +274,12 @@ type lineResult struct {
 func NewLineReader(r io.Reader) *LineReader {
 	lr := &LineReader{lines: make(chan lineResult)}
 	go func() {
+		defer close(lr.lines)
 		sc := bufio.NewScanner(r)
 		for sc.Scan() {
 			lr.lines <- lineResult{text: sc.Text()}
 		}
-		err := sc.Err()
-		if err == nil {
-			err = io.EOF
-		}
-		for {
+		if err := sc.Err(); err != nil {
 			lr.lines <- lineResult{err: err}
 		}
 	}()
@@ -282,17 +291,30 @@ var ErrTimeout = fmt.Errorf("no answer before the deadline")
 
 // ReadLine waits for one line; timeout 0 waits forever.
 func (lr *LineReader) ReadLine(timeout time.Duration) (string, error) {
-	if timeout <= 0 {
-		r := <-lr.lines
-		return r.text, r.err
+	return lr.ReadLineContext(context.Background(), timeout)
+}
+
+// ReadLineContext waits for input, a deadline, or cancellation.
+func (lr *LineReader) ReadLineContext(ctx context.Context, timeout time.Duration) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	t := time.NewTimer(timeout)
-	defer t.Stop()
+	var deadline <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		deadline = t.C
+	}
 	select {
-	case r := <-lr.lines:
+	case r, ok := <-lr.lines:
+		if !ok {
+			return "", io.EOF
+		}
 		return r.text, r.err
-	case <-t.C:
+	case <-deadline:
 		return "", ErrTimeout
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 }
 
