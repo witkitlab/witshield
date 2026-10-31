@@ -15,7 +15,8 @@ import {
   ShieldCheck,
   Terminal,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import Image from 'next/image';
+import { useEffect, useRef, useState } from 'react';
 import styles from './marketing.module.css';
 
 type Language = 'zh' | 'en';
@@ -23,10 +24,16 @@ type Language = 'zh' | 'en';
 const copy = {
   zh: {
     nav: { product: '产品', workflow: '工作方式', deploy: '部署', docs: '文档' },
-    eyebrow: '开源 · 自托管 · 管理员掌控',
-    title: '让每台服务器，\n都有一位懂边界的\n智能守卫。',
-    lead: '妙计巡御像一位常驻服务器的 AI 安全工程师：持续收集信号、主动调查事件，在你批准或明确预授权后执行可验证的处置。',
-    install: '一行命令安装',
+    eyebrow: '开源 · 服务器体检 · 管理员掌控',
+    title: '一条命令，检查服务器常见风险；能自动处理的，先预览，再由你确认。',
+    lead: '先看安全分和最该处理的 3 件事。支持 Ubuntu / Debian，不装服务，不开端口。',
+    checkCommandLabel: '先下载、审阅，再运行体检',
+    releaseBadge: 'v0.4.0 待发布',
+    releaseNote: '以下命令将在 v0.4.0 发布后可用。体检只读，修复需要另外运行 --fix 并逐项确认。',
+    checkDemoLabel: '从体检到确认修复',
+    checkDemoHint: '终端流程演示',
+    checkDemoAlt: '巡御命令行演示：查看安全报告，确认修复 SSH 和 shadow 权限，再次体检查看结果。',
+    checkDemoCaption: '基础体检覆盖常见风险，分数不代表全面安全审计。',
     github: '查看 GitHub',
     heroDemoLabel: '跨端控制台',
     heroDemoHint: '桌面与手机，同一任务实时同步',
@@ -61,6 +68,9 @@ const copy = {
     commandLabel: '下载、审阅并安装最新签名版本',
     copy: '复制',
     copied: '已复制',
+    copySuccess: '命令已复制到剪贴板。',
+    copyError: '复制失败。已选中命令，请手动复制。',
+    manualCopyLabel: '手动复制命令',
     nativeTitle: '原生安装',
     nativeBody: '支持完整巡检、经批准修复与自动防御。首发支持 Ubuntu / Debian，x86_64 与 arm64。',
     dockerTitle: 'Docker 观察模式',
@@ -76,10 +86,16 @@ const copy = {
   },
   en: {
     nav: { product: 'Product', workflow: 'How it works', deploy: 'Deploy', docs: 'Docs' },
-    eyebrow: 'Open source · Self-hosted · Admin controlled',
-    title: 'An intelligent\nguard for every\nserver you run.',
-    lead: 'WitShield AI continuously finds risk, explains impact, fixes issues after your approval, and responds to attacks within boundaries you define.',
-    install: 'Install with one command',
+    eyebrow: 'Open source · Server checks · Admin controlled',
+    title: 'One command to check common server risks. Preview supported fixes, then decide what to apply.',
+    lead: 'See your security score and the top 3 issues to address. For Ubuntu / Debian, with no service to install or port to open.',
+    checkCommandLabel: 'Download, review, then run the check',
+    releaseBadge: 'v0.4.0 · Coming soon',
+    releaseNote: 'This command will work after v0.4.0 is released. Checks are read-only; fixes require --fix and your approval for each change.',
+    checkDemoLabel: 'From check to approved fixes',
+    checkDemoHint: 'Terminal walkthrough',
+    checkDemoAlt: 'WitShield CLI walkthrough: review the security report, approve SSH and shadow permission fixes, then check the results again.',
+    checkDemoCaption: 'A baseline check covers common risks. The score is not a full security audit.',
     github: 'View on GitHub',
     heroDemoLabel: 'Cross-device control',
     heroDemoHint: 'Desktop and mobile stay on the same live task',
@@ -114,6 +130,9 @@ const copy = {
     commandLabel: 'Download, review, and install the latest signed release',
     copy: 'Copy',
     copied: 'Copied',
+    copySuccess: 'Command copied to the clipboard.',
+    copyError: 'Copy failed. The command is selected; please copy it manually.',
+    manualCopyLabel: 'Copy the command manually',
     nativeTitle: 'Native installation',
     nativeBody: 'Full inspection, approved remediation, and automated defense. Ubuntu / Debian on x86_64 and arm64 are supported first.',
     dockerTitle: 'Docker observer mode',
@@ -129,28 +148,70 @@ const copy = {
   },
 } as const;
 
+const checkCommand = `curl -fsSLO https://github.com/witkitlab/witshield/releases/download/v0.4.0/check.sh && \\
+less check.sh && sudo bash check.sh --version v0.4.0`;
+
 const installCommand = `curl --proto '=https' --tlsv1.2 -fsSLo install.sh \\
   https://github.com/witkitlab/witshield/releases/latest/download/install.sh && \\
 less install.sh && sudo bash install.sh --mode standalone`;
 
+type CommandPanelProps = {
+  command: string;
+  label: string;
+  text: typeof copy[Language];
+  hero?: boolean;
+};
+
+function CommandPanel({ command, label, text, hero = false }: CommandPanelProps) {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const resetTimer = useRef<number | null>(null);
+  const manualCommand = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => () => {
+    if (resetTimer.current) window.clearTimeout(resetTimer.current);
+  }, []);
+
+  useEffect(() => {
+    if (status === 'error') {
+      manualCommand.current?.focus();
+      manualCommand.current?.select();
+    }
+  }, [status]);
+
+  async function copyCommand() {
+    if (resetTimer.current) window.clearTimeout(resetTimer.current);
+    try {
+      await navigator.clipboard.writeText(command);
+      setStatus('copied');
+      resetTimer.current = window.setTimeout(() => setStatus('idle'), 3200);
+    } catch {
+      setStatus('error');
+    }
+  }
+
+  return (
+    <div className={`${styles.installPanel}${hero ? ` ${styles.checkPanel}` : ''}`}>
+      <div className={styles.codeHeading}>
+        <span><Terminal size={15} aria-hidden="true" />{label}</span>
+        <button type="button" onClick={() => void copyCommand()}>
+          {status === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}{status === 'copied' ? text.copied : text.copy}
+        </button>
+      </div>
+      {status === 'error' ? (
+        <textarea ref={manualCommand} className={styles.manualCommand} aria-label={text.manualCopyLabel} value={command} readOnly rows={4} onFocus={(event) => event.currentTarget.select()} />
+      ) : <pre><code>{command}</code></pre>}
+      <p className={styles.copyFeedback} role="status">{status === 'copied' ? text.copySuccess : status === 'error' ? text.copyError : ''}</p>
+    </div>
+  );
+}
+
 export function MarketingHome() {
   const [language, setLanguage] = useState<Language>('zh');
-  const [copied, setCopied] = useState(false);
   const text = copy[language];
 
   useEffect(() => {
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
   }, [language]);
-
-  async function copyInstallCommand() {
-    try {
-      await navigator.clipboard.writeText(installCommand);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 3200);
-    } catch {
-      setCopied(false);
-    }
-  }
 
   return (
     <main className={styles.site}>
@@ -173,16 +234,26 @@ export function MarketingHome() {
         </div>
       </header>
 
-      <section className={styles.hero} id="top">
+      <section className={styles.hero} id="top" aria-labelledby="check-title">
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}>{text.eyebrow}</p>
-          <h1>{text.title.split('\n').map((line) => <span key={line}>{line}</span>)}</h1>
+          <h1 id="check-title">{text.title}</h1>
           <p className={styles.lead}>{text.lead}</p>
+          <div className={styles.releaseNotice}><span>{text.releaseBadge}</span><p>{text.releaseNote}</p></div>
+          <CommandPanel command={checkCommand} label={text.checkCommandLabel} text={text} hero />
           <div className={styles.ctas}>
-            <a className={styles.primaryCta} href="#deploy"><Terminal size={16} />{text.install}<ArrowRight size={15} /></a>
+            <a className={styles.secondaryCta} href="/demo" target="_blank" rel="noreferrer">{text.openDemo}<ArrowRight size={15} /></a>
             <a className={styles.secondaryCta} href="https://github.com/witkitlab/witshield" target="_blank" rel="noreferrer"><GitBranch size={16} />{text.github}</a>
           </div>
         </div>
+        <figure className={styles.checkDemo}>
+          <div className={styles.checkDemoHeading}><span><Terminal size={15} aria-hidden="true" />{text.checkDemoLabel}</span><small>{text.checkDemoHint}</small></div>
+          <Image src="/check-demo.gif" alt={text.checkDemoAlt} width={1440} height={900} unoptimized className={styles.checkDemoImage} />
+          <figcaption>{text.checkDemoCaption}</figcaption>
+        </figure>
+      </section>
+
+      <section className={styles.productSection} id="product">
         <div className={styles.heroProduct}>
           <div className={styles.heroProductHeading}>
             <span><i className={styles.liveDot} />{text.heroDemoLabel}</span>
@@ -206,9 +277,6 @@ export function MarketingHome() {
           </div>
           <a className={styles.heroDemoLink} href="/demo" target="_blank">{text.openConsole}<ArrowRight size={14} /></a>
         </div>
-      </section>
-
-      <section className={styles.productSection} id="product">
         <div className={styles.demoHeading}>
           <div><span className={styles.liveDot} />{text.demoLabel}<small>{text.demoHint}</small></div>
           <a href="/demo" target="_blank">{text.openDemo}<ArrowRight size={14} /></a>
@@ -258,15 +326,7 @@ export function MarketingHome() {
           <h2>{text.deployTitle}</h2>
           <p>{text.deployLead}</p>
         </div>
-        <div className={styles.installPanel}>
-          <div className={styles.codeHeading}>
-            <span><Terminal size={15} />{text.commandLabel}</span>
-            <button onClick={() => void copyInstallCommand()} aria-live="polite">
-              {copied ? <Check size={14} /> : <Copy size={14} />}{copied ? text.copied : text.copy}
-            </button>
-          </div>
-          <pre><code>{installCommand}</code></pre>
-        </div>
+        <CommandPanel command={installCommand} label={text.commandLabel} text={text} />
         <div className={styles.deployModes}>
           <article><Server size={19} /><div><h3>{text.nativeTitle}</h3><p>{text.nativeBody}</p></div></article>
           <article><Radar size={19} /><div><h3>{text.dockerTitle}</h3><p>{text.dockerBody}</p></div></article>
@@ -288,7 +348,7 @@ export function MarketingHome() {
         </div>
       </section>
 
-      <aside className={styles.statusNote}><span>v0.2</span><p>{text.currentStatus}</p></aside>
+      <aside className={styles.statusNote}><span>{text.releaseBadge}</span><p>{text.currentStatus}</p></aside>
 
       <footer className={styles.footer}>
         <a className={styles.logo} href="#top"><span className={styles.logoMark}><ShieldCheck /></span><span><strong>妙计巡御</strong><small>WitShield AI</small></span></a>
