@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 2,
+  "source": {
+    "status": "PASS",
+    "scope": "Debian12 amd64 full-system QEMU TCG VM, real PID1 systemd and real ssh.service, fresh container-loopback forwarded TCP SSH; no mocked systemctl",
+    "sourceCommit": "dfa093f35f7d569071ef83fa58907c3b0597e956",
+    "binarySHA256": "c6175de872ee349ac970d95e0e5ea0d4a6adf602ca4d222ffca5cca33757ff55",
+    "buildNote": "Captured with the older dfa093f build containing CLI hardening be7c87e, not the final v0.4.0 release binary.",
+    "guest": {
+      "distribution": "Debian GNU/Linux 12",
+      "version": "12.15",
+      "architecture": "x86_64",
+      "kernel": "6.1.0-54-cloud-amd64",
+      "pid1": "systemd",
+      "systemdVersion": "systemd 252 (252.39-1~deb12u2)",
+      "virtualization": "QEMU TCG full-system virtual machine"
+    },
+    "terminalInputEcho": true,
+    "launchMethod": "y/yes written to real guest PTY, only actual received echo retained; CLI startup command provided by SSH exec, not typed shell input",
+    "repairElapsedSeconds": 6.235,
+    "summaryElapsedSeconds": 6.23,
+    "sshConfirmSeconds": 60,
+    "commands": {
+      "before": [
+        "sudo",
+        "/usr/local/bin/witshield",
+        "check",
+        "--no-color"
+      ],
+      "repair": [
+        "sudo",
+        "sh",
+        "-c",
+        "echo $$ > /run/witshield-test-cli.pid; exec /usr/local/bin/witshield check --fix --no-color --ssh-confirm-seconds 60"
+      ],
+      "after": [
+        "sudo",
+        "/usr/local/bin/witshield",
+        "check",
+        "--no-color"
+      ]
+    },
+    "redaction": "Only the PASS valid-capture-debian12-amd64 export is used. It already uses demo-vps and replaces IP literals with [IP]. No credentials, key material, known_hosts, SSH fingerprints, or private test-runner code are included. SSH failure counts include isolated test authentication probes.",
+    "sourceSHA256": {
+      "before.stdout": "a4fbda1314fe713913853ede5c1e8b9097e38ebc4574666b28db06d551117d73",
+      "before-json.stdout": "048527ac86be2be5bcaa63d95b11050d7ab7faae68a42e9e83ca5e9ae235e8e5",
+      "fix.stdout": "a6351d0023ef9b290e99e5517e34ccbd0bddb3503c935da5c7880128886f9510",
+      "fix.chunks.json": "5381ad55c699b7b0cace5833ebda5e329b80fb6fb70ad74c0a8c49e2f19a404f",
+      "fix.metadata.json": "0125236467b97ddeaa07be3bbab9a025a2195f95b723b3665cc400363fe92b0e",
+      "after.stdout": "9f1ee6df3b83c5c42b6691c972199ecbb9dee8df140369b6a185bb1037ed20cb",
+      "after-json.stdout": "5b7b7dcd00d3b91ced6a5d2862190c29805e4639c6e4af1e32c9a2d261605fe5",
+      "capture.metadata.json": "3d22b4db4bde9106b9eca5e617f5c95b5798b31c6f3b9b871743ca1dac670662",
+      "before-password-password-probe.json": "aff1e5c0adfa8a37cebdc609247ed7ab120aea054cc0136432fd4bbfa562435d",
+      "after-password-password-probe.json": "4eaccb754a4d032a03876a9755f95acf2421d666600aa1c22c0f351ecfe81cfe",
+      "key-validation.json": "ef606d952bd1ed90e9f2d872998a67b6e1474dba7f129b89dd31d09176b9bcfa",
+      "build-info.json": "f711fe86055cf6b96c5d1a89ff19c961131b4d106d48740e9bd472729706fbf2"
+    },
+    "binaryVersion": "witshield v0.4.0-dev (commit unknown, built unknown)",
+    "cliHardeningCommit": "be7c87e45ce075dd26375e71b1f300582708a744",
+    "buildVCSModified": false,
+    "buildInfo": {
+      "binarySHA256": "c6175de872ee349ac970d95e0e5ea0d4a6adf602ca4d222ffca5cca33757ff55",
+      "goVersion": "go1.27.3",
+      "buildSettings": {
+        "-buildmode": "exe",
+        "-compiler": "gc",
+        "CGO_ENABLED": "0",
+        "GOARCH": "amd64",
+        "GOOS": "linux",
+        "GOAMD64": "v1",
+        "vcs": "git",
+        "vcs.revision": "dfa093f35f7d569071ef83fa58907c3b0597e956",
+        "vcs.time": "2026-10-31T12:39:34Z",
+        "vcs.modified": "false"
+      },
+      "humanVersion": "witshield v0.4.0-dev (commit unknown, built unknown)",
+      "evidence": "actual go version -m inspection; only non-secret build settings exported"
+    }
+  },
+  "before": {
+    "score": 58,
+    "grade": "危险",
+    "checks": 8,
+    "completedChecks": 7,
+    "coveragePercent": 87,
+    "stdout": "\n妙计巡御 · 服务器体检  demo-vps  Debian GNU/Linux 12 (bookworm)\n────────────────────────────────────────────────\n  安全分  58 / 100  危险    完成检查 7/8 项\n  过去 24 小时：SSH 登录失败 9 次，来自 1 个 IP\n  失败最多的来源：[IP]（9 次）\n  发现 5 个问题：严重 0 · 高危 2 · 中危 0 · 低危 2 · 提示 1\n\n  ！有检查没能完成，分数只代表已完成的部分：\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\nexec: \"nft\": executable file not found in $PATH\n\n最该先处理的 3 件事\n  1. [高危] SSH 允许密码登录  可一键修复\n     为什么危险：过去 24 小时已记录 9 次 SSH 登录失败，来自 1 个 IP。公网上的服务器每天都会被自动脚本反复猜密码，只要密码被猜中一次，服务器就归别人了。改成只用密钥登录后，这类攻击基本无效。\n     证据：PasswordAuthentication yes\n     怎么修：\n       先确认自己能用密钥登录（ssh-copy-id 用户名@服务器）\n       编辑 /etc/ssh/sshd_config，设置 PasswordAuthentication no\n       sudo sshd -t && sudo systemctl reload ssh\n  2. [高危] /etc/shadow 权限过宽  可一键修复\n     为什么危险：这个文件保存所有用户的密码哈希，普通用户能读到就能离线暴力破解密码。\n     证据：mode 0644\n     怎么修：\n       sudo chown root:shadow /etc/shadow && sudo chmod 640 /etc/shadow\n  3. [低危] root 可以用密钥直接登录 SSH\n     为什么危险：风险不大，但 root 密钥一旦泄露，影响就是整台服务器。更稳妥的做法是用普通用户登录再 sudo。\n     证据：PermitRootLogin without-password\n     怎么修：\n       确认普通用户能登录并 sudo 后，把 /etc/ssh/sshd_config 中的 PermitRootLogin 改为 no\n\n其余问题\n  4. [低危] 内核指针地址没有隐藏\n  5. [提示] 有服务对外开放端口\n\n下一步\n  sudo witshield check --fix   逐项修复 2 个可一键修复的问题：先预览、确认后修改并验证；SSH 和文件权限支持恢复，软件包升级前建议做快照\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\n\n分享：我的服务器安全分 58/100（危险），用妙计巡御体检 → github.com/witkitlab/witshield\n\n",
+    "issueCount": 5
+  },
+  "repair": {
+    "status": "PASS",
+    "stdout": "正在体检，通常需要 10–30 秒……\n\n妙计巡御 · 服务器体检  demo-vps  Debian GNU/Linux 12 (bookworm)\n────────────────────────────────────────────────\n  安全分  58 / 100  危险    完成检查 7/8 项\n  过去 24 小时：SSH 登录失败 9 次，来自 1 个 IP\n  失败最多的来源：[IP]（9 次）\n  发现 5 个问题：严重 0 · 高危 2 · 中危 0 · 低危 2 · 提示 1\n\n  ！有检查没能完成，分数只代表已完成的部分：\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\nexec: \"nft\": executable file not found in $PATH\n\n最该先处理的 3 件事\n  1. [高危] SSH 允许密码登录  可一键修复\n     为什么危险：过去 24 小时已记录 9 次 SSH 登录失败，来自 1 个 IP。公网上的服务器每天都会被自动脚本反复猜密码，只要密码被猜中一次，服务器就归别人了。改成只用密钥登录后，这类攻击基本无效。\n     证据：PasswordAuthentication yes\n     怎么修：\n       先确认自己能用密钥登录（ssh-copy-id 用户名@服务器）\n       编辑 /etc/ssh/sshd_config，设置 PasswordAuthentication no\n       sudo sshd -t && sudo systemctl reload ssh\n  2. [高危] /etc/shadow 权限过宽  可一键修复\n     为什么危险：这个文件保存所有用户的密码哈希，普通用户能读到就能离线暴力破解密码。\n     证据：mode 0644\n     怎么修：\n       sudo chown root:shadow /etc/shadow && sudo chmod 640 /etc/shadow\n  3. [低危] root 可以用密钥直接登录 SSH\n     为什么危险：风险不大，但 root 密钥一旦泄露，影响就是整台服务器。更稳妥的做法是用普通用户登录再 sudo。\n     证据：PermitRootLogin without-password\n     怎么修：\n       确认普通用户能登录并 sudo 后，把 /etc/ssh/sshd_config 中的 PermitRootLogin 改为 no\n\n其余问题\n  4. [低危] 内核指针地址没有隐藏\n  5. [提示] 有服务对外开放端口\n\n下一步\n  sudo witshield check --fix   逐项修复 2 个可一键修复的问题：先预览、确认后修改并验证；SSH 和文件权限支持恢复，软件包升级前建议做快照\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\n\n分享：我的服务器安全分 58/100（危险），用妙计巡御体检 → github.com/witkitlab/witshield\n\n\n开始逐项修复，共 2 项。每一项都会先告诉你要改什么，你输入 y 才会动手。\n\n[1/2] SSH 允许密码登录\n  已找到可以用密钥登录的账号：demo\n  会做的事：\n    1. 备份 /etc/ssh/sshd_config，把 PasswordAuthentication 改成 no\n    2. 用 sshd -t 校验配置，通过后重新加载 SSH（已经连着的窗口不会断）\n    3. 等你新开一个窗口确认还能登录；60 秒内没有确认，自动恢复原配置\n  预检通过。\n  现在修改？ [y/N] y\n  预检 ✓  →  预览 ✓  →  修改 ✓  →  验证 ✓\n\n  请不要关闭这个窗口。\n  现在新开一个终端，用密钥登录这台服务器（ssh 用户名@服务器）。\n  能登录的话，回到这里输入 yes 并回车。13:13:28 前没有确认，会自动恢复原配置。\n  新窗口能登录吗？输入 yes 确认，其他任意内容恢复原配置：yes\n\n  完成：SSH 已改为只允许密钥登录，自动恢复已取消。\n\n[2/2] /etc/shadow 权限过宽\n  会做的事：把 /etc/shadow 的属主和权限改回系统默认的 root:shadow 0640，改完立即检查。\n  预检通过。\n  现在修改？ [y/N] y\n  预检 ✓  →  预览 ✓  →  修改 ✓  →  验证 ✓\n  完成：/etc/shadow 权限已恢复。\n\n修复结束：完成 2 项，共 2 项。\n再运行一次 sudo witshield check 看看新的分数。\n\n",
+    "chunks": [
+      {
+        "at": 1.463,
+        "data": "正在体检，通常需要 10–30 秒……\r\n"
+      },
+      {
+        "at": 2.571,
+        "data": "\r\n妙计巡御 · 服务器体检  demo-vps  Debian GNU/Linux 12 (bookworm)\r\n────────────────────────────────────────────────\r\n  安全分  58 / 100  危险    完成检查 7/8 项\r\n  过去 24 小时：SSH 登录失败 9 次，来自 1 个 IP\r\n  失败最多的来源：[IP]（9 次）\r\n  发现 5 个问题：严重 0 · 高危 2 · 中危 0 · 低危 2 · 提示 1\r\n\r\n  ！有检查没能完成，分数只代表已完成的部分：\r\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\r\nexec: \"nft\": executable file not found in $PATH\r\n\r\n最该先处理的 3 件事\r\n  1. [高危] SSH 允许密码登录  可一键修复\r\n     为什么危险：过去 24 小时已记录 9 次 SSH 登录失败，来自 1 个 IP。公网上的服务器每天都会被自动脚本反复猜密码，只要密码被猜中一次，服务器就归别人了。改成只用密钥登录后，这类攻击基本无效。\r\n     证据：PasswordAuthentication yes\r\n     怎么修：\r\n       先确认自己能用密钥登录（ssh-copy-id 用户名@服务器）\r\n       编辑 /etc/ssh/sshd_config，设置 PasswordAuthentication no\r\n       sudo sshd -t && sudo systemctl reload ssh\r\n  2. [高危] /etc/shadow 权限过宽  可一键修复\r\n     为什么危险：这个文件保存所有用户的密码哈希，普通用户能读到就能离线暴力破解密码。\r\n     证据：mode 0644\r\n     怎么修：\r\n       sudo chown root:shadow /etc/shadow && sudo chmod 640 /etc/shadow\r\n  3. [低危] root 可以用密钥直接登录 SSH\r\n     为什么危险：风险不大，但 root 密钥一旦泄露，影响就是整台服务器。更稳妥的做法是用普通用户登录再 sudo。\r\n     证据：PermitRootLogin without-password\r\n     怎么修：\r\n       确认普通用户能登录并 sudo 后，把 /etc/ssh/sshd_config 中的 PermitRootLogin 改为 no\r\n\r\n其余问题\r\n  4. [低危] 内核指针地址没有隐藏\r\n  5. [提示] 有服务对外开放端口\r\n\r\n下一步\r\n  sudo witshield check --fix   逐项修复 2 个可一键修复的问题：先预览、确认后修改并验证；SSH 和文件权限支持恢复，软件包升级前建议做快照\r\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\r\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\r\n\r\n分享：我的服务器安全分 58/100（危险），用妙计巡御体检 → github.com/witkitlab/witshield\r\n\r\n"
+      },
+      {
+        "at": 2.668,
+        "data": "\r\n开始逐项修复，共 2 项。每一项都会先告诉你要改什么，你输入 y 才会动手。\r\n"
+      },
+      {
+        "at": 2.669,
+        "data": "\r\n[1/2] SSH 允许密码登录\r\n"
+      },
+      {
+        "at": 2.676,
+        "data": "  已找到可以用密钥登录的账号：demo"
+      },
+      {
+        "at": 2.68,
+        "data": "\r\n  会做的事：\r\n    1. 备份 /etc/ssh/sshd_config，把 PasswordAuthentication 改成 no\r\n    2. 用 sshd -t 校验配置，通过后重新加载 SSH（已经连着的窗口不会断）\r\n    3. 等你新开一个窗口确认还能登录；60 秒内没有确认，自动恢复原配置\r\n"
+      },
+      {
+        "at": 2.904,
+        "data": "  预检通过。\r\n  现在修改？ [y/N] "
+      },
+      {
+        "at": 2.908,
+        "data": "y\r\n"
+      },
+      {
+        "at": 4.55,
+        "data": "  预检 ✓  →  预览 ✓  →  修改 ✓  →  验证 ✓\r\n\r\n  请不要关闭这个窗口。\r\n  现在新开一个终端，用密钥登录这台服务器（ssh 用户名@服务器）。\r\n"
+      },
+      {
+        "at": 4.553,
+        "data": "  能登录的话，回到这里输入 yes 并回车。13:13:28 前没有确认，会自动恢复原配置。\r\n  新窗口能登录吗？输入 yes 确认，其他任意内容恢复原配置："
+      },
+      {
+        "at": 5.704,
+        "data": "yes\r\n"
+      },
+      {
+        "at": 5.708,
+        "data": "\r\n"
+      },
+      {
+        "at": 6.174,
+        "data": "  完成：SSH 已改为只允许密钥登录，自动恢复已取消。\r\n"
+      },
+      {
+        "at": 6.175,
+        "data": "\r\n[2/2] /etc/shadow 权限过宽\r\n"
+      },
+      {
+        "at": 6.178,
+        "data": "  会做的事：把 /etc/shadow 的属主和权限改回系统默认的 root:shadow 0640，改完立即检查。\r\n"
+      },
+      {
+        "at": 6.182,
+        "data": "  预检通过。\r\n  现在修改？ [y/N] "
+      },
+      {
+        "at": 6.189,
+        "data": "y\r\n"
+      },
+      {
+        "at": 6.201,
+        "data": "  预检 ✓  →  预览 ✓  →  修改 ✓  →  验证 ✓\r\n  完成：/etc/shadow 权限已恢复。"
+      },
+      {
+        "at": 6.201,
+        "data": "\r\n"
+      },
+      {
+        "at": 6.201,
+        "data": "\r\n"
+      },
+      {
+        "at": 6.202,
+        "data": "修复结束：完成 2 项，共 2 项。"
+      },
+      {
+        "at": 6.203,
+        "data": "\r\n再运行一次 sudo witshield check 看看新的分数。\r\n\r\n"
+      }
+    ],
+    "inputEvents": [
+      {
+        "at": 2.904,
+        "input": "y",
+        "purpose": "typed repair approval"
+      },
+      {
+        "at": 5.702,
+        "input": "yes",
+        "purpose": "SSH confirmation after fresh key session"
+      },
+      {
+        "at": 6.182,
+        "input": "y",
+        "purpose": "typed repair approval"
+      }
+    ],
+    "sshApproved": true,
+    "shadowApproved": true,
+    "beforePasswordProbe": {
+      "exitCode": 0,
+      "commandSucceeded": true,
+      "authenticationMethods": [
+        "password"
+      ],
+      "pubkeyDisabled": true,
+      "keyboardInteractiveDisabled": true,
+      "preferredAuthentication": "password",
+      "connectionReuseDisabled": true
+    },
+    "beforeKeyProbe": {
+      "status": "PASS",
+      "freshTcp": true
+    },
+    "confirmationKeyProbe": {
+      "status": "PASS",
+      "freshTcp": true
+    },
+    "afterKeyProbe": {
+      "status": "PASS",
+      "freshTcp": true
+    },
+    "afterPasswordProbe": {
+      "exitCode": 255,
+      "commandSucceeded": false,
+      "authenticationMethods": [],
+      "pubkeyDisabled": true,
+      "keyboardInteractiveDisabled": true,
+      "preferredAuthentication": "password",
+      "connectionReuseDisabled": true
+    },
+    "postCaptureKeyValidation": {
+      "status": "PASS",
+      "authenticationMethods": [
+        "publickey"
+      ],
+      "options": {
+        "BatchMode": "yes",
+        "IdentitiesOnly": "yes",
+        "ControlMaster": "no",
+        "ControlPath": "none"
+      },
+      "note": "post-capture fresh TCP verification using same key-only batch arguments; raw SSH debug not retained",
+      "binaryVersion": "witshield v0.4.0-dev (commit unknown, built unknown)"
+    }
+  },
+  "after": {
+    "score": 87,
+    "grade": "良好",
+    "checks": 8,
+    "completedChecks": 7,
+    "coveragePercent": 87,
+    "stdout": "\n妙计巡御 · 服务器体检  demo-vps  Debian GNU/Linux 12 (bookworm)\n────────────────────────────────────────────────\n  安全分  87 / 100  良好    完成检查 7/8 项\n  过去 24 小时：SSH 登录失败 10 次，来自 1 个 IP\n  失败最多的来源：[IP]（10 次）\n  发现 3 个问题：严重 0 · 高危 0 · 中危 0 · 低危 2 · 提示 1\n\n  ！有检查没能完成，分数只代表已完成的部分：\n    · firewall: firewall status is unavailable: exec: \"ufw\": executable file not found in $PATH\nexec: \"nft\": executable file not found in $PATH\n\n最该先处理的 3 件事\n  1. [低危] root 可以用密钥直接登录 SSH\n     为什么危险：风险不大，但 root 密钥一旦泄露，影响就是整台服务器。更稳妥的做法是用普通用户登录再 sudo。\n     证据：PermitRootLogin without-password\n     怎么修：\n       确认普通用户能登录并 sudo 后，把 /etc/ssh/sshd_config 中的 PermitRootLogin 改为 no\n  2. [低危] 内核指针地址没有隐藏\n     为什么危险：暴露的内核地址会让本地提权更容易成功。\n     证据：kernel/kptr_restrict=0\n     怎么修：\n       echo 'kernel.kptr_restrict = 1' | sudo tee -a /etc/sysctl.d/90-witshield.conf && sudo sysctl --system\n  3. [提示] 有服务对外开放端口\n     为什么危险：不一定是问题，但每个对外端口都是一个入口。数据库、Redis、管理面板这类服务通常不该直接暴露在公网。\n     证据：Non-loopback TCP ports: 53, 5355\n     怎么修：\n       查看是哪些程序在监听：sudo ss -ltnp\n       只在本机用的服务改为监听 [IP]；需要对外的，在防火墙或云服务器安全组里只放行必要端口\n\n下一步\n  witshield check --ai        用你自己的大模型 API（DeepSeek、通义、豆包等）解读这份报告\n  witshield check --json      输出 JSON，方便接入脚本或其他 AI 工具\n\n分享：我的服务器安全分 87/100（良好），用妙计巡御体检 → github.com/witkitlab/witshield\n\n",
+    "issueCount": 3
+  }
+}

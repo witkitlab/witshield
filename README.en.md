@@ -1,57 +1,88 @@
-# WitShield AI
+**One command to check common server risks, with a preview and your approval before supported repairs.**
 
-**WitShield AI (妙计巡御)** is an open-source, agentic security guard for Linux servers. It continuously inspects a server, explains evidence-backed findings, proposes structured remediation, and acts only within explicit approval and policy boundaries.
-
-[Product website](https://witshield.witkitlab.com) · [Chinese README](README.md) · [Architecture](docs/architecture.md) · [Security model](docs/threat-model.md)
-
-Key properties:
-
-- local-first single-server mode and a self-hosted, single-admin multi-device controller;
-- scheduled security posture checks with auditable evidence;
-- continuous change signals for accounts, privileged configuration, schedules, systemd services, and container configuration;
-- durable Signal → Incident → Investigation → ResponsePlan correlation and lifecycle;
-- optional, user-supplied OpenAI- or Anthropic-compatible API URL, key, and model;
-- approval, verification, rollback, and audit around remediation;
-- narrowly scoped, reversible, time-limited automatic containment;
-- signed Webhook and SMTP notifications configured and tested from Settings, with a durable per-channel retry outbox;
-- no hack-back, no public SaaS dependency, and no bundled API key.
-
-SSH automatic containment requires at least one non-loopback administrator IP/CIDR allowlist entry; the product does not guess NAT, bastion, or dynamic management sources. Docker observer reports every unavailable check and marks its score as incomplete rather than treating partial visibility as a full-host assessment.
-
-The Controller is the sole authority for recurring schedules. An Agent runs one startup scan and then scans only on Controller commands; its interval setting is merely the initial schedule hint sent during first enrollment. SSH hardening remains `awaiting_confirmation` after the change while a durable local Helper timer protects access. It becomes successful only after the administrator verifies a second connection and confirms it; expiry triggers the safety restore without pretending that the Controller received a successful rollback receipt.
-
-Emergency stop is device-scoped. It prevents new automatic decisions and atomically cancels policy actions that have not crossed the Agent's final authorization gate. It does not misreport an action already executing as cancelled, and active nftables bans still expire by their kernel TTL or can be rolled back explicitly.
-
-Privileged action results are bound to the exact command and payload by the device's persistent Ed25519 identity. Possession of a bearer device credential alone is therefore insufficient to forge a successful remediation result. A per-device long-poll gate, Agent request limits, and bounded report/event retention keep one compromised device from exhausting the single-node Controller.
-
-The base Docker observer mounts only `/etc/passwd` and the host IPv4 TCP table. Optional single-file overlays add SSH and IPv6 visibility only when those files exist; missing IPv6 data preserves visible IPv4 evidence while marking TCP coverage incomplete.
-
-The project is in early development. Automatic action is off by default. See the [Chinese README](README.md), [architecture](docs/architecture.md), [threat model](docs/threat-model.md), and [operations guide](docs/operations.md).
-
-When a per-device capability is explicitly enabled, a background security-engineer worker can investigate eligible incidents with five fixed, Controller-side, read-only queries. It cannot call the Agent, Helper, or a shell. Model output must be strict JSON; proposed typed actions are validated again and still require a fresh one-time approval. Only separately registered deterministic low-risk rules are eligible for pre-authorized automatic execution. See the [resident security engineer design](docs/security-engineer.md).
-
-## Install on Ubuntu/Debian
-
-Review the installer before running it:
+![WitShield check and interactive repair demo](docs/demo/check.gif)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSLO \
-  https://github.com/witkitlab/witshield/releases/latest/download/install.sh
-less install.sh
-sudo bash install.sh --mode standalone
+curl -fsSLO https://github.com/witkitlab/witshield/releases/download/v0.4.0/check.sh && less check.sh && sudo bash check.sh --version v0.4.0
+curl -fsSL https://github.com/witkitlab/witshield/releases/download/v0.4.0/check.sh | sudo bash -s -- --version v0.4.0
 ```
 
-The installer downloads from an immutable GitHub Release, verifies the
-release-workflow Sigstore identity, and bootstraps a checksum-pinned Cosign
-verifier when the host does not already provide one. It records the installed
-version and refuses implicit downgrades.
+**v0.4.0 is planned and has not been released.** These commands become usable when its release assets are published. The first downloads the script for review; the second executes the downloaded script directly. The script checks the binary's SHA-256 and the GitHub release workflow's Sigstore identity before running it. Review the script itself and trust its download source.
 
-Upgrades take a root-only consistent snapshot while services are quiesced and
-automatically restore the previous application, configuration, data, and unit
-state when full readiness fails. In standalone mode, the native Agent uses an
-installation-owned Unix socket instead of a loopback TCP endpoint that another
-local process could occupy while the Controller is down.
+[中文说明](README.md) · [Website](https://witshield.witkitlab.com) · [Threat model](docs/threat-model.md) · [Contributing](CONTRIBUTING.md)
 
-The controller listens on `127.0.0.1:8080` by default. Docker is supported only as a constrained read-only observer; native systemd installation is required for remediation.
+Linux `amd64` and `arm64`; Ubuntu/Debian is the primary target. No account, daemon, or management port is needed. You can scan without root, but unavailable checks are reported explicitly. The score covers completed checks only and is not a full security audit or proof that a host is uncompromised.
 
-Licensed under [Apache-2.0](LICENSE).
+## What it checks
+
+- SSH password authentication and direct root login.
+- Additional UID 0 accounts.
+- Access permissions on `/etc/shadow`.
+- TCP services listening on non-loopback addresses.
+- Host firewall status; review cloud security groups separately.
+- Kernel hardening settings.
+- Pending upgrades from APT's local package index.
+- World-accessible Docker sockets.
+
+The report explains the top three findings and lists the rest. It also tries to count SSH login failures over the last 24 hours, distinct source IPs, and the top three sources. Unavailable logs are reported as unavailable, never as zero failures.
+
+The wrapper runs a temporary binary and removes it on exit. Run the downloaded script again to repeat a check or pass `--fix`; if you downloaded the standalone release binary, use:
+
+```bash
+witshield check
+sudo witshield check --fix
+witshield check --json
+witshield version
+```
+
+Check exit codes: `0` for a score of at least 60, `1` below 60, `2` for usage or runtime errors. Inspect JSON `summary` for incomplete coverage. `--fix` still returns according to the score before repairs; exit code `0` does not mean every repair succeeded. Inspect each repair result and scan again for a new score.
+
+## Why allow repairs?
+
+`--fix` needs root and supports Debian-family systems. Each repair runs prechecks, shows a preview, waits for approval, and verifies the result. It calls existing typed playbooks; AI text cannot execute commands.
+
+| Supported repair | Scope and limits |
+|---|---|
+| Disable SSH password authentication | Requires a public key, validates SSH configuration, and reloads the service. Keep the original session open and confirm a second key-based login. Without confirmation, it attempts to restore the configuration after 180 seconds by default. |
+| Repair `/etc/shadow` permissions | Only that file: `root:shadow 0640`, or `root:root 0600` if the shadow group is absent. |
+| Upgrade installed packages | At most 64 explicit packages, no new or removed packages. A locked APT transaction guard rejects unauthorized dependency changes; versions are recorded and checked. |
+
+Firewall, kernel, Docker, and root-login findings have manual guidance only. Recovery can fail, and package maintainer scripts, service restarts, and database migrations cannot be guaranteed reversible. Keep backups, take a snapshot before upgrades, and retain out-of-band access. See the [threat model](docs/threat-model.md).
+
+## Use your own AI provider
+
+AI is optional. This example contains a dummy key; set your real key privately without committing it or exposing it in shared terminal history:
+
+```bash
+export WITSHIELD_AI_BASE_URL=https://api.deepseek.com/v1
+export WITSHIELD_AI_API_KEY=your-api-key
+export WITSHIELD_AI_MODEL=deepseek-chat
+export WITSHIELD_AI_PROTOCOL=openai_chat
+witshield check --ai
+```
+
+The [Chinese README](README.md) also has Qwen and Doubao examples. These are configuration templates, not claims that every provider or model has been tested. Supported protocols are `openai_chat` (default), `openai_responses`, and `anthropic_messages`; see [provider configuration](docs/ai-providers.md).
+
+`--ai` sends the score, completed and total check counts, finding severity and Chinese titles, and SSH failure and distinct-source counts to your configured provider. Unavailable SSH logs are identified as unknown. It does not send IP addresses, raw evidence, hostnames, logs, or file contents. Review your provider's retention policy. Model output is display-only and cannot trigger a repair. The example uses the standalone binary without passing API credentials to root.
+
+## FAQ
+
+**Can it lock me out?** Safeguards reduce risk but do not guarantee access. Verify key login yourself before changing SSH; a public-key file alone is not proof. Confirm a second connection while keeping the first open. Timeout, rejection, or Ctrl-C during confirmation attempts restoration. The confirmation window is 180 seconds by default, configurable to 30–600 seconds with `--ssh-confirm-seconds`. After `kill -9` or a host reboot, the CLI cannot rely on its stopped process to keep the timer running: the next root invocation of any `witshield` subcommand attempts recovery from `/var/lib/witshield-cli/ssh-rollbacks`. Retain a cloud console or other out-of-band access.
+
+**Does it install a service or change settings?** A one-shot scan does neither. The wrapper downloads assets; a plain scan reads local data. `--ai` calls your provider, and package upgrades contact package repositories. `--fix` changes only approved items and keeps its state in `/var/lib/witshield-cli`. If the full Helper is active, it recommends using the console and asks for additional confirmation. Other Linux families may provide partial scan results, but repairs require a Debian-family system.
+
+**Does data leave the host?** Plain scans have no telemetry or report upload. Only explicitly configured `--ai` sends the limited context described above. JSON stays local unless you choose to forward it.
+
+**Does it replace a hosting panel or fail2ban?** It can complement panels such as 1Panel. A one-shot check does not continuously monitor or ban sources. See the full deployment for continuous observation and separately authorized experimental defense.
+
+**Is there a mainland China mirror?** Gitee is planned. Repository setup, publishing credentials, and mainland download/signature tests are still pending. The [Chinese README](README.md) shows the future command; mirror assets must still pass SHA-256 and the GitHub workflow's Sigstore verification.
+
+## Advanced: continuous protection for multiple servers
+
+For the self-hosted Controller, Agents, Docker observer, notifications, schedules, and defense boundaries, see the [full deployment guide](docs/advanced.md), [architecture](docs/architecture.md), and [operations guide](docs/operations.md).
+
+## Roadmap
+
+MCP / Skill access for Claude Code and Codex is planned, within the existing authorization and typed-action boundaries. Panel integrations are also future work.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing. Report vulnerabilities privately through [SECURITY.md](SECURITY.md). Licensed under [Apache-2.0](LICENSE).

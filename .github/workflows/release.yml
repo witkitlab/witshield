@@ -83,6 +83,7 @@ jobs:
           set -euo pipefail
           build_date=$(git show -s --format=%cI "$GITHUB_SHA")
           printf 'build_date=%s\n' "$build_date" >> "$GITHUB_OUTPUT"
+          printf 'version_number=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -114,7 +115,7 @@ jobs:
           go test -race -count=1 ./cmd/... ./internal/...
           go test -coverprofile=coverage.out ./cmd/... ./internal/...
           go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./cmd/... ./internal/...
-          go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./cmd/... ./internal/...
+          go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./cmd/... ./internal/...
           scripts/run-gosec.sh ./cmd/... ./internal/...
 
       - name: Test and export Web UI
@@ -205,6 +206,9 @@ jobs:
             mkdir -p "$stage/web" "$stage/packaging/systemd" "$stage/scripts" "$stage/docs" "$stage/docker"
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
+              -o "$stage/witshield" ./cmd/witshield
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
               -o "$stage/witshield-controller" ./cmd/witshield-controller
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
@@ -212,15 +216,17 @@ jobs:
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
               -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.buildDate=${source_date_epoch}" \
               -o "$stage/witshield-helper" ./cmd/witshield-helper
-            for binary in witshield-controller witshield-agent witshield-helper; do
+            for binary in witshield witshield-controller witshield-agent witshield-helper; do
               metadata=$(go version -m "$stage/$binary")
-              grep -Fq 'go1.27.1' <<<"$metadata"
+              grep -Fq 'go1.27.3' <<<"$metadata"
               grep -Fq 'CGO_ENABLED=0' <<<"$metadata"
             done
+            install -m 0755 "$stage/witshield" "dist/witshield_${version_number}_linux_${arch}"
             cp -a web/out/. "$stage/web/"
             cp packaging/systemd/*.service "$stage/packaging/systemd/"
             cp scripts/uninstall.sh "$stage/scripts/"
             cp docs/*.md "$stage/docs/"
+            if [[ -d docs/demo ]]; then cp -a docs/demo "$stage/docs/"; fi
             cp docker/README.md "$stage/docker/"
             cp LICENSE README.md README.en.md "$stage/"
             archive="dist/witshield_${version_number}_linux_${arch}.tar.gz"
@@ -230,6 +236,7 @@ jobs:
             rm -rf -- "$stage"
           done
           install -m 0755 scripts/install.sh dist/install.sh
+          install -m 0755 scripts/check.sh dist/check.sh
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
@@ -254,17 +261,25 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           test -s dist/install.sh
+          test -s dist/check.sh
+          test -s "dist/witshield_${version}_linux_amd64"
+          test -s "dist/witshield_${version}_linux_arm64"
           test -s "dist/witshield_${version}_linux_amd64.tar.gz"
           test -s "dist/witshield_${version}_linux_arm64.tar.gz"
           test -s "dist/witshield_${GITHUB_REF_NAME}_source.spdx.json"
           test -s "dist/witshield_${GITHUB_REF_NAME}_source.cyclonedx.json"
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 8
       - name: Seal the preflight artifact handoff
         working-directory: dist
         shell: bash
         run: |
           set -euo pipefail
-          LC_ALL=C sha256sum -- install.sh *.tar.gz *.json > STAGING_SHA256SUMS
+          version="${GITHUB_REF_NAME#v}"
+          LC_ALL=C sha256sum -- install.sh check.sh \
+            "witshield_${version}_linux_amd64" "witshield_${version}_linux_arm64" \
+            "witshield_${version}_linux_amd64.tar.gz" "witshield_${version}_linux_arm64.tar.gz" \
+            "witshield_${GITHUB_REF_NAME}_source.spdx.json" \
+            "witshield_${GITHUB_REF_NAME}_source.cyclonedx.json" > STAGING_SHA256SUMS
           sha256sum --check STAGING_SHA256SUMS
       - name: Stage verified artifacts for the publish job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -305,6 +320,7 @@ jobs:
           set -euo pipefail
           build_date=$(git show -s --format=%cI "$GITHUB_SHA")
           printf 'build_date=%s\n' "$build_date" >> "$GITHUB_OUTPUT"
+          printf 'version_number=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Download verified release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -316,6 +332,9 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           test -s dist/install.sh
+          test -s dist/check.sh
+          test -s "dist/witshield_${version}_linux_amd64"
+          test -s "dist/witshield_${version}_linux_arm64"
           test -s "dist/witshield_${version}_linux_amd64.tar.gz"
           test -s "dist/witshield_${version}_linux_arm64.tar.gz"
           test -s "dist/witshield_${GITHUB_REF_NAME}_source.spdx.json"
@@ -323,7 +342,7 @@ jobs:
           test -s dist/STAGING_SHA256SUMS
           (cd dist && sha256sum --check STAGING_SHA256SUMS)
           rm dist/STAGING_SHA256SUMS
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 8
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -405,14 +424,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LC_ALL=C sha256sum -- install.sh *.tar.gz *.json CONTAINER_IMAGE.txt > SHA256SUMS
+          version="${GITHUB_REF_NAME#v}"
+          LC_ALL=C sha256sum -- install.sh check.sh \
+            "witshield_${version}_linux_amd64" "witshield_${version}_linux_arm64" \
+            "witshield_${version}_linux_amd64.tar.gz" "witshield_${version}_linux_arm64.tar.gz" \
+            "witshield_${GITHUB_REF_NAME}_source.spdx.json" \
+            "witshield_${GITHUB_REF_NAME}_source.cyclonedx.json" CONTAINER_IMAGE.txt > SHA256SUMS
           sha256sum --check SHA256SUMS
       - name: Keyless-sign checksums
         run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle dist/SHA256SUMS
-      - name: Attest release archives
+      - name: Attest release archives and standalone programs
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/witshield_${{ steps.build_meta.outputs.version_number }}_linux_amd64.tar.gz
+            dist/witshield_${{ steps.build_meta.outputs.version_number }}_linux_arm64.tar.gz
+            dist/witshield_${{ steps.build_meta.outputs.version_number }}_linux_amd64
+            dist/witshield_${{ steps.build_meta.outputs.version_number }}_linux_arm64
+            dist/check.sh
 
       - name: Verify anonymous image access before creating public tags
         env:
@@ -465,11 +494,12 @@ jobs:
             exit 1
           fi
           rm -f "$release_error"
-          gh release create "$GITHUB_REF_NAME" \
-            --draft \
-            --verify-tag \
-            --generate-notes \
-            --title "WitShield AI ${GITHUB_REF_NAME}"
+          release_args=(--draft --verify-tag --generate-notes --title "WitShield AI ${GITHUB_REF_NAME}")
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            release_args+=(--notes-file "$notes_file")
+          fi
+          gh release create "$GITHUB_REF_NAME" "${release_args[@]}"
           echo 'created=true' >> "$GITHUB_OUTPUT"
       - name: Upload the complete artifact set to the draft
         env:
@@ -513,11 +543,58 @@ jobs:
             gh release delete "$GITHUB_REF_NAME" --yes
           fi
 
+  mirror-gitee:
+    name: Mirror authenticated CLI assets to Gitee
+    needs: publish
+    # Evaluate opt-in before requesting approval for the release environment.
+    if: github.repository == 'witkitlab/witshield' && vars.GITEE_MIRROR_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the published source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check mirror configuration
+        id: config
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          if [[ -n "${GITEE_TOKEN:-}" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download and authenticate the mirror payload
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/mirror-gitee-release.sh prepare "$GITHUB_REF_NAME" mirror-dist
+      - name: Upload the authenticated payload through Gitee API v5
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: scripts/mirror-gitee-release.sh publish "$GITHUB_REF_NAME" mirror-dist mirror-uploaded.txt
+      - name: Report mirror completeness
+        if: always()
+        env:
+          MIRROR_ENABLED: ${{ steps.config.outputs.enabled }}
+          MIRROR_OUTCOME: ${{ job.status }}
+        run: scripts/mirror-gitee-release.sh summary "$GITHUB_REF_NAME" mirror-dist mirror-uploaded.txt
+
   host-smoke:
     name: Verify the published release on clean hosts
     needs: publish
     permissions:
       contents: read
+      attestations: read
     uses: ./.github/workflows/release-host-smoke.yml
     with:
       version: ${{ github.ref_name }}

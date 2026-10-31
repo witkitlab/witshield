@@ -37,7 +37,7 @@ jobs:
       - run: go test -race -count=1 ./cmd/... ./internal/...
       - run: go test -coverprofile=coverage.out ./cmd/... ./internal/...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./cmd/... ./internal/...
-      - run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./cmd/... ./internal/...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.2 ./cmd/... ./internal/...
       - name: Gosec (path-scoped policy in scripts/run-gosec.sh)
         run: scripts/run-gosec.sh ./cmd/... ./internal/...
 
@@ -139,18 +139,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p stage/web stage/packaging/systemd stage/scripts stage/docs stage/docker
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield ./cmd/witshield
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-controller ./cmd/witshield-controller
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-agent ./cmd/witshield-agent
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o stage/witshield-helper ./cmd/witshield-helper
-          for binary in witshield-controller witshield-agent witshield-helper; do
+          for binary in witshield witshield-controller witshield-agent witshield-helper; do
             metadata=$(go version -m "stage/$binary")
-            grep -Fq 'go1.27.1' <<<"$metadata"
+            grep -Fq 'go1.27.3' <<<"$metadata"
             grep -Fq 'CGO_ENABLED=0' <<<"$metadata"
           done
           cp -a web/out/. stage/web/
           cp packaging/systemd/*.service stage/packaging/systemd/
           cp scripts/uninstall.sh stage/scripts/
           cp docs/*.md stage/docs/
+          if [[ -d docs/demo ]]; then cp -a docs/demo stage/docs/; fi
           cp docker/README.md stage/docker/
           cp LICENSE README.md stage/
           tar -C stage -czf witshield_0.0.0-test_linux_amd64.tar.gz .
