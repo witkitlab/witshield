@@ -249,8 +249,7 @@ func (s *Server) staticHandler() http.Handler {
 			writeError(w, http.StatusNotFound, "not_found", "not found")
 		})
 	}
-	root := filepath.Clean(s.webDir)
-	files := http.FileServer(http.Dir(root))
+	rootPath := filepath.Clean(s.webDir)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/agent/") {
 			writeError(w, 404, "not_found", "API endpoint not found")
@@ -260,21 +259,37 @@ func (s *Server) staticHandler() http.Handler {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
-		clean := filepath.Clean("/" + r.URL.Path)
-		candidate := filepath.Join(root, strings.TrimPrefix(clean, "/"))
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			if typ := mime.TypeByExtension(filepath.Ext(candidate)); typ != "" {
-				w.Header().Set("Content-Type", typ)
+		for _, segment := range strings.Split(r.URL.Path, "/") {
+			if segment == ".." || strings.Contains(segment, `\`) {
+				writeError(w, http.StatusNotFound, "not_found", "not found")
+				return
 			}
-			files.ServeHTTP(w, r)
-			return
 		}
-		index := filepath.Join(root, "index.html")
-		if _, err := os.Stat(index); err != nil {
+		// Share one rooted descriptor across lookup and serving for this request.
+		root, err := os.OpenRoot(rootPath)
+		if err != nil {
 			writeError(w, http.StatusNotFound, "not_found", "web interface is not installed")
 			return
 		}
-		http.ServeFile(w, r, index)
+		defer func() { _ = root.Close() }()
+		clean := filepath.Clean("/" + r.URL.Path)
+		candidate := strings.TrimPrefix(clean, "/")
+		if candidate == "" {
+			candidate = "."
+		}
+		if info, err := root.Stat(candidate); err == nil && !info.IsDir() {
+			if typ := mime.TypeByExtension(filepath.Ext(candidate)); typ != "" {
+				w.Header().Set("Content-Type", typ)
+			}
+			http.FileServerFS(root.FS()).ServeHTTP(w, r)
+			return
+		}
+		info, err := root.Stat("index.html")
+		if err != nil || info.IsDir() {
+			writeError(w, http.StatusNotFound, "not_found", "web interface is not installed")
+			return
+		}
+		http.ServeFileFS(w, r, root.FS(), "index.html")
 	})
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
