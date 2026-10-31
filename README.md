@@ -7,7 +7,7 @@ curl -fsSLO https://github.com/witkitlab/witshield/releases/download/v0.4.0/chec
 curl -fsSL https://github.com/witkitlab/witshield/releases/download/v0.4.0/check.sh | sudo bash -s -- --version v0.4.0
 ```
 
-**v0.4.0 尚待发布**，以上是计划版本的用法，发布资产就绪后才能运行。第一条先下载并审阅脚本，第二条直接执行远程脚本。`check.sh` 下载程序后会校验 SHA-256 和 GitHub 发布工作流的 Sigstore 签名，任一校验失败都会停止。脚本本身需要你信任下载来源，推荐先审阅。
+**v0.4.0 已发布**，可用以上命令运行体检。`--fix` 仍为实验性功能，使用前请核对下面的修复范围与风险。第一条先下载并审阅脚本，第二条直接执行远程脚本。`check.sh` 下载程序后会校验 SHA-256 和 GitHub 发布工作流的 Sigstore 签名，任一校验失败都会停止。脚本本身需要你信任下载来源，推荐先审阅。
 
 [产品官网](https://witshield.witkitlab.com) · [English](README.en.md) · [安全模型](docs/threat-model.md) · [参与贡献](CONTRIBUTING.md)
 

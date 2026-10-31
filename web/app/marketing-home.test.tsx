@@ -22,8 +22,8 @@ describe('MarketingHome', () => {
     expect(within(hero).getByRole('heading', { level: 1 })).toHaveTextContent(headline);
     expect(within(hero).getByText(/curl -fsSLO/)).toHaveTextContent(/check\.sh.*less check\.sh.*sudo bash check\.sh --version v0\.4\.0/);
     expect(within(hero).getByRole('button', { name: '复制' })).toBeInTheDocument();
-    expect(within(hero).getByText('v0.4.0 待发布')).toBeInTheDocument();
-    expect(within(hero).getByText(/以下命令将在 v0.4.0 发布后可用/)).toBeInTheDocument();
+    expect(within(hero).getByText('v0.4.0 已发布')).toBeInTheDocument();
+    expect(within(hero).getByText(/--fix 仍为实验性功能/)).toBeInTheDocument();
     expect(within(hero).getByRole('img', { name: /巡御命令行演示/ })).toHaveAttribute('src', '/check-demo.gif');
     expect(within(hero).getByRole('link', { name: '打开完整演示' })).toHaveAttribute('href', '/demo');
     expect(hero).not.toContainElement(screen.getByTitle('跨端控制台 desktop'));
@@ -42,7 +42,8 @@ describe('MarketingHome', () => {
 
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('One command to check common server risks. Preview supported fixes, then decide what to apply.');
     expect(screen.getByRole('img', { name: /WitShield CLI walkthrough/ })).toHaveAttribute('src', '/check-demo.gif');
-    expect(screen.getAllByText('v0.4.0 · Coming soon')).toHaveLength(2);
+    expect(screen.getAllByText('v0.4.0 · Released')).toHaveLength(2);
+    expect(screen.getByText(/Repairs with --fix remain experimental/)).toBeInTheDocument();
     expect(screen.getByText('AI proposes.')).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute('lang', 'en');
   });
