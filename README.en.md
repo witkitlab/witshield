@@ -63,7 +63,7 @@ witshield check --ai
 
 The [Chinese README](README.md) also has Qwen and Doubao examples. These are configuration templates, not claims that every provider or model has been tested. Supported protocols are `openai_chat` (default), `openai_responses`, and `anthropic_messages`; see [provider configuration](docs/ai-providers.md).
 
-`--ai` sends the score, finding titles, severity, and truncated evidence to your configured provider. SSH failure statistics include counts only, not source IPs. It does not send full logs, private keys, or file contents. Evidence can still reveal service and software details; review your provider's retention policy. Model output is display-only and cannot trigger a repair. The example uses the standalone binary without passing API credentials to root.
+`--ai` sends the score, completed and total check counts, finding severity and Chinese titles, and SSH failure and distinct-source counts to your configured provider. Unavailable SSH logs are identified as unknown. It does not send IP addresses, raw evidence, hostnames, logs, or file contents. Review your provider's retention policy. Model output is display-only and cannot trigger a repair. The example uses the standalone binary without passing API credentials to root.
 
 ## FAQ
 
