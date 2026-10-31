@@ -83,6 +83,8 @@ DeepSeek 因缺少获授权的 API Key 尚未实测，配置示例不代表已�
 14. Release 公开后自动触发 `Release host smoke`：在 Ubuntu 22.04/24.04 的 amd64 原生临时机、Ubuntu 24.04 的 arm64 原生临时机，以及 Debian 12 的 amd64/arm64 systemd 容器中，用公开签名制品重做安装、初始化、Agent 注册、扫描、审批修复、回滚、服务重启、保留数据卸载、重装与彻底清理；任一矩阵失败都必须作为发布阻断事故处理；
 15. 在目标云厂商的干净原生虚拟机补做网络、内核和 nftables 拓扑烟测，并发布安全与升级说明。systemd 容器覆盖发行版用户态兼容性，但不能替代真实宿主机内核验证。
 
+preflight 上传名称保留运行与 attempt 标识，并把上传动作实际返回的 `artifact-id` 作为 job output 传给 publish。publish 仅按该 ID 下载同一 workflow run 的制品，不根据自己的 `run_attempt` 猜测名称，也不挑选最新制品；ID 缺失或格式无效时在下载前停止，并提示重新运行全部 jobs 来重建 preflight 制品。下载后仍须通过源码身份、`STAGING_SHA256SUMS` 和完整文件集校验，才能进入外部写入阶段。此修复的跨 attempt 失败任务重跑尚待后续版本在 GitHub 平台实测，本地演练不代表平台验收。
+
 workflow 使用 keyless 制品签名，不保存长期 Cosign 私钥。只有 `publish` job 拥有 `contents: write`、`packages: write`、`id-token: write` 和 `attestations: write`；preflight 只有 `contents: read`，所有 checkout 都禁用凭据持久化。workflow 会拒绝以下输入：
 
 - 非 `vX.Y.Z` 的稳定 SemVer；

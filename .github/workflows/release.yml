@@ -21,6 +21,8 @@ jobs:
     name: Verify source, test and stage artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.stage_release.outputs.artifact-id }}
     env:
       GOTOOLCHAIN: local
     permissions:
@@ -282,6 +284,7 @@ jobs:
             "witshield_${GITHUB_REF_NAME}_source.cyclonedx.json" > STAGING_SHA256SUMS
           sha256sum --check STAGING_SHA256SUMS
       - name: Stage verified artifacts for the publish job
+        id: stage_release
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -321,10 +324,18 @@ jobs:
           build_date=$(git show -s --format=%cI "$GITHUB_SHA")
           printf 'build_date=%s\n' "$build_date" >> "$GITHUB_OUTPUT"
           printf 'version_number=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Require verified preflight artifact ID
+        env:
+          STAGED_ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$STAGED_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] \
+            || { echo 'preflight did not provide one verified artifact ID; rerun all jobs to rebuild the preflight artifact' >&2; exit 1; }
       - name: Download verified release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ needs.preflight.outputs.artifact_id }}
           path: dist
       - name: Assert downloaded artifact set
         shell: bash
