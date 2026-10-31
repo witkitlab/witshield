@@ -7,7 +7,7 @@ curl -fsSLO https://github.com/witkitlab/witshield/releases/download/v0.4.0/chec
 curl -fsSL https://github.com/witkitlab/witshield/releases/download/v0.4.0/check.sh | sudo bash -s -- --version v0.4.0
 ```
 
-**v0.4.0 is planned and has not been released.** These commands become usable when its release assets are published. The first downloads the script for review; the second executes the downloaded script directly. The script checks the binary's SHA-256 and the GitHub release workflow's Sigstore identity before running it. Review the script itself and trust its download source.
+**v0.4.0 is available.** Use the commands above for a one-shot check. Repairs with `--fix` remain experimental; review the scope and risks below first. The first downloads the script for review; the second executes the downloaded script directly. The script checks the binary's SHA-256 and the GitHub release workflow's Sigstore identity before running it. Review the script itself and trust its download source.
 
 [中文说明](README.md) · [Website](https://witshield.witkitlab.com) · [Threat model](docs/threat-model.md) · [Contributing](CONTRIBUTING.md)
 
