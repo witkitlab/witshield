@@ -494,11 +494,12 @@ jobs:
             exit 1
           fi
           rm -f "$release_error"
-          gh release create "$GITHUB_REF_NAME" \
-            --draft \
-            --verify-tag \
-            --generate-notes \
-            --title "WitShield AI ${GITHUB_REF_NAME}"
+          release_args=(--draft --verify-tag --generate-notes --title "WitShield AI ${GITHUB_REF_NAME}")
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            release_args+=(--notes-file "$notes_file")
+          fi
+          gh release create "$GITHUB_REF_NAME" "${release_args[@]}"
           echo 'created=true' >> "$GITHUB_OUTPUT"
       - name: Upload the complete artifact set to the draft
         env:
