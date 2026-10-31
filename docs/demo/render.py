@@ -31,69 +31,135 @@ def lines(text):
     return ANSI.sub("", text).replace("\r\n", "\n").replace("\r", "").splitlines()
 
 
-def excerpts(text, indices):
+def report_excerpt(text):
     original = lines(text)
-    return [original[index] for index in indices]
+    selected = [line for line in original if any(marker in line for marker in (
+        "妙计巡御 ·", "安全分  ", "过去 24 小时：", "发现 ",
+        "！有检查没能完成", "firewall:", 'exec: "nft"',
+    ))]
+    selected.extend(["", next(line for line in original if line == "最该先处理的 3 件事")])
+    count = 0
+    for line in original:
+        if re.match(r"\s+[1-3]\. \[", line):
+            selected.append(line)
+            count += 1
+        elif count and count <= 3 and line.startswith("     证据："):
+            selected.append(line)
+    return selected
+
+
+def validate(capture):
+    source, repair = capture["source"], capture["repair"]
+    assert capture["schemaVersion"] == 2 and source["status"] == repair["status"] == "PASS"
+    assert re.fullmatch(r"[a-f0-9]{40}", source["sourceCommit"])
+    assert re.fullmatch(r"[a-f0-9]{40}", source["cliHardeningCommit"]) and source["buildVCSModified"] is False
+    assert re.fullmatch(r"[a-f0-9]{64}", source["binarySHA256"])
+    build_info = source["buildInfo"]
+    assert build_info["binarySHA256"] == source["binarySHA256"]
+    assert build_info["buildSettings"]["vcs.revision"] == source["sourceCommit"]
+    assert build_info["buildSettings"]["vcs.modified"] == "false"
+    assert build_info["humanVersion"] == source["binaryVersion"]
+    assert source["guest"]["distribution"] == "Debian GNU/Linux 12"
+    assert source["guest"]["pid1"] == "systemd" and "QEMU" in source["guest"]["virtualization"]
+    assert source["terminalInputEcho"] is True
+    baseline = repair["beforePasswordProbe"]
+    assert baseline["commandSucceeded"] and baseline["authenticationMethods"] == ["password"]
+    assert baseline["pubkeyDisabled"] and baseline["keyboardInteractiveDisabled"] and baseline["connectionReuseDisabled"]
+    for name in ("beforeKeyProbe", "confirmationKeyProbe", "afterKeyProbe"):
+        assert repair[name]["status"] == "PASS" and repair[name]["freshTcp"]
+    assert not repair["afterPasswordProbe"]["commandSucceeded"]
+    assert repair["afterPasswordProbe"]["exitCode"] == 255
+    assert repair["afterPasswordProbe"]["pubkeyDisabled"] and repair["afterPasswordProbe"]["keyboardInteractiveDisabled"]
+    assert repair["afterPasswordProbe"]["connectionReuseDisabled"]
+    key_validation = repair["postCaptureKeyValidation"]
+    assert key_validation["status"] == "PASS" and key_validation["authenticationMethods"] == ["publickey"]
+    assert key_validation["options"]["ControlMaster"] == "no" and key_validation["options"]["ControlPath"] == "none"
+    chunks = repair["chunks"]
+    assert all(0 <= a["at"] <= b["at"] for a, b in zip(chunks, chunks[1:]))
+    assert chunks[-1]["at"] <= source["repairElapsedSeconds"]
+    assert "\n".join(lines("".join(chunk["data"] for chunk in chunks))) == "\n".join(lines(repair["stdout"]))
+    assert [event["input"] for event in repair["inputEvents"]] == ["y", "yes", "y"]
+    assert all(0 <= event["at"] <= source["repairElapsedSeconds"] for event in repair["inputEvents"])
+    assert repair["stdout"].count("现在修改？ [y/N] y") == 2
+    assert "新窗口能登录吗？输入 yes 确认，其他任意内容恢复原配置：yes" in repair["stdout"]
+    for name in ("before", "after"):
+        report = capture[name]
+        assert hashlib.sha256(report["stdout"].encode()).hexdigest() == source["sourceSHA256"][f"{name}.stdout"]
+        summary = re.search(r"安全分\s+(\d+)\s*/\s*100.*?完成检查\s+(\d+)/(\d+) 项", report["stdout"])
+        assert tuple(map(int, summary.groups())) == (report["score"], report["completedChecks"], report["checks"])
+        assert report["coveragePercent"] == report["completedChecks"] * 100 // report["checks"]
+        assert int(re.search(r"发现 (\d+) 个问题", report["stdout"])[1]) == report["issueCount"]
+    assert hashlib.sha256(repair["stdout"].encode()).hexdigest() == source["sourceSHA256"]["fix.stdout"]
 
 
 def scenes(capture):
-    chunks = capture["repair"]["chunks"]
-    assert capture["before"]["score"] == 27 and capture["after"]["score"] == 63
-    assert capture["before"]["coveragePercent"] == capture["after"]["coveragePercent"] == 87
-    assert capture["repair"]["confirmationKeyProbe"]["success"]
-    assert capture["repair"]["afterKeyProbe"]["success"]
-    assert not capture["repair"]["afterPasswordProbe"]["success"]
+    validate(capture)
+    before, after, source = capture["before"], capture["after"], capture["source"]
+    pty = lines("".join(chunk["data"] for chunk in capture["repair"]["chunks"]))
 
-    def pty(start, end):
-        return lines("".join(chunk["data"] for chunk in chunks[start:end]))
+    def find(marker, start=0):
+        return next(index for index in range(start, len(pty)) if marker in pty[index])
+
+    start = find("开始逐项修复")
+    ssh_approval = find("现在修改？", start)
+    ssh_verified = find("预检 ✓", ssh_approval)
+    ssh_confirmation = find("新窗口能登录吗？", ssh_verified)
+    ssh_done = find("完成：SSH", ssh_confirmation)
+    shadow_approval = find("现在修改？", ssh_done)
+    shadow_verified = find("预检 ✓", shadow_approval)
+    check_command = "sudo /usr/local/bin/witshield check --no-color"
+    repair_command = f"sudo /usr/local/bin/witshield check --fix --no-color --ssh-confirm-seconds {source['sshConfirmSeconds']}"
+
+    def coverage(report):
+        return f"{report['completedChecks']}/{report['checks']}（{report['coveragePercent']}%）"
 
     return [
         {
-            "chapter": "01 / 03   先看清问题", "command": "sudo witshield check",
+            "chapter": "01 / 03   先看清问题", "command": check_command,
             "source": "真实报告节选 · 省略说明与手动命令，完整原文见 capture.json",
-            "body": excerpts(capture["before"]["stdout"], list(range(1, 10)) + [10, 11, 12, 19, 24]),
-            "note": "检查结果：27 分，6 个问题；SSH 密码登录和 shadow 权限可逐项修复。",
-            "detail": "覆盖率 87%（7/8），没有读到 SSH 日志；未完成检查不代表没有风险。",
+            "body": report_excerpt(before["stdout"]),
+            "note": f"基线验证：密码和密钥均能登录；报告发现 {before['issueCount']} 个问题，其中 2 项可确认修复。",
+            "detail": f"完成检查 {coverage(before)}；缺少防火墙工具，分数只代表已完成的部分。",
             "duration": 4500,
         },
         {
-            "chapter": "02 / 03   先预览，再确认", "command": "sudo witshield check --fix --ssh-confirm-seconds 60",
+            "chapter": "02 / 03   先预览，再确认", "command": repair_command,
             "source": "真实 PTY 输出 · SSH 预检与变更预览",
-            "body": pty(3, 10),
-            "note": "录制动作：已批准 SSH 修改；原始录制关闭输入回显，画面未补写 y。",
-            "detail": "本次演示设置 60 秒确认窗口；产品默认 180 秒。",
+            "body": pty[start:ssh_approval + 1],
+            "note": "录制动作：输入 y 批准 SSH；画面中的 y 来自真实 guest PTY 回显。",
+            "detail": f"本次演示设置 {source['sshConfirmSeconds']} 秒确认窗口；产品默认 180 秒。",
             "duration": 4000,
         },
         {
-            "chapter": "02 / 03   新连接可用，才确认保留", "command": "sudo witshield check --fix --ssh-confirm-seconds 60",
+            "chapter": "02 / 03   新连接可用，才确认保留", "command": repair_command,
             "source": "真实 PTY 输出 · 保持原窗口，等待第二次登录确认",
-            "body": pty(10, 11),
-            "note": "录制验证：另一条全新 TCP SSH 密钥连接成功，已禁用连接复用。",
-            "detail": "成功后才提交保留确认；这是录制器验证说明，并非 CLI 额外输出。",
+            "body": pty[ssh_verified:ssh_confirmation + 1],
+            "note": "录制验证：另一条全新 TCP SSH 密钥连接成功后，才输入 yes 确认保留。",
+            "detail": "ControlMaster=no / ControlPath=none；这是录制器说明，并非 CLI 额外输出。",
             "duration": 5000,
         },
         {
-            "chapter": "02 / 03   SSH 已确认，继续修复权限", "command": "sudo witshield check --fix --ssh-confirm-seconds 60",
+            "chapter": "02 / 03   SSH 已确认，继续修复权限", "command": repair_command,
             "source": "真实 PTY 输出 · SSH 完成与 shadow 预览",
-            "body": pty(11, 15),
-            "note": "录制动作：已批准 /etc/shadow 权限修复；未改动其余风险项。",
-            "detail": "修复范围限定为 root:shadow 0640；CLI 逐项预检、预览并验证。",
+            "body": pty[ssh_done:shadow_approval + 1],
+            "note": "录制动作：输入 y 批准 /etc/shadow 权限修复；未改动其余风险项。",
+            "detail": "范围说明：仅关闭 PasswordAuthentication；旧提示原文保留，不覆盖其他 SSH 认证机制。",
             "duration": 3500,
         },
         {
-            "chapter": "02 / 03   两项修复完成", "command": "sudo witshield check --fix --ssh-confirm-seconds 60",
+            "chapter": "02 / 03   两项修复完成", "command": repair_command,
             "source": "真实 PTY 输出 · shadow 修复与结果",
-            "body": pty(15, 16),
+            "body": pty[shadow_verified:],
             "note": "录制验证：修复后新建密钥连接仍成功，密码登录探测已被拒绝。",
-            "detail": "确认场景实际耗时 0.277 秒；本动画按语义增加阅读停留。",
+            "detail": f"交互录制实际耗时 {source['repairElapsedSeconds']} 秒；动画重排阅读停留，非实时录屏。",
             "duration": 2500,
         },
         {
-            "chapter": "03 / 03   再体检，确认结果", "command": "sudo witshield check",
+            "chapter": "03 / 03   再体检，确认结果", "command": check_command,
             "source": "真实报告节选 · 省略说明与手动命令，完整原文见 capture.json",
-            "body": excerpts(capture["after"]["stdout"], list(range(1, 10)) + [10, 11, 12, 19, 24, 30, 31]),
-            "note": "27 → 63 分，仍有 4 个问题；root 登录策略和内核设置仍需人工处理。",
-            "detail": "覆盖率仍为 87%，分数仅代表已完成的检查；这不是完整安全审计。",
+            "body": report_excerpt(after["stdout"]),
+            "note": f"{before['score']} → {after['score']} 分，仍有 {after['issueCount']} 个问题；root 密钥登录、内核指针和开放端口仍需评估。",
+            "detail": f"完成检查仍为 {coverage(after)}；未完成防火墙检查，分数不是安全保证。",
             "duration": 6000,
         },
     ]
@@ -113,12 +179,14 @@ def wrap(text, chosen_font, width):
     return result
 
 
-def render(scene, number, progress):
+def render(scene, number, progress, source):
     image = Image.new("RGB", (WIDTH, HEIGHT), COLORS["background"])
     draw = ImageDraw.Draw(image)
     draw.text((44, 25), "妙计巡御", font=font(32), fill=COLORS["white"])
     draw.text((234, 36), "一次性体检 · 确认后修复", font=font(21), fill=COLORS["muted"])
-    draw.text((44, 80), "隔离测试环境演示 · Ubuntu 24.04 容器 / 真实 sshd / systemctl 测试适配器", font=font(20), fill=COLORS["muted"])
+    environment = f"隔离测试演示 · Debian {source['guest']['version']} QEMU / 真实 systemd / sshd · 旧 {source['sourceCommit'][:7]} 构建"
+    assert font(20).getlength(environment) < 1314
+    draw.text((44, 80), environment, font=font(20), fill=COLORS["muted"])
     draw.text((1020, 36), scene["chapter"], font=font(21), fill=COLORS["cyan"])
 
     draw.rounded_rectangle((40, 130, 1400, 748), radius=16, fill=COLORS["panel"], outline=COLORS["border"], width=2)
@@ -127,7 +195,9 @@ def render(scene, number, progress):
     for x, color in [(66, "#fa9d91"), (88, "#f6d891"), (110, "#9ed8ac")]:
         draw.ellipse((x, 149, x + 11, 160), fill=color)
     draw.text((145, 139), "demo-vps  /  终端实录重播", font=font(19), fill=COLORS["muted"])
-    draw.text((72, 192), "命令 · " + scene["command"], font=font(22, True), fill=COLORS["cyan"])
+    command_label = "调用说明 · " + scene["command"]
+    assert font(22, True).getlength(command_label) < 1294
+    draw.text((72, 192), command_label, font=font(22, True), fill=COLORS["cyan"])
     draw.text((72, 229), scene["source"], font=font(16), fill=COLORS["muted"])
     draw.line((72, 262, 1368, 262), fill=COLORS["border"])
 
@@ -153,7 +223,7 @@ def render(scene, number, progress):
     draw.text((62, 817), scene["detail"], font=font(19), fill=COLORS["muted"])
     for field in ("note", "detail"):
         assert font(23 if field == "note" else 19).getlength(scene[field]) < 1314
-    draw.text((44, 872), "基于真实 stdout / PTY；画面为节选、换行与停留重排，非实时录屏。", font=font(15), fill=COLORS["muted"])
+    draw.text((44, 872), "真实 VM stdout / PTY 节选；Pillow 节奏重排，非实时录屏。", font=font(15), fill=COLORS["muted"])
     draw.rounded_rectangle((850, 879, 1396, 883), radius=2, fill=COLORS["border"])
     draw.rounded_rectangle((850, 879, 850 + max(2, int(546 * progress)), 883), radius=2, fill=COLORS["cyan"])
     return image
@@ -174,7 +244,7 @@ def main():
     # Derive one palette from every scene and reuse it for every GIF frame.
     contact = Image.new("RGB", (720, 450 * len(storyboard)))
     for number, scene in enumerate(storyboard):
-        frame = render(scene, number, 1)
+        frame = render(scene, number, 1, capture["source"])
         contact.paste(frame.resize((720, 450)), (0, 450 * number))
         if args.preview_dir:
             args.preview_dir.mkdir(parents=True, exist_ok=True)
@@ -184,7 +254,7 @@ def main():
     for number, scene in enumerate(storyboard):
         for offset in range(0, scene["duration"], 500):
             duration = min(500, scene["duration"] - offset)
-            frames.append(render(scene, number, (elapsed + offset + duration) / total).quantize(palette=palette, dither=Image.Dither.NONE))
+            frames.append(render(scene, number, (elapsed + offset + duration) / total, capture["source"]).quantize(palette=palette, dither=Image.Dither.NONE))
             durations.append(duration)
         elapsed += scene["duration"]
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -198,7 +268,7 @@ def main():
             animation.seek(index)
             duration += animation.info.get("duration", 0)
         assert animation.size == (WIDTH, HEIGHT)
-        assert duration < 30000
+        assert 25000 <= duration < 30000
         assert args.output.stat().st_size < 3 * 1024 * 1024
         assert args.output.read_bytes() == args.site_output.read_bytes()
         print(json.dumps({"dimensions": animation.size, "frames": animation.n_frames, "durationMs": duration,
