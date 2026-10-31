@@ -8,8 +8,9 @@
 
 - `witshield_X.Y.Z_linux_amd64.tar.gz`；
 - `witshield_X.Y.Z_linux_arm64.tar.gz`；
-- 与该版本源码一致的 `install.sh`；
-- 每个包内的 Controller、普通用户 Agent、root Helper 三个二进制、Web 静态资源、systemd unit、卸载器、LICENSE 与 README；
+- `witshield_X.Y.Z_linux_amd64` 与 `witshield_X.Y.Z_linux_arm64` 两个独立 CLI 程序；
+- 与该版本源码一致的 `install.sh` 和 `check.sh`；
+- 每个包内的独立 CLI、Controller、普通用户 Agent、root Helper 四个二进制、Web 静态资源、systemd unit、卸载器、LICENSE 与 README；
 - `SHA256SUMS`；
 - SPDX JSON 与 CycloneDX JSON SBOM；
 - `SHA256SUMS.bundle`（Sigstore/Cosign keyless 签名 bundle）；
@@ -51,6 +52,14 @@ for test_script in scripts/tests/*.sh; do "$test_script"; done
 - 对抗性审查和威胁模型差异更新。
 
 任何一项未达到都应在发布说明中标为不可用或实验性，而不是仅依靠文案承诺。
+
+### v0.4.0 首次 CLI 发布
+
+`v0.4.0` 首次提供独立 `witshield` CLI，其中 `check --fix` 属于实验性功能。CI 和演示素材不能替代真实主机上的修复、SSH 新连接确认及恢复演练；在完成 [CLI 发布演练清单](testing-check-cli.md) 前，只应在可销毁且有带外控制台的测试机使用自动修复。
+
+本次真实签名发布、公开资产的 SHA-256、Sigstore 身份和 provenance 验证，以及 Ubuntu/Debian、amd64/arm64 真实主机矩阵仍待完成，不得宣称已验收。实机验证出现失败时应阻断发布，保留证据并排查，不能用实验性标识或 CI 通过代替修复和复验。
+
+Gitee 仓库和发布令牌尚未配置，镜像实测暂缓；没有可用令牌时镜像任务跳过，不影响 GitHub 发布。DeepSeek 因缺少获授权的 API Key 尚未实测，配置示例不代表已验证可用；它是可选解读服务，不作为本地体检的依赖。
 
 ## 版本流程
 
