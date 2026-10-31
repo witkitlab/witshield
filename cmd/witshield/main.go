@@ -21,7 +21,7 @@ var buildDate = "unknown"
 const help = `妙计巡御 witshield %s
 
   witshield check          体检这台服务器（建议 sudo 运行，结果更完整）
-  sudo witshield check --fix   体检后逐项修复，每一步先预览、确认后才改；SSH 和文件权限修复失败会恢复
+  sudo witshield check --fix   体检后逐项修复，每一步先预览、确认后才改；SSH 和文件权限修复失败时尝试恢复
   witshield check --help   查看全部选项
   witshield version        查看版本
 

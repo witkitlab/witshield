@@ -132,7 +132,7 @@ func TestSSHFixConfirmed(t *testing.T) {
 	if got := ops(e.ops...); got != "precheck,preview,execute,confirm" {
 		t.Fatalf("operations = %s\n%s", got, out)
 	}
-	if !strings.Contains(out.String(), "只允许密钥登录") {
+	if !strings.Contains(out.String(), "SSH 密码认证已关闭，自动恢复已取消") {
 		t.Fatalf("missing success text:\n%s", out)
 	}
 }

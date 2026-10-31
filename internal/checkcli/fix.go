@@ -157,7 +157,7 @@ func (x *Fixer) fixSSH(ctx context.Context) bool {
 	if err == nil && ctx.Err() == nil && (answer == "yes" || answer == "y" || answer == "是" || answer == "确认") {
 		c := x.Engine.Run(ctx, action.Request{ActionID: id, Actor: "witshield-cli", Type: action.TypeSSHPasswordHardening, Operation: action.OperationConfirm, Parameters: params, State: receipt.State})
 		if c.Success {
-			fmt.Fprintln(x.Out, s.wrap("32", "  完成：SSH 已改为只允许密钥登录，自动恢复已取消。"))
+			fmt.Fprintln(x.Out, s.wrap("32", "  完成：SSH 密码认证已关闭，自动恢复已取消。"))
 			return true
 		}
 		fmt.Fprintf(x.Out, "  确认没有成功（%s），正在恢复原配置。\n", c.Error)
