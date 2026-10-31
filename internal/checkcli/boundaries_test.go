@@ -277,7 +277,7 @@ func TestRecoveryRejectsUnsafePathsAndUnknownParameters(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("root-owned recovery fixtures")
 	}
-	for _, kind := range []string{"directory-mode", "file-mode", "symlink", "unknown-params", "oversize", "too-many", "unknown-field"} {
+	for _, kind := range []string{"directory-mode", "file-mode", "symlink", "escape-symlink", "unknown-params", "oversize", "too-many", "unknown-field"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.Chmod(dir, 0o700); err != nil {
@@ -307,6 +307,17 @@ func TestRecoveryRejectsUnsafePathsAndUnknownParameters(t *testing.T) {
 			case "symlink":
 				_ = os.Rename(path, path+".real")
 				_ = os.Symlink(path+".real", path)
+			case "escape-symlink":
+				outside := filepath.Join(t.TempDir(), "outside.json")
+				if err := os.WriteFile(outside, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatal(err)
+				}
 			case "too-many":
 				for i := range 65 {
 					_ = os.WriteFile(filepath.Join(dir, string(rune('A'+i))), nil, 0o600)

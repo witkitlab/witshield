@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/witkitlab/witshield/internal/action"
@@ -362,10 +363,41 @@ func KeyLoginReady(root string) func() (bool, string) {
 	}
 }
 
-// HasAuthorizedKey reports whether the file holds at least one key line.
+const maxAuthorizedKeyBytes = 1 << 20
+
+// HasAuthorizedKey reports whether a bounded regular file holds a key line.
 func HasAuthorizedKey(path string) bool {
-	b, err := os.ReadFile(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
+		return false
+	}
+	defer root.Close()
+	name := filepath.Base(path)
+	before, err := root.Lstat(name)
+	if err != nil || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > maxAuthorizedKeyBytes {
+		return false
+	}
+	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || opened.Size() < 0 || opened.Size() > maxAuthorizedKeyBytes {
+		return false
+	}
+	// Public keys can belong to an ordinary account; ownership is not a root
+	// prerequisite. Scope, identity, type and size are checked before reading.
+	b, err := io.ReadAll(io.LimitReader(f, maxAuthorizedKeyBytes))
+	if err != nil {
+		return false
+	}
+	final, err := f.Stat()
+	if err != nil || final.Size() < 0 || final.Size() > maxAuthorizedKeyBytes {
+		return false
+	}
+	current, err := root.Lstat(name)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
 		return false
 	}
 	for _, line := range strings.Split(string(b), "\n") {

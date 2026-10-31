@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -65,6 +64,13 @@ func privateRecoveryPath(path string, directory bool) error {
 	if err != nil {
 		return err
 	}
+	if err := privateRecoveryInfo(info, directory); err != nil {
+		return fmt.Errorf("%s：%w", path, err)
+	}
+	return nil
+}
+
+func privateRecoveryInfo(info os.FileInfo, directory bool) error {
 	owner, ok := info.Sys().(*syscall.Stat_t)
 	mode := os.FileMode(0o600)
 	validType := info.Mode().IsRegular()
@@ -73,18 +79,90 @@ func privateRecoveryPath(path string, directory bool) error {
 		validType = info.IsDir()
 	}
 	if !ok || owner.Uid != 0 || !validType || info.Mode().Perm() != mode || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("恢复路径的属主、权限或类型不安全：%s", path)
+		return errors.New("恢复路径的属主、权限或类型不安全")
 	}
 	return nil
 }
 
-func readRecoveryJournals(dir string) ([]recoveryJournal, error) {
-	if err := privateRecoveryPath(dir, true); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
+func openRecoveryRoot(dir string) (*os.Root, error) {
+	before, err := os.Lstat(dir)
 	if err != nil {
 		return nil, err
+	}
+	if err := privateRecoveryInfo(before, true); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err == nil {
+		err = privateRecoveryInfo(opened, true)
+	}
+	if err != nil || !os.SameFile(before, opened) {
+		_ = root.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("SSH 恢复目录在打开时发生变化")
+	}
+	return root, nil
+}
+
+func readRecoveryJournal(root *os.Root, name string) ([]byte, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := privateRecoveryInfo(before, false); err != nil {
+		return nil, err
+	}
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := privateRecoveryInfo(opened, false); err != nil {
+		return nil, err
+	}
+	if !os.SameFile(before, opened) {
+		return nil, errors.New("SSH 恢复日志在打开时发生变化")
+	}
+	if opened.Size() < 0 || opened.Size() > maxRecoveryJournalBytes {
+		return nil, errors.New("SSH 恢复日志超过大小上限")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRecoveryJournalBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxRecoveryJournalBytes {
+		return nil, errors.New("SSH 恢复日志超过大小上限")
+	}
+	return data, nil
+}
+
+func readRecoveryJournals(dir string) ([]recoveryJournal, error) {
+	root, err := openRecoveryRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	directory, err := root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	entries, readErr := directory.ReadDir(65)
+	closeErr := directory.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	if len(entries) > 64 {
 		return nil, errors.New("SSH 恢复日志过多，请手动检查")
@@ -99,24 +177,9 @@ func readRecoveryJournals(dir string) ([]recoveryJournal, error) {
 		if len(match) != 2 {
 			return nil, errors.New("SSH 恢复日志名称不属于命令行修复")
 		}
-		path := filepath.Join(dir, name)
-		if err := privateRecoveryPath(path, false); err != nil {
-			return nil, err
-		}
-		f, err := os.Open(path)
+		data, err := readRecoveryJournal(root, name)
 		if err != nil {
 			return nil, err
-		}
-		data, readErr := io.ReadAll(io.LimitReader(f, maxRecoveryJournalBytes+1))
-		closeErr := f.Close()
-		if readErr != nil {
-			return nil, readErr
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
-		if len(data) > maxRecoveryJournalBytes {
-			return nil, errors.New("SSH 恢复日志超过大小上限")
 		}
 		var journal recoveryJournal
 		decoder := json.NewDecoder(bytes.NewReader(data))
