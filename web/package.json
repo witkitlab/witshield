@@ -37,7 +37,7 @@
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.4.1",
     "jsdom": "^29.1.1",
-    "react-server-dom-webpack": "^19.3.0",
+    "react-server-dom-webpack": "^19.3.1",
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3",
     "vinext": "^1.0.0-beta.8",
